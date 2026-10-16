@@ -15,11 +15,11 @@ README의 다운로드 링크 → GitHub Releases → macOS ZIP / Linux tar.gz /
 
 ## 최초 공개 전 주의
 
-- 코드의 `go.mod` 모듈 경로는 테스트용(`example.com/withalbum`)입니다. 실제 GitHub 위치로 변경합니다.
+- `go.mod` 모듈 경로: `github.com/aaaicu/withalbum`.
 - 현재 인증이 없는 PoC입니다. **`v0.1.0-alpha.1` 같은 prerelease로만 공개**하고, 실사용을 권장하지 않습니다.
 - GitHub에 소스 코드를 올렸다는 사실이 앱 설치/실기기 테스트를 대신하지 않습니다.
 - macOS ZIP 바이너리는 아직 Apple 서명·공증이 되지 않았습니다. DMG라고 표시하지 않습니다.
-- MIT 라이선스는 초안이므로 첫 공개 전에 확정합니다.
+- 라이선스: AGPL-3.0 (확정).
 
 ## 태그 릴리스 (저장소 owner가 실행)
 
