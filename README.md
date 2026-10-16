@@ -66,7 +66,7 @@ WITHALBUM_ROOT="$HOME/WithAlbumTest" ./withalbum-server
 
 <!-- 운영 시 제약:
 WITHALBUM_LISTEN=127.0.0.1:8787 기본. 주의: 바인딩 가드는 운영 인증을 대신하지 않는다.
-Go 모듈은 example.com/withalbum 임시 경로. 새 GitHub 조직/저장소 위치를 알고 난 다음 변경.
+Go 모듈 경로는 github.com/aaaicu/withalbum.
 멀티 플랫폼 컴파일은 Mac/Pi 런타임과 성능 테스트를 증명하지 않는다.
 -->
 
@@ -293,10 +293,10 @@ server/main.go는 512MiB 일괄 업로드만 지원. 대용량 영상 업로드 
 `GitHub Actions` CI는 테스트 및 5개 아키텍처 크로스빌드를 의도하고, `GoReleaser`는 태그 기반 릴리스/체크섬을 생성하도록 구성했습니다. 그러나 실제 Mac mini·Pi에서 설치/실행/재부팅 복구한 실기기 테스트는 여전히 필요합니다. **Releases의 프리릴리스와 정식 배포를 구분**하세요.
 
 <!-- 배포/오픈소스 인수인계:
-프로젝트 GitHub repository 및 리포지터리 소유자 아직 미정, go.mod는 example.com/withalbum placeholder.
+공식 저장소: https://github.com/aaaicu/withalbum (go.mod 모듈 경로 동일).
 릴리스 태그는 불완전한 로컬 시제품에 대해서 prerelease로만 발행. 정식 버전 1.0 / DMG 인증/상용 안전성 선언 금지.
 GitHub README는 Release asset 이름과 Install docs, Known limitations를 사용자 눈에 보이도록 연결.
-라이선스 LICENSE는 현 저장소에 MIT 텍스트가 들어 있지만 원래 기획상 '공개 전 재검토 초안'. 공개 전 최종 결정 및 검토가 필요하다.
+라이선스는 AGPL-3.0으로 확정(2026-10-17).
 macOS 서명/공증은 Apple Developer 권한과 실기기 검증이 필요하다; CI가 빌드됐다는 사실이 검증을 뜻하지 않는다.
 -->
 
@@ -347,7 +347,7 @@ GitHub에 곧바로 public push, Release 발행, 실제 원본 정리/삭제 등
 | `.github/release.yml` | GitHub 릴리스 노트 분류 예시 |
 | `scripts/install-macos.sh`, `install-linux.sh` | 개발용 백그라운드 실행 설치 스크립트, 정식 설치기 아님 |
 | `Makefile`, `.env.example`, `.gitignore` | 개발 명령·환경·제외 경로 |
-| `LICENSE`, `SECURITY.md` | MIT 초안, 현재 시제품 보안 경고 |
+| `LICENSE`, `SECURITY.md` | AGPL-3.0 라이선스, 현재 시제품 보안 경고 |
 
 ### 제품·설계·인수인계 문서
 
@@ -397,6 +397,8 @@ Claude는 저장소 전체를 읽고 먼저 실제 구현 현황과 목표 설�
 
 ## 📄 라이선스와 공개 정책
 
-이 패키지에는 기존 v1.4에 포함된 **MIT 라이선스 텍스트**를 보존했습니다. 하지만 이는 기획 단계에서 **최종 공개 전에 재검토하기로 했던 초안**입니다. 공식 GitHub 공개 전 라이선스 결정, 저장소/조직 이름, 상표 충돌, 보안 신고 창구, 유지보수 정책을 확정하세요.
+위드앨범 서버는 **[GNU AGPL-3.0](LICENSE)** 으로 배포됩니다. 누구나 사용·수정·재배포할 수 있으며, 수정한 버전을 네트워크 서비스로 제공하는 경우 해당 소스 코드를 같은 라이선스로 공개해야 합니다.
+
+상표 충돌 확인, 보안 신고 창구, 유지보수 정책은 아직 확정되지 않았습니다.
 
 **정리:** 위드앨범은 Mac mini를 우선 완성하는 멀티플랫폼 오픈소스 사진 서버와 iOS/Android 앱이며, 서버가 없는 이용자를 위한 Google Drive 모드는 차후 **제약을 명시한 별도 저장 방식**으로 개발합니다.
