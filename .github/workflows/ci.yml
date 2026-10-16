@@ -43,4 +43,6 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           GOARM: ${{ matrix.goarm }}
           CGO_ENABLED: '0'
-        run: go build -trimpath -o withalbum-server ./server
+        run: |
+          go build ./...
+          go build -trimpath -o withalbum-server ./server

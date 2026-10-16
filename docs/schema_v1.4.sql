@@ -1,6 +1,10 @@
--- WithAlbum target schema v1.4: DESIGN ONLY, NOT yet wired into HTTP server.
--- New install target; NOT an automated migration for previous PoC state.json data.
--- SQLite 3.38+ and PRAGMA foreign_keys=ON on EVERY database connection.
+-- WithAlbum schema v1.4. Applied as migration 0001 by internal/db.Migrate; the
+-- canonical copy is internal/db/migrations/0001_schema_v1_4.sql (a test keeps
+-- this file and the migration identical apart from comments and PRAGMAs).
+-- Not yet wired into the HTTP server. PoC state.json data needs a separate import.
+-- SQLite 3.38+ and PRAGMA foreign_keys=ON on EVERY database connection
+-- (internal/db.Open sets the PRAGMAs below per connection). Keep the database on
+-- a locally attached disk: WAL is not safe on network file systems (SMB/NFS).
 PRAGMA foreign_keys=ON;
 PRAGMA journal_mode=WAL;
 
