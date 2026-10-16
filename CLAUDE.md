@@ -30,7 +30,7 @@
 
 ## 현재 코드의 진짜 상태 (절대 혼동 금지)
 
-- `server/main.go`: 인증 없는 localhost 전용 Go PoC. **SQLite 미연동**, `.system/state.json` 사용. 512MiB 단일 요청 원본 업로드/초보적 프리뷰. 자산 식별자로 SHA-256을 사용하고 실제 ACL은 없음.
+- `server/main.go`(기동) + `internal/httpapi`(핸들러) + `internal/meta/jsonstore` + `internal/blobstore`: 인증 없는 localhost 전용 Go PoC. **SQLite 미연동**, `.system/state.json` 사용(`meta.MetadataStore` 인터페이스 뒤). 512MiB 단일 요청 원본 업로드/초보적 프리뷰. 자산 식별자로 SHA-256을 사용하고 실제 ACL은 없음.
 - `internal/authz`: 권한 함수와 테스트만 있으며 HTTP handler 미연결.
 - `docs/schema_v1.4.sql`와 `docs/API_AUTH_v1.4.yaml`: **미구현 목표 설계**.
 - Flutter/iOS/Android, OAuth Drive, 외부 통신, 실시간 푸시, GUI DMG, 신뢰 가능한 백업 복원은 없음.

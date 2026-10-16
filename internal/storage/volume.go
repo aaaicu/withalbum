@@ -248,3 +248,13 @@ func probeWritable(root string) error {
 	}
 	return nil
 }
+
+// MkdirIn creates dir with os.Mkdir (never MkdirAll), so a missing parent such
+// as an unmounted volume root fails instead of being recreated. An existing
+// directory is not an error.
+func MkdirIn(dir string) error {
+	if err := os.Mkdir(dir, 0700); err != nil && !errors.Is(err, os.ErrExist) {
+		return err
+	}
+	return nil
+}
