@@ -4,17 +4,17 @@
 
 | 기능 | 현 상태 | 소스 / 근거 | 완료 판정시 요구 증거 |
 |---|---|---|---|
-| Go 로컬 HTTP 서버 | 개발 PoC 구현 | `server/main.go` | 개발용 로컬 실행·테스트 |
-| 로컬 관리 UI | 개발 PoC 구현 | `server/web/index.html` | 테스트 화면 조회, 계정 기반 UI는 별개 |
-| 전체 파일 업로드 (512MiB 이하) | 개발 PoC 구현 | `server/main.go` | 영상 대용량 재개/정합성은 추가 구현 |
-| SHA-256 content-addressed 원본 | 개발 PoC 구현 | `server/main.go` | 동시성/복구/블롭 접근 권한 시험 |
-| 폴더별 해시 중복 인식 | 개발 PoC 구현 | `server/main.go` | 업로드·복제·재시도·동시성 통합 시험 |
-| 기본 JPEG/PNG/GIF 프리뷰 | 개발 PoC 구현 | `server/main.go` | HEIC/RAW/Live Photo/영상 미지원 검증 |
-| JSON 상태 파일 | 개발 PoC 구현 | `.system/state.json` 생성 코드 | 교체 전 migration/backup 계획 |
-| 폴더별 event/cursor | 개발 PoC 구현 | `server/main.go` | 장기간 offline 클라이언트/영속 cursor 검증 |
+| Go 로컬 HTTP 서버 | 개발 PoC 구현 | `server/main.go`(기동), `internal/httpapi` | 개발용 로컬 실행·테스트 |
+| 로컬 관리 UI | 개발 PoC 구현 | `internal/httpapi/web/index.html` | 테스트 화면 조회, 계정 기반 UI는 별개 |
+| 전체 파일 업로드 (512MiB 이하) | 개발 PoC 구현 | `internal/httpapi`, `internal/blobstore` | 영상 대용량 재개/정합성은 추가 구현 |
+| SHA-256 content-addressed 원본 | 개발 PoC 구현 | `internal/blobstore` | 동시성/복구/블롭 접근 권한 시험 |
+| 폴더별 해시 중복 인식 | 개발 PoC 구현 | `internal/meta/jsonstore` (`CommitUpload`) | 업로드·복제·재시도·동시성 통합 시험 |
+| 기본 JPEG/PNG/GIF 프리뷰 | 개발 PoC 구현 | `internal/blobstore/preview.go` | HEIC/RAW/Live Photo/영상 미지원 검증 |
+| JSON 상태 파일 | 개발 PoC 구현 | `internal/meta/jsonstore` (`.system/state.json`) | 교체 전 migration/backup 계획 |
+| 폴더별 event/cursor | 개발 PoC 구현 | `internal/meta/jsonstore` | 장기간 offline 클라이언트/영속 cursor 검증 |
 | 정식 SQLite schema v1.4 | **설계만** | `docs/schema_v1.4.sql` | 실제 DB 저장/마이그레이션/장애 시험 |
 | 파일·DB atomic commit | **미구현** | `docs/ROADMAP.md` | crash/partial failure 재현 자동 테스트 |
-| 외장하드 분리·마운트 식별 | **부분 구현, 실기기 미검증** (볼륨 마커 + st_dev, 쓰기 직전 재확인, 503 `storage_unavailable`) | `internal/storage`, `server/main.go` | 디스크 unplug 시 fail-closed (Mac mini 실기기 E2E), 디스크 UUID 대조 |
+| 외장하드 분리·마운트 식별 | **부분 구현, 실기기 미검증** (볼륨 마커 + st_dev, 쓰기 직전 재확인, 503 `storage_unavailable`) | `internal/storage`, `internal/httpapi` (`storageReady`) | 디스크 unplug 시 fail-closed (Mac mini 실기기 E2E), 디스크 UUID 대조 |
 | 사용자 계정/Argon2id/세션 | **설계만** | `docs/ACCESS_CONTROL_v1.4.md` | 로그인/로그아웃/토큰 회수 테스트 |
 | 서버의 계정별 앨범 생성 제한 | **정책 함수만** | `internal/authz` | HTTP E2E 403 및 생성/소유자 test |
 | OWNER·읽기/쓰기/초대 | **정책 함수·설계만** | `internal/authz`, `docs/API_AUTH_v1.4.yaml` | E2E 초대/수락/철회/오너이전 |

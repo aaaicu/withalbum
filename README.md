@@ -23,9 +23,9 @@
 - **보안 경고:** HTTP 서버는 인증이 없으므로 의도적으로 `127.0.0.1`에만 바인딩됩니다. **LAN/인터넷에 공개하거나 대체할 수 없는 원본 사진의 단일 보관소로 사용하지 마세요.**
 
 <!-- 구현 범위 확인:
-server/main.go: JSON state.json을 읽고 쓰며 SQLite를 사용하지 않는다. 현재 전체 파일 한 번 업로드, MAX 512MiB.
-server/main.go: 자산 ID는 실제 SHA-256이며 목표 스키마의 랜덤 논리 ID와 다르다. 업로더의 identity도 신뢰할 수 있는 인증 주체에서 오지 않는다.
-server/main.go: 현재 예시 원본 다운로드 API는 folder_id/ACL 확인이 없어, 인증을 먼저 통합하지 않고 네트워크를 열면 심각한 정보 유출이 생긴다.
+internal/meta/jsonstore: JSON state.json을 읽고 쓰며 SQLite를 사용하지 않는다. 현재 전체 파일 한 번 업로드, MAX 512MiB.
+internal/httpapi: 자산 ID는 실제 SHA-256이며 목표 스키마의 랜덤 논리 ID와 다르다. 업로더의 identity도 신뢰할 수 있는 인증 주체에서 오지 않는다.
+internal/httpapi: 현재 예시 원본 다운로드 API는 folder_id/ACL 확인이 없어, 인증을 먼저 통합하지 않고 네트워크를 열면 심각한 정보 유출이 생긴다.
 SQLite 스키마와 YAML API 문서는 목표 규격으로만 분류할 것. 결과/HTTP 응답이 현재 구현과 다를 수 있다.
 이 패키지는 'v1.5 documentation/handoff'이고 서버 실행파일 기능이 v1.5로 향상되었다는 뜻이 아님.
 -->
@@ -271,12 +271,12 @@ CAS pool 원본에 대해 해시가 같더라도 멀티파일 Live Photo, 메타
 | `GET` | `/api/v1/assets/{assetID}/original` | 원본 다운로드 | **권한 없음** |
 | `GET` | `/api/v1/assets/{assetID}/preview` | 기초 프리뷰 | **권한 없음** |
 
-이 표의 경로는 실제 `server/main.go`를 기준으로 합니다. 설계 문서의 API(`docs/API_v1.2.yaml`, `docs/API_AUTH_v1.4.yaml`)와 **서로 다르므로 목표 명세를 구현 완료로 오해하지 마세요.**
+이 표의 경로는 실제 `internal/httpapi/httpapi.go`를 기준으로 합니다. 설계 문서의 API(`docs/API_v1.2.yaml`, `docs/API_AUTH_v1.4.yaml`)와 **서로 다르므로 목표 명세를 구현 완료로 오해하지 마세요.**
 
 **미디어 목표:** HEIC/HEIF, JPG, PNG, RAW, Live Photo(HEIC+MOV 묶음), MP4/MOV, 4K/HDR, EXIF 및 촬영 날짜 유지. 원본 바이트는 변환하지 않고 보존, 프리뷰만 별도 생성. 현재 JPEG/PNG/GIF 기초 이미지 디코딩/간이 JPEG 미리보기 외에는 구현돼 있지 않습니다. 영상 프리뷰·변환은 미구현입니다.
 
 <!-- API 개발 지시:
-server/main.go는 512MiB 일괄 업로드만 지원. 대용량 영상 업로드 재개, idempotency receipt, hash preflight 정합성 등은 미구현.
+internal/httpapi는 512MiB 일괄 업로드만 지원. 대용량 영상 업로드 재개, idempotency receipt, hash preflight 정합성 등은 미구현.
 차기 API에서 원본 다운로드는 단순 assets/{sha}만으로 접근하지 말고, 인증된 앨범 연결·역할을 검증.
 초대/관리/원본/프리뷰/이벤트 모든 핸들러가 인증 미들웨어를 통과해야 한다.
 새 OpenAPI 명세를 작성할 때 기존 API_v1.2+API_AUTH_v1.4의 차이를 조정하고 계약 테스트 작성.
@@ -340,9 +340,13 @@ GitHub에 곧바로 public push, Release 발행, 실제 원본 정리/삭제 등
 
 | 경로 | 역할 / 구현 상태 |
 |---|---|
-| `server/main.go` | **실행됨:** localhost Go HTTP PoC, 원본·해싱·동기화·기초 프리뷰, 현재 인증·SQLite 없음 |
-| `server/web/index.html` | **실행됨:** 내장 로컬 관리 UI; 관리자 인증 화면 아님 |
-| `server/main_test.go`, `server/dashboard_test.go`, `server/storage_test.go` | **테스트:** 현 PoC 동작 확인, 볼륨 소실 시 503 fail-closed, 프로덕션 안전성 테스트 아님 |
+| `server/main.go` | **실행됨:** 설정·기동만 (환경변수, `-init-storage`, 볼륨 검증, loopback 가드, 저장소 조립) |
+| `internal/httpapi/` | **실행됨:** localhost HTTP PoC 핸들러(health, folders, upload, sync, original/preview), 현재 인증 없음. `contract_test.go`는 메타데이터 저장소 구현과 무관한 HTTP 계약 테스트(상태코드·JSON 키·에러 코드) |
+| `internal/httpapi/web/index.html` | **실행됨:** 내장 로컬 관리 UI; 관리자 인증 화면 아님 |
+| `internal/meta/` | **실행됨:** 메타데이터 저장소 인터페이스 `MetadataStore`와 도메인 타입. `metatest/`는 구현 공용 적합성 테스트 |
+| `internal/meta/jsonstore/` | **실행됨(PoC):** `.system/state.json` 구현, 전역 mutex. SQLite 없음 |
+| `internal/blobstore/` | **실행됨:** 업로드 임시 저장(해시·크기·MIME), pool 승격(원자적 rename, 0400), JPEG 프리뷰 |
+| `server/main_test.go` 및 각 패키지 `*_test.go` | **테스트:** 현 PoC 동작 확인, 볼륨 소실 시 503 fail-closed, 프로덕션 안전성 테스트 아님 |
 | `internal/storage/` | **부분 구현:** 볼륨 마커 생성(`-init-storage`)/검증/쓰기 직전 재확인(st_dev). 실기기 미검증, 디스크 UUID 대조 없음 |
 | `internal/authz/policy.go`, `policy_test.go` | **부분 구현:** 역할 판정·단위 테스트. HTTP 서버 미연결 |
 | `go.mod` | Go 모듈 버전, GitHub 주소 정하면 `module` 변경 필요 |
