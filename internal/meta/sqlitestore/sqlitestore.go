@@ -1,0 +1,380 @@
+// Package sqlitestore is the meta.MetadataStore backed by the SQLite database
+// .system/withalbum.db (schema: internal/db/migrations).
+//
+// Writes are serialized by SQLite itself: every write method runs in one
+// BEGIN IMMEDIATE transaction (internal/db opens all transactions that way),
+// so there is no process-wide mutex. Reads never open a transaction, because
+// a BEGIN IMMEDIATE would take the write lock; they run as plain queries,
+// concurrently with writers under WAL.
+//
+// Compatibility with the PoC HTTP API: meta.Asset.ID and meta.Event.AssetID
+// are still the SHA-256 of the original. Internally each asset has a random
+// assets.asset_id; the store maps sha256 -> asset on every call.
+//
+// The PoC has no accounts yet. Open makes sure a locked local bootstrap
+// administrator exists and records it as the owner of every folder (the
+// schema requires an active owner). It cannot log in: its password_hash is
+// not a valid password hash. Account setup takes it over later.
+package sqlitestore
+
+import (
+	"context"
+	"crypto/rand"
+	"database/sql"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/aaaicu/withalbum/internal/blobstore"
+	"github.com/aaaicu/withalbum/internal/db"
+	"github.com/aaaicu/withalbum/internal/meta"
+	"github.com/aaaicu/withalbum/internal/storage"
+)
+
+// DBPath returns the database location inside a storage root.
+func DBPath(root string) string { return filepath.Join(root, ".system", "withalbum.db") }
+
+const (
+	// BootstrapLoginName is the login of the locked local administrator that
+	// owns folders while the server has no real accounts.
+	BootstrapLoginName = "admin"
+	// lockedPasswordHash is deliberately not a PHC string, so no password
+	// verifier can ever accept it.
+	lockedPasswordHash = "!locked"
+)
+
+// Store implements meta.MetadataStore.
+type Store struct {
+	db      *sql.DB
+	ownerID string // users.user_id of the bootstrap administrator
+}
+
+var _ meta.MetadataStore = (*Store)(nil)
+
+// Open opens (creating if missing) the database of a verified volume,
+// migrates it to the latest schema and ensures the bootstrap administrator.
+// It creates only .system inside the volume root.
+func Open(ctx context.Context, vol *storage.Volume) (*Store, error) {
+	if err := vol.Check(); err != nil {
+		return nil, err
+	}
+	if err := storage.MkdirIn(filepath.Join(vol.Root(), ".system")); err != nil {
+		return nil, err
+	}
+	path := DBPath(vol.Root())
+	// SQLite would create the file with the default 0644 mode; metadata
+	// (folder and file names) must not be world-readable. An empty file is a
+	// valid empty database, and SQLite gives its -wal/-shm files the same mode.
+	if f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0600); err == nil {
+		f.Close()
+	} else if !errors.Is(err, os.ErrExist) {
+		return nil, err
+	}
+	sqlDB, err := db.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := db.Migrate(ctx, sqlDB); err != nil {
+		sqlDB.Close()
+		return nil, err
+	}
+	s := &Store{db: sqlDB}
+	if s.ownerID, err = ensureBootstrapOwner(ctx, sqlDB); err != nil {
+		sqlDB.Close()
+		return nil, fmt.Errorf("bootstrap owner: %w", err)
+	}
+	return s, nil
+}
+
+// Close implements meta.MetadataStore.
+func (s *Store) Close() error { return s.db.Close() }
+
+func newID() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("%w: %w", meta.ErrIDGeneration, err)
+	}
+	return hex.EncodeToString(b), nil
+}
+
+func now() string { return time.Now().UTC().Format(time.RFC3339Nano) }
+
+// ensureBootstrapOwner returns the bootstrap administrator's user_id,
+// inserting the account on first use.
+func ensureBootstrapOwner(ctx context.Context, sqlDB *sql.DB) (string, error) {
+	const q = "SELECT user_id FROM users WHERE login_name = ?"
+	var id string
+	err := sqlDB.QueryRowContext(ctx, q, BootstrapLoginName).Scan(&id)
+	if err == nil || !errors.Is(err, sql.ErrNoRows) {
+		return id, err
+	}
+	newUserID, err := newID()
+	if err != nil {
+		return "", err
+	}
+	tx, err := sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+	// Re-check under the write lock: another process may have inserted it.
+	err = tx.QueryRowContext(ctx, q, BootstrapLoginName).Scan(&id)
+	if err == nil {
+		return id, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return "", err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO users
+		(user_id, login_name, display_name, password_hash, server_role, can_create_albums, status, created_at)
+		VALUES (?, ?, 'Administrator', ?, 'SERVER_ADMIN', 1, 'active', ?)`,
+		newUserID, BootstrapLoginName, lockedPasswordHash, now()); err != nil {
+		return "", err
+	}
+	return newUserID, tx.Commit()
+}
+
+// CreateFolder implements meta.MetadataStore.
+func (s *Store) CreateFolder(ctx context.Context, name string) (meta.Folder, error) {
+	id, err := newID()
+	if err != nil {
+		return meta.Folder{}, err
+	}
+	folder := meta.Folder{ID: id, Name: name, CreatedAt: now()}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return meta.Folder{}, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, "INSERT INTO folders (folder_id, folder_name, owner_user_id, created_at) VALUES (?, ?, ?, ?)",
+		folder.ID, folder.Name, s.ownerID, folder.CreatedAt); err != nil {
+		return meta.Folder{}, err
+	}
+	if _, err := tx.ExecContext(ctx, "INSERT INTO folder_sequences (folder_id, last_seq) VALUES (?, 0)", folder.ID); err != nil {
+		return meta.Folder{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return meta.Folder{}, err
+	}
+	return folder, nil
+}
+
+// ListFolders implements meta.MetadataStore.
+func (s *Store) ListFolders(ctx context.Context) ([]meta.Folder, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT folder_id, folder_name, created_at FROM folders ORDER BY created_at, folder_id")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	folders := []meta.Folder{}
+	for rows.Next() {
+		var f meta.Folder
+		if err := rows.Scan(&f.ID, &f.Name, &f.CreatedAt); err != nil {
+			return nil, err
+		}
+		folders = append(folders, f)
+	}
+	return folders, rows.Err()
+}
+
+// GetFolder implements meta.MetadataStore.
+func (s *Store) GetFolder(ctx context.Context, id string) (meta.Folder, error) {
+	var f meta.Folder
+	err := s.db.QueryRowContext(ctx, "SELECT folder_id, folder_name, created_at FROM folders WHERE folder_id = ?", id).
+		Scan(&f.ID, &f.Name, &f.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return meta.Folder{}, meta.ErrFolderNotFound
+	}
+	return f, err
+}
+
+// queryer is satisfied by *sql.DB and *sql.Tx.
+type queryer interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// lookupAsset returns the internal asset_id and the API view of the asset
+// whose original has the given SHA-256. The PoC creates at most one asset per
+// original; the oldest one wins should there ever be more.
+func lookupAsset(ctx context.Context, q queryer, sha string) (string, meta.Asset, error) {
+	var assetID string
+	a := meta.Asset{ID: sha}
+	err := q.QueryRowContext(ctx, `SELECT a.asset_id, a.original_filename, b.mime_type, b.bytes, a.preview_ready, a.created_at
+		FROM assets a JOIN blobs b ON b.sha256 = a.original_sha256
+		WHERE a.original_sha256 = ? ORDER BY a.rowid LIMIT 1`, sha).
+		Scan(&assetID, &a.Filename, &a.MimeType, &a.Bytes, &a.PreviewReady, &a.UploadedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", meta.Asset{}, meta.ErrAssetNotFound
+	}
+	if err != nil {
+		return "", meta.Asset{}, err
+	}
+	return assetID, a, nil
+}
+
+// GetAssetBySHA implements meta.MetadataStore.
+func (s *Store) GetAssetBySHA(ctx context.Context, sha string) (meta.Asset, error) {
+	_, a, err := lookupAsset(ctx, s.db, sha)
+	return a, err
+}
+
+// mediaKind maps a sniffed MIME type to assets.media_kind.
+func mediaKind(mime string) string {
+	switch {
+	case strings.HasPrefix(mime, "image/"):
+		return "image"
+	case strings.HasPrefix(mime, "video/"):
+		return "video"
+	}
+	return "other"
+}
+
+// CommitUpload implements meta.MetadataStore. Everything happens in one
+// BEGIN IMMEDIATE transaction: blob row (upsert), asset row with a random
+// asset_id (only for a new original), folder link, folder sequence bump and
+// the change event. Either all of it is committed or none of it.
+func (s *Store) CommitUpload(ctx context.Context, req meta.CommitRequest) (meta.CommitResult, error) {
+	sha := req.Asset.ID
+	newAssetID, err := newID()
+	if err != nil {
+		return meta.CommitResult{}, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return meta.CommitResult{}, err
+	}
+	defer tx.Rollback()
+
+	var one int
+	err = tx.QueryRowContext(ctx, "SELECT 1 FROM folders WHERE folder_id = ?", req.FolderID).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return meta.CommitResult{}, meta.ErrFolderNotFound
+	}
+	if err != nil {
+		return meta.CommitResult{}, err
+	}
+
+	ts := now()
+	result := meta.ResultLinked
+	assetID, asset, err := lookupAsset(ctx, tx, sha)
+	switch {
+	case err == nil:
+		var linked bool
+		err = tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM folder_assets WHERE folder_id = ? AND asset_id = ? AND removed_at IS NULL)",
+			req.FolderID, assetID).Scan(&linked)
+		if err != nil {
+			return meta.CommitResult{}, err
+		}
+		if linked {
+			return meta.CommitResult{Result: meta.ResultAlreadyPresent, Asset: asset}, nil
+		}
+	case errors.Is(err, meta.ErrAssetNotFound):
+		result = meta.ResultCreated
+		in := req.Asset
+		if _, err := tx.ExecContext(ctx, `INSERT INTO blobs (sha256, bytes, mime_type, relative_path, verified_at, created_at)
+			VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(sha256) DO NOTHING`,
+			sha, in.Bytes, in.MimeType, blobstore.PoolRelPath(sha), ts, ts); err != nil {
+			return meta.CommitResult{}, fmt.Errorf("insert blob: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO assets (asset_id, original_sha256, original_filename, media_kind, preview_ready, created_at)
+			VALUES (?, ?, ?, ?, ?, ?)`,
+			newAssetID, sha, in.Filename, mediaKind(in.MimeType), in.PreviewReady, ts); err != nil {
+			return meta.CommitResult{}, fmt.Errorf("insert asset: %w", err)
+		}
+		// Re-read so the result reflects the stored rows (an already present
+		// blob row keeps its own size and type).
+		if assetID, asset, err = lookupAsset(ctx, tx, sha); err != nil {
+			return meta.CommitResult{}, err
+		}
+	default:
+		return meta.CommitResult{}, err
+	}
+
+	// A link row can only exist here if it was removed earlier; re-adding
+	// revives it.
+	if _, err := tx.ExecContext(ctx, `INSERT INTO folder_assets (folder_id, asset_id, added_at, uploader_device_label)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(folder_id, asset_id) DO UPDATE SET removed_at = NULL, added_at = excluded.added_at,
+			uploader_device_label = excluded.uploader_device_label`,
+		req.FolderID, assetID, ts, req.DeviceID); err != nil {
+		return meta.CommitResult{}, fmt.Errorf("link asset: %w", err)
+	}
+	var seq int64
+	if err := tx.QueryRowContext(ctx, `INSERT INTO folder_sequences (folder_id, last_seq) VALUES (?, 1)
+		ON CONFLICT(folder_id) DO UPDATE SET last_seq = last_seq + 1 RETURNING last_seq`, req.FolderID).Scan(&seq); err != nil {
+		return meta.CommitResult{}, fmt.Errorf("next seq: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO folder_changes (folder_id, seq, event_type, asset_id, occurred_at, uploader_device_label)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		req.FolderID, seq, meta.EventAssetAdded, assetID, ts, req.DeviceID); err != nil {
+		return meta.CommitResult{}, fmt.Errorf("insert change: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return meta.CommitResult{}, err
+	}
+	return meta.CommitResult{Result: result, Asset: asset}, nil
+}
+
+// ListEvents implements meta.MetadataStore. It runs plain queries, not a
+// transaction; events and assets are append-only, so a concurrent commit can
+// only add events after the page, which HasMore then reports.
+func (s *Store) ListEvents(ctx context.Context, folderID string, cursor int64, limit int) (meta.EventPage, error) {
+	if limit <= 0 {
+		return meta.EventPage{}, meta.ErrInvalidLimit
+	}
+	if _, err := s.GetFolder(ctx, folderID); err != nil {
+		return meta.EventPage{}, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT c.seq, c.event_type, COALESCE(c.uploader_device_label, ''), c.occurred_at,
+			a.original_sha256, a.original_filename, b.mime_type, b.bytes, a.preview_ready, a.created_at
+		FROM folder_changes c
+		LEFT JOIN assets a ON a.asset_id = c.asset_id
+		LEFT JOIN blobs b ON b.sha256 = a.original_sha256
+		WHERE c.folder_id = ? AND c.seq > ? ORDER BY c.seq LIMIT ?`, folderID, cursor, limit)
+	if err != nil {
+		return meta.EventPage{}, err
+	}
+	defer rows.Close()
+	page := meta.EventPage{Events: []meta.Event{}, Assets: map[string]meta.Asset{}, NextCursor: cursor}
+	for rows.Next() {
+		e := meta.Event{FolderID: folderID}
+		var sha, filename, mime, uploadedAt sql.NullString
+		var size sql.NullInt64
+		var preview sql.NullBool
+		if err := rows.Scan(&e.Seq, &e.Kind, &e.UploaderDeviceID, &e.OccurredAt,
+			&sha, &filename, &mime, &size, &preview, &uploadedAt); err != nil {
+			return meta.EventPage{}, err
+		}
+		if !sha.Valid || !mime.Valid {
+			// folder_changes.asset_id has no foreign key; never skip an
+			// event silently, since clients would see a gap in seq.
+			return meta.EventPage{}, fmt.Errorf("folder %s event %d references a missing asset or blob", folderID, e.Seq)
+		}
+		e.AssetID = sha.String
+		page.Events = append(page.Events, e)
+		page.Assets[sha.String] = meta.Asset{ID: sha.String, Filename: filename.String, MimeType: mime.String,
+			Bytes: size.Int64, PreviewReady: preview.Bool, UploadedAt: uploadedAt.String}
+		page.NextCursor = e.Seq
+	}
+	if err := rows.Err(); err != nil {
+		return meta.EventPage{}, err
+	}
+	rows.Close()
+	if err := s.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM folder_changes WHERE folder_id = ? AND seq > ?)",
+		folderID, page.NextCursor).Scan(&page.HasMore); err != nil {
+		return meta.EventPage{}, err
+	}
+	return page, nil
+}
+
+// HasLegacyImport reports whether a state.json whose bytes hash to sourceSHA256
+// was already imported into this database (a legacy_imports row exists).
+func (s *Store) HasLegacyImport(ctx context.Context, sourceSHA256 string) (bool, error) {
+	var ok bool
+	err := s.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM legacy_imports WHERE source_sha256 = ?)", sourceSHA256).Scan(&ok)
+	return ok, err
+}

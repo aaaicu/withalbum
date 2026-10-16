@@ -30,9 +30,10 @@
 
 ## 현재 코드의 진짜 상태 (절대 혼동 금지)
 
-- `server/main.go`(기동) + `internal/httpapi`(핸들러) + `internal/meta/jsonstore` + `internal/blobstore`: 인증 없는 localhost 전용 Go PoC. **SQLite 미연동**, `.system/state.json` 사용(`meta.MetadataStore` 인터페이스 뒤). 512MiB 단일 요청 원본 업로드/초보적 프리뷰. 자산 식별자로 SHA-256을 사용하고 실제 ACL은 없음.
+- `server/main.go`(기동) + `internal/httpapi`(핸들러) + `internal/meta/sqlitestore` + `internal/blobstore`: 인증 없는 localhost 전용 Go PoC. 메타데이터는 SQLite `.system/withalbum.db`(`meta.MetadataStore` 인터페이스 뒤). 512MiB 단일 요청 원본 업로드/초보적 프리뷰. DB 내부 asset_id는 랜덤이지만 **API의 자산 식별자는 아직 SHA-256**이고 실제 ACL은 없음. 폴더 소유자는 로그인 불가한 bootstrap `admin` 계정.
+- `internal/meta/jsonstore`: 서버 기동에 쓰이지 않음(이관 소스 읽기용). state.json만 있는 저장소는 기동 거부, **state.json → SQLite 이관 미구현**.
 - `internal/authz`: 권한 함수와 테스트만 있으며 HTTP handler 미연결.
-- `internal/db`: SQLite 열기·PRAGMA·schema v1.4 마이그레이션 코드와 테스트만 있으며 **서버 기동·HTTP 미연결**. `docs/schema_v1.4.sql`은 마이그레이션 0001과 동일(정본은 `internal/db/migrations/`).
+- `internal/db`: SQLite 열기·PRAGMA·마이그레이션(0001 schema v1.4, 0002 이관 보조, 0003 `assets.preview_ready`). `docs/schema_v1.4.sql`은 마이그레이션 0001과 동일(정본은 `internal/db/migrations/`). 계정·세션·멤버·초대·감사 로그 테이블은 아직 미사용.
 - `docs/API_AUTH_v1.4.yaml`: **미구현 목표 설계**.
 - Flutter/iOS/Android, OAuth Drive, 외부 통신, 실시간 푸시, GUI DMG, 신뢰 가능한 백업 복원은 없음.
 - README v1.5는 **기획·인수인계 정리판**이고 새 기능 릴리스가 아님.

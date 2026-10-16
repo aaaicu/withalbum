@@ -50,9 +50,15 @@ func New(vol *storage.Volume) (*Store, error) {
 	return &Store{root: root}, nil
 }
 
+// PoolRelPath is PoolPath relative to the storage root, with forward slashes.
+// It is the path recorded in the metadata database (blobs.relative_path).
+func PoolRelPath(sha string) string {
+	return ".system/pool/" + sha[:2] + "/" + sha
+}
+
 // PoolPath is where the original with the given SHA-256 hex is stored.
 func (s *Store) PoolPath(sha string) string {
-	return filepath.Join(s.root, ".system", "pool", sha[:2], sha)
+	return filepath.Join(s.root, filepath.FromSlash(PoolRelPath(sha)))
 }
 
 // PreviewPath is where the JPEG preview of the given SHA-256 hex is stored.
