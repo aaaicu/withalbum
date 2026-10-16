@@ -17,14 +17,15 @@
 
 - **기능이 동작하는 코드:** Go 기반 localhost 전용 서버, 간단한 웹 페이지, 폴더 생성, 파일 업로드, SHA-256 중복 확인, 제한적인 이미지 프리뷰, 변경 이벤트 조회.
 - **부분 구현(실기기 미검증):** `internal/storage/` 저장소 볼륨 가드. 명시적으로 `-init-storage`한 디렉터리만 사용하고, 기동 시와 쓰기 직전에 볼륨 마커·장치 번호(st_dev)를 재확인해 외장 디스크가 빠지면 쓰기를 거부(503)합니다. 디스크 UUID 대조는 아직 없음.
-- **코드·테스트만 있는 기능:** `internal/db/`의 SQLite 열기(연결별 PRAGMA 강제)·schema v1.4 마이그레이션과 스키마 트리거 테스트. **서버 기동·HTTP에는 아직 연결되지 않음(M4 예정).** `internal/authz/`의 서버/앨범 권한 판정 함수와 단위 테스트. **실제 HTTP 요청에는 적용되지 않음.**
-- **설계만 완료:** SQLite 기반 메타데이터 저장소(HTTP 연결), 관리자 생성·로그인·세션·초대·폴더 ACL, Mac 설치 마법사, iOS/Android 앱, 역방향 모바일 동기화, Google Drive 어댑터, 장애 복구.
+- **부분 구현:** 메타데이터는 SQLite(`.system/withalbum.db`, `internal/meta/sqlitestore`)에 저장합니다. 업로드 1건(blob·자산·폴더 연결·시퀀스·이벤트)은 트랜잭션 하나로 커밋되고, 내부 자산 ID는 랜덤입니다(HTTP 응답의 `asset_id`는 호환을 위해 아직 SHA-256). 계정이 없으므로 모든 폴더의 소유자는 로그인할 수 없는 로컬 `admin` 계정입니다. **이전 버전의 `.system/state.json`만 있는 저장소는 기동을 거부합니다(파일은 변경하지 않음, 이관 명령은 후속 M5).**
+- **코드·테스트만 있는 기능:** `internal/authz/`의 서버/앨범 권한 판정 함수와 단위 테스트. **실제 HTTP 요청에는 적용되지 않음.**
+- **설계만 완료:** state.json → SQLite 이관, 관리자 생성·로그인·세션·초대·폴더 ACL, Mac 설치 마법사, iOS/Android 앱, 역방향 모바일 동기화, Google Drive 어댑터, 장애 복구.
 - **아직 없음:** 서명·공증된 DMG, 정식 Google Drive OAuth 연결, 모바일 앱, 프로덕션 안정성 보장.
 - **보안 경고:** HTTP 서버는 인증이 없으므로 의도적으로 `127.0.0.1`에만 바인딩됩니다. **LAN/인터넷에 공개하거나 대체할 수 없는 원본 사진의 단일 보관소로 사용하지 마세요.**
 
 <!-- 구현 범위 확인:
-internal/meta/jsonstore: JSON state.json을 읽고 쓰며 SQLite를 사용하지 않는다. 현재 전체 파일 한 번 업로드, MAX 512MiB.
-internal/httpapi: 자산 ID는 실제 SHA-256이며 목표 스키마의 랜덤 논리 ID와 다르다. 업로더의 identity도 신뢰할 수 있는 인증 주체에서 오지 않는다.
+internal/meta/sqlitestore: 서버가 쓰는 메타데이터 저장소. internal/meta/jsonstore는 서버 기동에 쓰이지 않고 이관 소스 읽기용으로만 남아 있다. 현재 전체 파일 한 번 업로드, MAX 512MiB.
+internal/httpapi: API에 노출되는 자산 ID는 아직 SHA-256이다(DB 내부 assets.asset_id는 랜덤, sha→asset 조회). 무인증 /assets/{sha} 경로는 M10에서 제거. 업로더의 identity도 신뢰할 수 있는 인증 주체에서 오지 않는다.
 internal/httpapi: 현재 예시 원본 다운로드 API는 folder_id/ACL 확인이 없어, 인증을 먼저 통합하지 않고 네트워크를 열면 심각한 정보 유출이 생긴다.
 SQLite 스키마와 YAML API 문서는 목표 규격으로만 분류할 것. 결과/HTTP 응답이 현재 구현과 다를 수 있다.
 이 패키지는 'v1.5 documentation/handoff'이고 서버 실행파일 기능이 v1.5로 향상되었다는 뜻이 아님.
@@ -155,7 +156,7 @@ flowchart TD
     Storage --> Hosted[SelfHostedAdapter: 로그인 + REST + 앨범 cursor]
     Storage --> Drive[GoogleDriveAdapter: OAuth + Drive API]
     Hosted --> Go[WithAlbum Go Server + 웹 관리]
-    Go --> DB[(SQLite: 목표 구현)]
+    Go --> DB[(SQLite: 부분 구현)]
     Go --> CAS[(외장 SSD/HDD · 보호된 원본)]
     Drive --> GD[(사용자의 Google Drive)]
 ```
@@ -225,7 +226,7 @@ Google Drive 전체 제약과 공개 사용자 안내 문구는 [GOOGLE_DRIVE_MO
 - 상세 정책: [ACCESS_CONTROL_v1.4.md](docs/ACCESS_CONTROL_v1.4.md)
 - 순수 정책 함수(구현됨, **미연동**): [`internal/authz/policy.go`](internal/authz/policy.go)
 - 계정·초대 API 목표: [`docs/API_AUTH_v1.4.yaml`](docs/API_AUTH_v1.4.yaml)
-- SQLite 스키마: [`docs/schema_v1.4.sql`](docs/schema_v1.4.sql) (정본: `internal/db/migrations/`, 서버 미연결)
+- SQLite 스키마: [`docs/schema_v1.4.sql`](docs/schema_v1.4.sql) (정본: `internal/db/migrations/`, 0003에서 `assets.preview_ready` 추가)
 
 ## 5. 저장 엔진 · CAS · 원본 보호
 
@@ -236,7 +237,7 @@ Google Drive 전체 제약과 공개 사용자 안내 문구는 [GOOGLE_DRIVE_MO
 ```text
 WithAlbumRoot/
 ├── .system/
-│   ├── withalbum.db                # 목표 SQLite DB: 마이그레이션 코드만 있고 서버는 아직 사용 안 함
+│   ├── withalbum.db                # SQLite 메타데이터 DB (WAL, 0600). 새로 초기화한 저장소에서 자동 생성
 │   ├── incoming/                   # 불완전 업로드 격리 영역
 │   ├── pool/<hash-prefix>/<sha256> # 보호된 원본 blob (현재 PoC 존재)
 │   ├── previews/                   # 경량 이미지·영상 프리뷰
@@ -244,7 +245,7 @@ WithAlbumRoot/
 └── Imports/                        # Finder에서 직접 놓는 안전한 가져오기 영역 (미구현)
 ```
 
-현재 프로토타입은 SQLite가 아닌 `.system/state.json`을 사용하고, 일부 원본 풀·기본 프리뷰 디렉터리만 만듭니다. 목표 DB는 사용자/기기/세션/앨범/멤버/초대/blobs/assets/폴더 연결/이벤트/감사 로그를 다룹니다.
+현재 서버는 `.system/withalbum.db`에 폴더·자산·blob·폴더 연결·시퀀스·이벤트를 저장하고, 원본 풀·기본 프리뷰 디렉터리를 만듭니다. 사용자/기기/세션/멤버/초대/감사 로그 테이블은 스키마만 있습니다. 이전 버전의 `.system/state.json`이 있는 저장소에서는 기동을 거부하며, 그 데이터를 읽거나 바꾸지 않습니다(이관 명령은 후속). 목표 DB는 사용자/기기/세션/앨범/멤버/초대/blobs/assets/폴더 연결/이벤트/감사 로그를 다룹니다.
 
 **DB는 로컬로 연결된 디스크(내장 또는 USB/Thunderbolt 외장)에만 두세요.** SQLite WAL 모드는 SMB/NFS 같은 네트워크 파일시스템(NAS 공유 폴더 마운트)에서 잠금이 보장되지 않아 DB가 손상될 수 있습니다.
 
@@ -346,10 +347,11 @@ GitHub에 곧바로 public push, Release 발행, 실제 원본 정리/삭제 등
 | `internal/httpapi/` | **실행됨:** localhost HTTP PoC 핸들러(health, folders, upload, sync, original/preview), 현재 인증 없음. `contract_test.go`는 메타데이터 저장소 구현과 무관한 HTTP 계약 테스트(상태코드·JSON 키·에러 코드) |
 | `internal/httpapi/web/index.html` | **실행됨:** 내장 로컬 관리 UI; 관리자 인증 화면 아님 |
 | `internal/meta/` | **실행됨:** 메타데이터 저장소 인터페이스 `MetadataStore`와 도메인 타입. `metatest/`는 구현 공용 적합성 테스트 |
-| `internal/meta/jsonstore/` | **실행됨(PoC):** `.system/state.json` 구현, 전역 mutex. SQLite 없음 |
+| `internal/meta/sqlitestore/` | **실행됨(부분 구현):** SQLite `MetadataStore`. 쓰기는 `BEGIN IMMEDIATE` 트랜잭션 하나(전역 mutex 없음), 읽기는 트랜잭션 없이 조회. 랜덤 내부 asset_id, 잠금된 로컬 bootstrap 관리자(`admin`)가 모든 폴더 소유 |
+| `internal/meta/jsonstore/` | **서버 미사용:** 이전 버전의 `.system/state.json` 구현. 이관 소스 읽기용으로만 유지 |
 | `internal/blobstore/` | **실행됨:** 업로드 임시 저장(해시·크기·MIME), pool 승격(원자적 rename, 0400), JPEG 프리뷰 |
 | `server/main_test.go` 및 각 패키지 `*_test.go` | **테스트:** 현 PoC 동작 확인, 볼륨 소실 시 503 fail-closed, 프로덕션 안전성 테스트 아님 |
-| `internal/db/` | **코드·테스트만(서버 미연결):** `Open`(모든 연결에 foreign_keys/WAL/synchronous=FULL/busy_timeout, 트랜잭션은 BEGIN IMMEDIATE), `Migrate`(`migrations/*.sql` 내장, `PRAGMA user_version`, 상위 버전 거부, integrity_check), 스키마 트리거·FK 테스트 |
+| `internal/db/` | **실행됨:** `Open`(모든 연결에 foreign_keys/WAL/synchronous=FULL/busy_timeout, 트랜잭션은 BEGIN IMMEDIATE), `Migrate`(`migrations/*.sql` 내장, `PRAGMA user_version`, 상위 버전 거부, integrity_check), 스키마 트리거·FK 테스트 |
 | `internal/storage/` | **부분 구현:** 볼륨 마커 생성(`-init-storage`)/검증/쓰기 직전 재확인(st_dev). 실기기 미검증, 디스크 UUID 대조 없음 |
 | `internal/authz/policy.go`, `policy_test.go` | **부분 구현:** 역할 판정·단위 테스트. HTTP 서버 미연결 |
 | `go.mod` | Go 모듈 버전, GitHub 주소 정하면 `module` 변경 필요 |
@@ -369,7 +371,7 @@ GitHub에 곧바로 public push, Release 발행, 실제 원본 정리/삭제 등
 | **`docs/DECISIONS_v1.5.md`** | 변경된 사용자 요구·버림/유지한 방향 기록 |
 | **`docs/PRODUCT_ARCHITECTURE_v1.4.md`** | 최신 통합 제품 정의·우선순위 |
 | **`docs/ACCESS_CONTROL_v1.4.md`** | 계정, OWNER, 초대, 읽기/쓰기, 정보누출 예외까지 상세 |
-| **`docs/schema_v1.4.sql`** | SQLite DDL v1.4. 마이그레이션 0001로 적용되며 정본은 `internal/db/migrations/`. 아직 HTTP 서버가 쓰는 DB 아님 |
+| **`docs/schema_v1.4.sql`** | SQLite DDL v1.4. 마이그레이션 0001로 적용되며 정본은 `internal/db/migrations/`(0002 이관 보조, 0003 `assets.preview_ready`) |
 | **`docs/API_AUTH_v1.4.yaml`** | **목표** 인증/초대/권한 API 초안 |
 | **`docs/API_v1.2.yaml`** | 초기 **목표** 업로드/동기화 API 초안, PhotoHub 표기 일부 잔존 |
 | **`docs/GOOGLE_DRIVE_MODE_v1.3.md`** | OAuth·공유 폴더·Drive 제약/PoC 실험 계획 |

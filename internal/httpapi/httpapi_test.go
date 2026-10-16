@@ -13,6 +13,7 @@ import (
 
 	"github.com/aaaicu/withalbum/internal/meta"
 	"github.com/aaaicu/withalbum/internal/meta/jsonstore"
+	"github.com/aaaicu/withalbum/internal/meta/sqlitestore"
 	"github.com/aaaicu/withalbum/internal/storage"
 )
 
@@ -25,8 +26,21 @@ func openJSONStore(t *testing.T, vol *storage.Volume) meta.MetadataStore {
 	return s
 }
 
+func openSQLiteStore(t *testing.T, vol *storage.Volume) meta.MetadataStore {
+	t.Helper()
+	s, err := sqlitestore.Open(t.Context(), vol)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
 func TestContractJSONStore(t *testing.T) {
 	runContract(t, openJSONStore)
+}
+
+func TestContractSQLiteStore(t *testing.T) {
+	runContract(t, openSQLiteStore)
 }
 
 // TestJSONStoreFailClosedKeepsStateFile checks the jsonstore-specific part of
@@ -88,7 +102,7 @@ func TestHealthDoesNotLeakStorageDetails(t *testing.T) {
 // TestUploadAndDeltaSyncOverRealHTTP runs one upload/sync/preview round trip
 // through a real listener rather than a ResponseRecorder.
 func TestUploadAndDeltaSyncOverRealHTTP(t *testing.T) {
-	env := newContractEnv(t, openJSONStore)
+	env := newContractEnv(t, openSQLiteStore)
 	server := httptest.NewServer(env.Handler)
 	defer server.Close()
 	res, err := http.Post(server.URL+"/api/v1/folders", "application/json", strings.NewReader(`{"name":"family"}`))

@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -16,7 +18,9 @@ import (
 
 	"github.com/aaaicu/withalbum/internal/blobstore"
 	"github.com/aaaicu/withalbum/internal/httpapi"
+	"github.com/aaaicu/withalbum/internal/meta"
 	"github.com/aaaicu/withalbum/internal/meta/jsonstore"
+	"github.com/aaaicu/withalbum/internal/meta/sqlitestore"
 	"github.com/aaaicu/withalbum/internal/storage"
 )
 
@@ -44,7 +48,9 @@ func openStorageHint(root string, err error) string {
 	case errors.Is(err, storage.ErrNotDirectory):
 		return fmt.Sprintf("storage root %q is not a directory.", root)
 	case errors.Is(err, storage.ErrNotInitialized):
-		if _, statErr := os.Stat(jsonstore.StatePath(root)); statErr == nil {
+		_, stateErr := os.Stat(jsonstore.StatePath(root))
+		_, dbErr := os.Stat(sqlitestore.DBPath(root))
+		if stateErr == nil || dbErr == nil {
 			return fmt.Sprintf("existing WithAlbum data detected in %q but the volume is not registered. Confirm this is the right disk, then run: withalbum-server -init-storage (existing data is kept).", root)
 		}
 		return fmt.Sprintf("storage root %q is not initialized. Confirm the path is on the intended disk, then run once: withalbum-server -init-storage", root)
@@ -56,6 +62,67 @@ func openStorageHint(root string, err error) string {
 		return fmt.Sprintf("storage root %q is not writable (read-only mount or permissions).", root)
 	}
 	return fmt.Sprintf("cannot open storage root %q.", root)
+}
+
+// errUnmigratedState means the volume holds PoC metadata (.system/state.json)
+// that has not been imported into SQLite. The server refuses to start rather
+// than ignore or modify that data.
+var errUnmigratedState = errors.New("unmigrated legacy metadata (.system/state.json)")
+
+// fileExists reports whether path exists. Errors other than "not exist" are
+// returned so that an unreadable path fails closed.
+func fileExists(path string) (bool, error) {
+	_, err := os.Lstat(path)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return false, err
+}
+
+// openMetadata picks the metadata store for a verified volume:
+//
+//   - .system/withalbum.db exists: open it (SQLite).
+//   - only .system/state.json exists: refuse with errUnmigratedState and
+//     touch nothing; importing it is a separate, explicit step.
+//   - neither exists: new install, create the SQLite database.
+//
+// If both exist, state.json must already be recorded as imported
+// (legacy_imports holds its SHA-256); otherwise it is refused as well, so
+// data in an unimported state.json is never silently ignored.
+func openMetadata(ctx context.Context, vol *storage.Volume) (meta.MetadataStore, error) {
+	statePath := jsonstore.StatePath(vol.Root())
+	hasDB, err := fileExists(sqlitestore.DBPath(vol.Root()))
+	if err != nil {
+		return nil, err
+	}
+	hasState, err := fileExists(statePath)
+	if err != nil {
+		return nil, err
+	}
+	if hasState && !hasDB {
+		return nil, errUnmigratedState
+	}
+	store, err := sqlitestore.Open(ctx, vol)
+	if err != nil {
+		return nil, err
+	}
+	if hasState {
+		b, err := os.ReadFile(statePath)
+		if err != nil {
+			store.Close()
+			return nil, err
+		}
+		sum := sha256.Sum256(b)
+		imported, err := store.HasLegacyImport(ctx, hex.EncodeToString(sum[:]))
+		if err != nil || !imported {
+			store.Close()
+			return nil, errors.Join(errUnmigratedState, err)
+		}
+	}
+	return store, nil
 }
 
 func main() {
@@ -92,15 +159,21 @@ func main() {
 	if err != nil {
 		log.Fatalf("STORAGE: %s (%v)", openStorageHint(root, err), err)
 	}
+	// Decide on the metadata store before creating anything else in .system.
+	metadata, err := openMetadata(context.Background(), vol)
+	if errors.Is(err, errUnmigratedState) {
+		log.Fatalf("METADATA: %q holds metadata from an earlier version (.system/state.json) that has not been migrated to SQLite. "+
+			"This version does not read it and refuses to start; nothing was changed. "+
+			"Keep running the previous version until a migration command (migrate-legacy) is available.", root)
+	}
+	if err != nil {
+		log.Fatalf("METADATA: cannot open %s: %v", sqlitestore.DBPath(root), err)
+	}
+	defer metadata.Close()
 	blobs, err := blobstore.New(vol)
 	if err != nil {
 		log.Fatal(err)
 	}
-	metadata, err := jsonstore.Open(vol)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer metadata.Close()
 	api := httpapi.New(httpapi.Config{Volume: vol, Meta: metadata, Blobs: blobs, Version: version})
 	addr := os.Getenv("WITHALBUM_LISTEN")
 	if addr == "" {

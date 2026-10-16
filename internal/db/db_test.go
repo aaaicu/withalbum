@@ -38,8 +38,8 @@ func TestEmbeddedMigrationsAreContiguous(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ms) != 2 || LatestVersion() != 2 {
-		t.Fatalf("got %d migrations, LatestVersion %d; want 2", len(ms), LatestVersion())
+	if len(ms) != 3 || LatestVersion() != 3 {
+		t.Fatalf("got %d migrations, LatestVersion %d; want 3", len(ms), LatestVersion())
 	}
 }
 
@@ -127,8 +127,8 @@ func TestMigrateNewDatabase(t *testing.T) {
 	sqlDB := openMigrated(t)
 	ctx := context.Background()
 	v, err := SchemaVersion(ctx, sqlDB)
-	if err != nil || v != 2 {
-		t.Fatalf("user_version = %d, %v; want 2", v, err)
+	if err != nil || v != LatestVersion() {
+		t.Fatalf("user_version = %d, %v; want %d", v, err, LatestVersion())
 	}
 	for _, table := range []string{
 		"users", "devices", "auth_sessions", "folders", "folder_members",
@@ -141,7 +141,7 @@ func TestMigrateNewDatabase(t *testing.T) {
 			t.Errorf("table %s: count=%d err=%v", table, n, err)
 		}
 	}
-	for _, tc := range [][2]string{{"folder_assets", "uploader_device_label"}, {"folder_changes", "uploader_device_label"}} {
+	for _, tc := range [][2]string{{"folder_assets", "uploader_device_label"}, {"folder_changes", "uploader_device_label"}, {"assets", "preview_ready"}} {
 		var n int
 		if err := sqlDB.QueryRow("SELECT count(*) FROM pragma_table_info(?) WHERE name=?", tc[0], tc[1]).Scan(&n); err != nil || n != 1 {
 			t.Errorf("column %s.%s missing: %v", tc[0], tc[1], err)
@@ -168,7 +168,7 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	if before != after {
 		t.Fatal("schema changed on re-run")
 	}
-	if v, _ := SchemaVersion(ctx, sqlDB); v != 2 {
+	if v, _ := SchemaVersion(ctx, sqlDB); v != LatestVersion() {
 		t.Fatalf("user_version = %d", v)
 	}
 }
@@ -188,7 +188,7 @@ func TestMigrateAfterReopen(t *testing.T) {
 	if err := Migrate(ctx, again); err != nil {
 		t.Fatal(err)
 	}
-	if v, _ := SchemaVersion(ctx, again); v != 2 {
+	if v, _ := SchemaVersion(ctx, again); v != LatestVersion() {
 		t.Fatalf("user_version = %d", v)
 	}
 }
