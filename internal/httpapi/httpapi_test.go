@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aaaicu/withalbum/internal/legacyimport"
 	"github.com/aaaicu/withalbum/internal/meta"
 	"github.com/aaaicu/withalbum/internal/meta/jsonstore"
 	"github.com/aaaicu/withalbum/internal/meta/sqlitestore"
@@ -41,6 +42,24 @@ func TestContractJSONStore(t *testing.T) {
 
 func TestContractSQLiteStore(t *testing.T) {
 	runContract(t, openSQLiteStore)
+}
+
+// openImportedSQLiteStore opens a database produced by migrate-legacy from an
+// empty PoC state.json, so the contract also covers imported databases.
+func openImportedSQLiteStore(t *testing.T, vol *storage.Volume) meta.MetadataStore {
+	t.Helper()
+	state := []byte(`{"folders":{},"assets":{},"links":{},"events":{},"next_seq":{}}`)
+	if err := os.WriteFile(jsonstore.StatePath(vol.Root()), state, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := legacyimport.Run(t.Context(), vol, legacyimport.Options{Apply: true}); err != nil {
+		t.Fatalf("import: %v (%v)", err, r.Problems)
+	}
+	return openSQLiteStore(t, vol)
+}
+
+func TestContractImportedSQLiteStore(t *testing.T) {
+	runContract(t, openImportedSQLiteStore)
 }
 
 // TestJSONStoreFailClosedKeepsStateFile checks the jsonstore-specific part of
