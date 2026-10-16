@@ -1,0 +1,11 @@
+# Used when someone chooses "Generate release notes" in the GitHub release UI.
+changelog:
+  categories:
+    - title: '✨ 새로운 기능'
+      labels: ['feature', 'enhancement']
+    - title: '🐛 버그 수정'
+      labels: ['bug', 'fix']
+    - title: '🔐 보안 변경'
+      labels: ['security']
+    - title: '🧰 기타 변경'
+      labels: ['*']

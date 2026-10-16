@@ -1,0 +1,46 @@
+# 위드앨범 v1.5 구현 현황 / 품질 게이트
+
+> v1.5는 **문서·통합 인수인계 버전**입니다. Go 애플리케이션의 기능 버전이 아닙니다. 목록에서 `구현`은 현재 저장소에 코드가 존재한다는 뜻이며, 제품 사용 안전성을 보증하지 않습니다.
+
+| 기능 | 현 상태 | 소스 / 근거 | 완료 판정시 요구 증거 |
+|---|---|---|---|
+| Go 로컬 HTTP 서버 | 개발 PoC 구현 | `server/main.go` | 개발용 로컬 실행·테스트 |
+| 로컬 관리 UI | 개발 PoC 구현 | `server/web/index.html` | 테스트 화면 조회, 계정 기반 UI는 별개 |
+| 전체 파일 업로드 (512MiB 이하) | 개발 PoC 구현 | `server/main.go` | 영상 대용량 재개/정합성은 추가 구현 |
+| SHA-256 content-addressed 원본 | 개발 PoC 구현 | `server/main.go` | 동시성/복구/블롭 접근 권한 시험 |
+| 폴더별 해시 중복 인식 | 개발 PoC 구현 | `server/main.go` | 업로드·복제·재시도·동시성 통합 시험 |
+| 기본 JPEG/PNG/GIF 프리뷰 | 개발 PoC 구현 | `server/main.go` | HEIC/RAW/Live Photo/영상 미지원 검증 |
+| JSON 상태 파일 | 개발 PoC 구현 | `.system/state.json` 생성 코드 | 교체 전 migration/backup 계획 |
+| 폴더별 event/cursor | 개발 PoC 구현 | `server/main.go` | 장기간 offline 클라이언트/영속 cursor 검증 |
+| 정식 SQLite schema v1.4 | **설계만** | `docs/schema_v1.4.sql` | 실제 DB 저장/마이그레이션/장애 시험 |
+| 파일·DB atomic commit | **미구현** | `docs/ROADMAP.md` | crash/partial failure 재현 자동 테스트 |
+| 외장하드 분리·마운트 식별 | **미구현** | `docs/ROADMAP.md` | 디스크 unplug 시 fail-closed |
+| 사용자 계정/Argon2id/세션 | **설계만** | `docs/ACCESS_CONTROL_v1.4.md` | 로그인/로그아웃/토큰 회수 테스트 |
+| 서버의 계정별 앨범 생성 제한 | **정책 함수만** | `internal/authz` | HTTP E2E 403 및 생성/소유자 test |
+| OWNER·읽기/쓰기/초대 | **정책 함수·설계만** | `internal/authz`, `docs/API_AUTH_v1.4.yaml` | E2E 초대/수락/철회/오너이전 |
+| 보호된 원본·프리뷰 다운로드 | **미구현** | 현재 공개 PoC 다운로드 | 인증된 album-asset 범위 검사·IDOR |
+| 원격 HTTPS/LAN 페어링 | **미구현** | `SECURITY.md` | 실제 Mac/mobile 인증서 검증 |
+| iOS/Android 앱 · Share Sheet | **미구현** | `docs/PRODUCT_ARCHITECTURE_v1.4.md` | 두 OS 실기기 흐름 |
+| 송신 큐/복구/스마트 프리뷰 | **설계만** | `docs/CLIENT_SYNC_STATES.md` | 실패·전송 영수증·정리 안전 시험 |
+| 역방향 동기화 모바일 | **설계만** | `docs/CLIENT_SYNC_STATES.md` | 다중 유저 event cursor 검증 |
+| Google Drive 모드 | **설계만** | `docs/GOOGLE_DRIVE_MODE_v1.3.md` | A/B 개인 Google 계정 PoC 검증 |
+| macOS DMG GUI · 공증 | **미구현** | `docs/INSTALL_MACOS.md` | Apple Silicon 실기기 설치·서명 검증 |
+| Linux/Pi용 소스 크로스빌드 | **CI 설정 존재** | `.github/workflows` | 실제 CI 성공·실기기 실행은 별개 |
+| GitHub Releases 자동화 | **설정 존재** | `.goreleaser.yaml` | 실제 tag dry-run·asset·checksums test |
+| 백업/복원 및 안전한 업데이트 | **미구현** | `docs/ROADMAP.md` | 복원 훈련/rollback 실험 |
+
+## 필수 권한 인수 기준
+
+- USER 생성권 기본 차단, 오너 1명, 초대 수락 전 조회 거부.
+- VIEWER 업로드 거부, UPLOADER 목록/프리뷰/원본/해시 existence API 거부, CONTRIBUTOR 타인 삭제/초대 거부.
+- SERVER_ADMIN이 멤버 아닌 앨범 API에서 원본을 읽지 못한다.
+- 모든 서버 다운로드에서 folder-asset 연결 확인; role 해제 즉시 새 요청 거부.
+- Google Drive는 같은 `UPLOADER` 보장을 하지 못하므로 해당 선택지 제거.
+
+## 데이터 안정성 인수 기준
+
+- 디스크 분리·꽉 참·응답 유실·서버 SIGKILL·중복 동시 업로드 후 일관성.
+- 미완료 스테이징 파일의 재시도 또는 안전 정리, 업로드 영수증의 멱등성.
+- SQLite/Blobs 분리 커밋 오류에도 안전한 재조정 수단 제공.
+- macOS 외장 디스크 마운트 지점 우발적 재생성으로 내부 디스크에 쓰지 않음.
+- 2차 백업 복원 절차, 유실 시 오류 표시; 원본 삭제는 검증 후에만.

@@ -1,0 +1,47 @@
+# GoReleaser v2. This currently publishes an INSECURE LOCAL PROTOTYPE only.
+version: 2
+project_name: withalbum-server
+builds:
+  - id: withalbum-server
+    main: ./server
+    binary: withalbum-server
+    env:
+      - CGO_ENABLED=0
+    targets:
+      - darwin_arm64
+      - darwin_amd64_v1
+      - linux_amd64_v1
+      - linux_arm64
+      - linux_arm_7
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+archives:
+  - id: withalbum-archives
+    formats: [tar.gz]
+    name_template: "withalbum-server_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ with .Arm }}v{{ . }}{{ end }}"
+    format_overrides:
+      - goos: darwin
+        formats: [zip]
+    files:
+      - LICENSE
+      - README.md
+      - src: docs/INSTALL_MACOS.md
+        dst: docs
+      - src: docs/INSTALL_LINUX.md
+        dst: docs
+      - src: scripts/install-macos.sh
+        dst: scripts
+      - src: scripts/install-linux.sh
+        dst: scripts
+checksum:
+  name_template: checksums.txt
+changelog:
+  use: git
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+release:
+  prerelease: auto

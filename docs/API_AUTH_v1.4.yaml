@@ -1,0 +1,245 @@
+openapi: 3.1.0
+info:
+  title: WithAlbum Self-Hosted Identity and Authorization API
+  version: 1.4.0-draft
+  description: >-
+    Draft target endpoints and access-control contract. NOT implemented in the
+    current Go proof-of-concept. All resource access is denied by default.
+servers:
+  - url: https://withalbum-server.local.example
+security:
+  - bearerAuth: []
+tags:
+  - name: Auth
+  - name: Server Admin
+  - name: Albums
+  - name: Invitations
+  - name: Assets
+paths:
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      security: []
+      summary: Authenticate against one self-hosted server (rate-limited)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [login_name, password, device_name, platform]
+              properties:
+                login_name: {type: string}
+                password: {type: string, format: password}
+                device_name: {type: string}
+                platform: {type: string, enum: [ios, android, macos, web]}
+      responses:
+        '200': {description: Access token and revocable device session}
+        '401': {description: Invalid credentials or disabled account}
+        '429': {description: Rate limited}
+  /api/v1/auth/refresh:
+    post:
+      tags: [Auth]
+      security: []
+      summary: Rotate a device refresh token and issue a fresh access token
+      responses:
+        '200': {description: Rotated credentials}
+        '401': {description: Expired or revoked refresh token}
+  /api/v1/auth/logout:
+    post:
+      tags: [Auth]
+      summary: Revoke current device session
+      responses:
+        '204': {description: Session revoked}
+  /api/v1/admin/users:
+    post:
+      tags: [Server Admin]
+      summary: Create or approve a user account (SERVER_ADMIN only)
+      responses:
+        '201': {description: User provisioned}
+        '403': {description: Not server admin}
+    get:
+      tags: [Server Admin]
+      summary: List server accounts (SERVER_ADMIN only)
+      responses:
+        '200': {description: Account list}
+  /api/v1/admin/users/{user_id}/permissions:
+    patch:
+      tags: [Server Admin]
+      summary: Grant or revoke album creation and other server role permissions
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+      responses:
+        '200': {description: Updated server permissions}
+        '403': {description: Not server admin}
+  /api/v1/folders:
+    post:
+      tags: [Albums]
+      summary: Create a folder; authenticated creator becomes the only owner
+      description: Requires SERVER_ADMIN or can_create_albums=true; membership alone never authorizes creation.
+      responses:
+        '201': {description: Created album and assigned owner}
+        '403': {description: No album-creation permission}
+    get:
+      tags: [Albums]
+      summary: List only albums owned by or shared with current user
+      responses:
+        '200': {description: Filtered album list including effective role only}
+  /api/v1/folders/{folder_id}:
+    get:
+      tags: [Albums]
+      summary: Get minimal metadata if owner or member, including UPLOADER
+      parameters:
+        - $ref: '#/components/parameters/FolderID'
+      responses:
+        '200': {description: Album name, role, effective capabilities}
+        '404': {description: Folder not found or not accessible}
+    delete:
+      tags: [Albums]
+      summary: Delete or archive album (OWNER only)
+      parameters:
+        - $ref: '#/components/parameters/FolderID'
+      responses:
+        '204': {description: Archived/deleted under retention policy}
+        '403': {description: Not owner}
+  /api/v1/folders/{folder_id}/invitations:
+    post:
+      tags: [Invitations]
+      summary: Invite a registered user, OWNER only
+      description: Target must be an existing approved server account; cannot auto-create an unapproved account.
+      parameters:
+        - $ref: '#/components/parameters/FolderID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [invited_user_id, role]
+              properties:
+                invited_user_id: {type: string}
+                role: {type: string, enum: [VIEWER, UPLOADER, CONTRIBUTOR]}
+      responses:
+        '201': {description: Pending invitation created}
+        '403': {description: Not owner}
+        '404': {description: Invitee not eligible or album not accessible}
+  /api/v1/invitations:
+    get:
+      tags: [Invitations]
+      summary: List pending invitations addressed to current account
+      responses:
+        '200': {description: Own invitations only}
+  /api/v1/invitations/{invitation_id}/accept:
+    post:
+      tags: [Invitations]
+      summary: Accept a valid invitation as its named recipient
+      parameters:
+        - $ref: '#/components/parameters/InvitationID'
+      responses:
+        '200': {description: Membership created atomically}
+        '403': {description: Invitee mismatch or not eligible}
+        '410': {description: Invite expired or revoked}
+  /api/v1/folders/{folder_id}/members/{user_id}:
+    patch:
+      tags: [Albums]
+      summary: Change member role (OWNER only)
+      parameters:
+        - $ref: '#/components/parameters/FolderID'
+        - $ref: '#/components/parameters/UserID'
+      responses:
+        '200': {description: Role changed; next requests use new authorization}
+        '403': {description: Not owner}
+    delete:
+      tags: [Albums]
+      summary: Remove member (OWNER only)
+      parameters:
+        - $ref: '#/components/parameters/FolderID'
+        - $ref: '#/components/parameters/UserID'
+      responses:
+        '204': {description: Member removed}
+        '403': {description: Not owner}
+  /api/v1/folders/{folder_id}/owner:
+    post:
+      tags: [Albums]
+      summary: Transfer unique ownership to active user atomically
+      parameters:
+        - $ref: '#/components/parameters/FolderID'
+      responses:
+        '200': {description: Ownership transferred and audited}
+        '403': {description: Not owner}
+  /api/v1/folders/{folder_id}/assets:
+    get:
+      tags: [Assets]
+      summary: List photo assets (OWNER, VIEWER, CONTRIBUTOR)
+      parameters:
+        - $ref: '#/components/parameters/FolderID'
+      responses:
+        '200': {description: Authorized assets, paginated}
+        '403': {description: UPLOADER cannot list files}
+    post:
+      tags: [Assets]
+      summary: Upload asset (OWNER, CONTRIBUTOR, UPLOADER)
+      description: >-
+        UPLOADER gets a generic receipt and no cross-user hash/asset metadata.
+        Authorization must be rechecked before final storage commit.
+      parameters:
+        - $ref: '#/components/parameters/FolderID'
+      responses:
+        '202': {description: Generic accepted receipt, opaque and idempotent}
+        '403': {description: VIEWER cannot upload}
+  /api/v1/folders/{folder_id}/sync:
+    get:
+      tags: [Assets]
+      summary: Read incremental change feed (OWNER, VIEWER, CONTRIBUTOR only)
+      parameters:
+        - $ref: '#/components/parameters/FolderID'
+      responses:
+        '200': {description: Authorized delta and cursor}
+        '403': {description: UPLOADER cannot read change feed}
+  /api/v1/folders/{folder_id}/assets/{asset_id}/original:
+    get:
+      tags: [Assets]
+      summary: Download original, requires readable album-asset association
+      parameters:
+        - $ref: '#/components/parameters/FolderID'
+        - $ref: '#/components/parameters/AssetID'
+      responses:
+        '200': {description: Original bytes}
+        '404': {description: Asset not in readable album or nonexistent}
+  /api/v1/folders/{folder_id}/assets/{asset_id}/preview:
+    get:
+      tags: [Assets]
+      summary: Download preview, same auth as original download
+      parameters:
+        - $ref: '#/components/parameters/FolderID'
+        - $ref: '#/components/parameters/AssetID'
+      responses:
+        '200': {description: Preview bytes}
+        '404': {description: Asset not in readable album or nonexistent}
+components:
+  parameters:
+    FolderID:
+      in: path
+      name: folder_id
+      required: true
+      schema: {type: string}
+    UserID:
+      in: path
+      name: user_id
+      required: true
+      schema: {type: string}
+    AssetID:
+      in: path
+      name: asset_id
+      required: true
+      schema: {type: string}
+    InvitationID:
+      in: path
+      name: invitation_id
+      required: true
+      schema: {type: string}
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque short-lived access token

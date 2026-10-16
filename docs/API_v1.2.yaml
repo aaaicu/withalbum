@@ -1,0 +1,204 @@
+openapi: 3.1.0
+info:
+  title: PhotoHub API
+  version: 1.2.0-draft
+  description: |
+    Target protocol. The provided Go demo implements ONLY health, folder create/list,
+    whole-file upload, folder sync, and original/preview fetch; the demo has no auth.
+servers:
+  - url: https://photo-hub.example.test
+security:
+  - bearerAuth: []
+paths:
+  /api/v1/health:
+    get:
+      summary: Health check
+      security: []
+      responses:
+        '200': {description: Server healthy}
+  /api/v1/folders:
+    get:
+      summary: List accessible shared folders
+      responses:
+        '200':
+          description: Folder list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  folders: {type: array, items: {$ref: '#/components/schemas/Folder'}}
+    post:
+      summary: Create folder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: {type: string, minLength: 1, maxLength: 80}
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Folder'}
+  /api/v1/folders/{folder_id}/assets/check:
+    post:
+      summary: Optional preflight for known SHA-256 content
+      description: Advisory only; authenticated authorization and final server-side hashing are mandatory.
+      parameters:
+        - $ref: '#/components/parameters/FolderID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [hashes]
+              properties:
+                hashes: {type: array, items: {type: string, pattern: '^[a-f0-9]{64}$'}, maxItems: 100}
+      responses:
+        '200': {description: Upload/link/already_present recommendation, never final authority}
+  /api/v1/folders/{folder_id}/assets:
+    post:
+      summary: Upload original file into one folder
+      parameters:
+        - $ref: '#/components/parameters/FolderID'
+        - in: header
+          name: X-Filename
+          schema: {type: string}
+        - in: header
+          name: X-Content-SHA256
+          schema: {type: string, pattern: '^[a-f0-9]{64}$'}
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: {type: string, format: binary}
+      responses:
+        '201':
+          description: Created or newly linked, hash verified
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UploadResult'}
+        '200':
+          description: Already linked, idempotent result
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UploadResult'}
+        '413': {description: File too large}
+        '422': {description: Hash mismatch}
+        '507': {description: Insufficient storage}
+  /api/v1/folders/{folder_id}/sync:
+    get:
+      summary: Ordered incremental changes for a folder
+      parameters:
+        - $ref: '#/components/parameters/FolderID'
+        - in: query
+          name: cursor
+          required: false
+          schema: {type: integer, format: int64, minimum: 0, default: 0}
+        - in: query
+          name: limit
+          schema: {type: integer, minimum: 1, maximum: 500, default: 100}
+      responses:
+        '200':
+          description: Delta page, including tombstones
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DeltaPage'}
+        '409': {description: Cursor expired; resync full folder snapshot}
+  /api/v1/folders/{folder_id}/assets/{asset_id}:
+    delete:
+      summary: Remove the asset link from one folder (tombstone)
+      parameters:
+        - $ref: '#/components/parameters/FolderID'
+        - $ref: '#/components/parameters/AssetID'
+      responses:
+        '204': {description: Folder link removed (original retained under retention policy)}
+        '403': {description: Forbidden}
+  /api/v1/assets/{asset_id}/preview:
+    get:
+      summary: Fetch mobile preview if ready
+      parameters:
+        - $ref: '#/components/parameters/AssetID'
+      responses:
+        '200': {description: Binary image preview}
+        '202': {description: Preview processing}
+        '404': {description: Asset not found or not accessible}
+  /api/v1/assets/{asset_id}/original:
+    get:
+      summary: Fetch the original asset (range requests planned for large files)
+      parameters:
+        - $ref: '#/components/parameters/AssetID'
+      responses:
+        '200': {description: Original bytes}
+        '206': {description: Partial original bytes}
+        '404': {description: Asset not found or not accessible}
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque short-lived access token
+  parameters:
+    FolderID:
+      in: path
+      name: folder_id
+      required: true
+      schema: {type: string}
+    AssetID:
+      in: path
+      name: asset_id
+      required: true
+      schema: {type: string}
+  schemas:
+    Folder:
+      type: object
+      required: [id, name, created_at]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        created_at: {type: string, format: date-time}
+    UploadResult:
+      type: object
+      required: [result, folder_id, asset_id, sha256, preview_ready]
+      properties:
+        result: {type: string, enum: [created, linked, already_present]}
+        folder_id: {type: string}
+        asset_id: {type: string}
+        sha256: {type: string}
+        preview_ready: {type: boolean}
+    SyncEvent:
+      type: object
+      required: [seq, kind, asset_id, folder_id, occurred_at]
+      properties:
+        seq: {type: integer, format: int64}
+        kind: {type: string, enum: [asset_added, asset_removed, asset_updated]}
+        asset_id: {type: string}
+        folder_id: {type: string}
+        uploader_device_id: {type: string}
+        occurred_at: {type: string, format: date-time}
+    DeltaPage:
+      type: object
+      required: [folder_id, events, next_cursor, has_more]
+      properties:
+        folder_id: {type: string}
+        events: {type: array, items: {$ref: '#/components/schemas/SyncEvent'}}
+        assets:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              id: {type: string}
+              mime_type: {type: string}
+              preview_ready: {type: boolean}
+        next_cursor: {type: integer, format: int64}
+        has_more: {type: boolean}

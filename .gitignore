@@ -1,0 +1,18 @@
+/dist/
+/bin/
+/withalbum-data/
+*.test
+*.prof
+.DS_Store
+.idea/
+.vscode/
+.env
+.env.*
+!/.env.example
+
+/dist-check/
+
+# 로컬 전용 (공개 금지)
+.claude/settings.local.json
+progress.md
+milestone/
