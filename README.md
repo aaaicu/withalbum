@@ -16,6 +16,7 @@
 **이 저장소는 완성 앱이 아니라 개발용 서버 프로토타입 + 전체 제품 설계 + Claude 개발 인수인계 패키지입니다.**
 
 - **기능이 동작하는 코드:** Go 기반 localhost 전용 서버, 간단한 웹 페이지, 폴더 생성, 파일 업로드, SHA-256 중복 확인, 제한적인 이미지 프리뷰, 변경 이벤트 조회.
+- **부분 구현(실기기 미검증):** `internal/storage/` 저장소 볼륨 가드. 명시적으로 `-init-storage`한 디렉터리만 사용하고, 기동 시와 쓰기 직전에 볼륨 마커·장치 번호(st_dev)를 재확인해 외장 디스크가 빠지면 쓰기를 거부(503)합니다. 디스크 UUID 대조는 아직 없음.
 - **코드·테스트만 있는 기능:** `internal/authz/`의 서버/앨범 권한 판정 함수와 단위 테스트. **실제 HTTP 요청에는 적용되지 않음.**
 - **설계만 완료:** SQLite v1.4, 관리자 생성·로그인·세션·초대·폴더 ACL, Mac 설치 마법사, iOS/Android 앱, 역방향 모바일 동기화, Google Drive 어댑터, 장애 복구.
 - **아직 없음:** 서명·공증된 DMG, 정식 Google Drive OAuth 연결, 모바일 앱, 프로덕션 안정성 보장.
@@ -58,11 +59,13 @@ Go 1.23+에서 테스트용 파일로만 확인하세요.
 go test ./...
 go vet ./...
 go build -o withalbum-server ./server
+mkdir -p "$HOME/WithAlbumTest"                                   # 저장소 루트는 직접 만든다
+WITHALBUM_ROOT="$HOME/WithAlbumTest" ./withalbum-server -init-storage  # 최초 1회: 볼륨 마커 등록
 WITHALBUM_ROOT="$HOME/WithAlbumTest" ./withalbum-server
 # 같은 컴퓨터 브라우저: http://127.0.0.1:8787
 ```
 
-명령 실행 전 `mkdir -p "$HOME/WithAlbumTest"`를 권장합니다. 이 서버는 해당 경로 아래 실험 데이터를 생성합니다. 프로덕션 외장하드 폴더를 지정하지 마세요.
+서버는 **저장소 루트를 절대 만들지 않습니다.** 루트가 없거나 `-init-storage`로 등록되지 않았으면 원인을 안내하고 즉시 종료합니다. `-init-storage`는 이미 존재하는 디렉터리에 `.withalbum-volume.json`(volume_id) 마커만 추가하며 기존 `.system/` 데이터는 건드리지 않습니다. 이전 버전에서 쓰던 데이터 폴더도 같은 명령으로 한 번 등록하면 됩니다. 출력된 `volume_id`를 `WITHALBUM_VOLUME_ID` 환경변수로 지정하면 다른 볼륨으로는 기동하지 않습니다(선택). 실행 중 마커가 사라지거나 루트의 장치가 바뀌면 업로드·폴더 생성은 `503 storage_unavailable`로 거부되고 `/api/v1/health`의 `storage`가 `unavailable`이 됩니다. 디스크를 다시 연결했다면 서버를 재시작하세요. 프로덕션 외장하드 폴더를 지정하지 마세요.
 
 <!-- 운영 시 제약:
 WITHALBUM_LISTEN=127.0.0.1:8787 기본. 주의: 바인딩 가드는 운영 인증을 대신하지 않는다.
@@ -244,8 +247,8 @@ WithAlbumRoot/
 현재 프로토타입은 `metadata.sqlite`가 아닌 `.system/state.json`을 사용하고, 일부 원본 풀·기본 프리뷰 디렉터리만 만듭니다. 목표 DB는 사용자/기기/세션/앨범/멤버/초대/blobs/assets/폴더 연결/이벤트/감사 로그를 다룹니다.
 
 <!-- 저장 안정성 / Claude의 최우선 개선 사항:
-**현재 위험** newStore(root)가 경로를 mkdirAll로 생성한다. 외장 볼륨이 언마운트된 상태에서 같은 마운트 경로에 새 디렉터리가 생겨 다른 디스크에 기록되는 일을 막아야 한다.
-볼륨 고유 ID/실제 마운트 여부/가용 용량/읽기쓰기 상태를 확인하고 fail-closed.
+**부분 해결(M1 볼륨 가드)** 루트 MkdirAll 제거, `-init-storage` 마커(volume_id) + st_dev 비교로 기동 시·쓰기 직전 fail-closed. 실기기(Mac mini 외장 디스크 언플러그) 미검증.
+남은 것: 디스크 UUID(diskutil)·statfs 마운트 지점 대조, 가용 용량(507), 디렉터리 fsync, 고아 blob 정리. 마커를 복사한 다른 디스크는 같은 volume_id로 기동 시 통과할 수 있다.
 CAS pool 원본에 대해 해시가 같더라도 멀티파일 Live Photo, 메타데이터/자산 ID/폴더 연결은 별도 객체.
 여러 계정·동시 업로드·디스크 전원 차단·DB 커밋 전후 실패·중복 응답 손실에서 원본 손실 없이 재시도.
 최종 원본은 불변(immutable) 처리, 파일 경로 외부 노출 금지, Finder로 옮기는 폴더와 시스템 pool 분리.
@@ -260,7 +263,7 @@ CAS pool 원본에 대해 해시가 같더라도 멀티파일 Live Photo, 메타
 | Method | Path | 동작 | 보안 상태 |
 |---|---|---|---|
 | `GET` | `/` | 로컬 브라우저 UI | 인증 없음/loopback |
-| `GET` | `/api/v1/health` | 서버 상태 | 인증 없음 |
+| `GET` | `/api/v1/health` | 서버 상태 + `storage: ok\|unavailable` | 인증 없음 |
 | `GET` | `/api/v1/folders` | 전체 데모 폴더 반환 | **권한 없음** |
 | `POST` | `/api/v1/folders` | 이름으로 폴더 생성 | **권한 없음** |
 | `POST` | `/api/v1/folders/{folderID}/assets` | 원본 전체 업로드/해시 검증 | **권한 없음** |
@@ -339,7 +342,8 @@ GitHub에 곧바로 public push, Release 발행, 실제 원본 정리/삭제 등
 |---|---|
 | `server/main.go` | **실행됨:** localhost Go HTTP PoC, 원본·해싱·동기화·기초 프리뷰, 현재 인증·SQLite 없음 |
 | `server/web/index.html` | **실행됨:** 내장 로컬 관리 UI; 관리자 인증 화면 아님 |
-| `server/main_test.go`, `server/dashboard_test.go` | **테스트:** 현 PoC 동작 확인, 프로덕션 안전성 테스트 아님 |
+| `server/main_test.go`, `server/dashboard_test.go`, `server/storage_test.go` | **테스트:** 현 PoC 동작 확인, 볼륨 소실 시 503 fail-closed, 프로덕션 안전성 테스트 아님 |
+| `internal/storage/` | **부분 구현:** 볼륨 마커 생성(`-init-storage`)/검증/쓰기 직전 재확인(st_dev). 실기기 미검증, 디스크 UUID 대조 없음 |
 | `internal/authz/policy.go`, `policy_test.go` | **부분 구현:** 역할 판정·단위 테스트. HTTP 서버 미연결 |
 | `go.mod` | Go 모듈 버전, GitHub 주소 정하면 `module` 변경 필요 |
 | `.goreleaser.yaml` | 5개 CPU/OS 조합 릴리스 압축 산출물 설정 |

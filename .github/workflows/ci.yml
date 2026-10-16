@@ -16,7 +16,7 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Require gofmt
-        run: test -z "$(gofmt -l server/*.go)"
+        run: test -z "$(gofmt -l .)"
       - run: go vet ./...
       - run: go test -race -count=1 ./...
   cross-build:

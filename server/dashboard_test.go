@@ -28,10 +28,7 @@ func TestLocalOnly(t *testing.T) {
 }
 
 func TestLocalDashboard(t *testing.T) {
-	s, err := newStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := newTestStore(t)
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	w := httptest.NewRecorder()
 	s.mux().ServeHTTP(w, req)

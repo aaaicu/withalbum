@@ -27,6 +27,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/aaaicu/withalbum/internal/storage"
 )
 
 // This is a LAN/localhost demonstration server, NOT a production service.
@@ -87,17 +89,32 @@ type diskState struct {
 }
 type store struct {
 	mu    sync.Mutex
+	vol   *storage.Volume
 	root  string
 	state diskState
 }
 
-func newStore(root string) (*store, error) {
-	for _, p := range []string{".system/incoming", ".system/pool", ".system/previews"} {
-		if err := os.MkdirAll(filepath.Join(root, p), 0700); err != nil {
+// mkdirIn creates dir with os.Mkdir (never MkdirAll), so a missing parent such
+// as an unmounted volume root fails instead of being recreated.
+func mkdirIn(dir string) error {
+	if err := os.Mkdir(dir, 0700); err != nil && !errors.Is(err, os.ErrExist) {
+		return err
+	}
+	return nil
+}
+
+// newStore uses a verified volume and only creates .system/* inside it.
+func newStore(vol *storage.Volume) (*store, error) {
+	if err := vol.Check(); err != nil {
+		return nil, err
+	}
+	root := vol.Root()
+	for _, p := range []string{".system", ".system/incoming", ".system/pool", ".system/previews"} {
+		if err := mkdirIn(filepath.Join(root, p)); err != nil {
 			return nil, err
 		}
 	}
-	s := &store{root: root, state: diskState{
+	s := &store{vol: vol, root: root, state: diskState{
 		Folders: map[string]Folder{}, Assets: map[string]Asset{},
 		Links: map[string]map[string]Link{}, Events: map[string][]Event{}, NextSeq: map[string]int64{},
 	}}
@@ -179,7 +196,12 @@ func (s *store) mux() http.Handler {
 		_, _ = w.Write(dashboardHTML)
 	})
 	mux.HandleFunc("GET /api/v1/health", func(w http.ResponseWriter, r *http.Request) {
-		jsonReply(w, 200, map[string]string{"status": "ok", "version": version})
+		// Report only ok/unavailable; never expose paths or volume ids here.
+		storageState := "ok"
+		if err := s.vol.Check(); err != nil {
+			storageState = "unavailable"
+		}
+		jsonReply(w, 200, map[string]string{"status": "ok", "version": version, "storage": storageState})
 	})
 	mux.HandleFunc("GET /api/v1/folders", s.getFolders)
 	mux.HandleFunc("POST /api/v1/folders", s.createFolder)
@@ -219,6 +241,9 @@ func (s *store) createFolder(w http.ResponseWriter, r *http.Request) {
 	folder := Folder{ID: id, Name: request.Name, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if !s.storageReady(w) {
+		return
+	}
 	s.state.Folders[id] = folder
 	s.state.Links[id] = map[string]Link{}
 	if err := s.saveLocked(); err != nil {
@@ -228,6 +253,17 @@ func (s *store) createFolder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonReply(w, 201, folder)
+}
+
+// storageReady re-verifies the volume right before a write. On failure it
+// replies 503 storage_unavailable and the caller must not write anything.
+func (s *store) storageReady(w http.ResponseWriter) bool {
+	if err := s.vol.Check(); err != nil {
+		log.Printf("storage unavailable, refusing write: %v", err)
+		errorReply(w, 503, "storage_unavailable")
+		return false
+	}
+	return true
 }
 func poolPath(root, sha string) string { return filepath.Join(root, ".system", "pool", sha[:2], sha) }
 func previewPath(root, sha string) string {
@@ -240,6 +276,10 @@ func (s *store) upload(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 	if !found {
 		errorReply(w, 404, "folder_not_found")
+		return
+	}
+	// Fail fast before spooling the body to a volume that is already gone.
+	if !s.storageReady(w) {
 		return
 	}
 
@@ -316,9 +356,12 @@ func (s *store) upload(w http.ResponseWriter, r *http.Request) {
 	}
 	asset, assetExists := s.state.Assets[sha]
 	result := "linked"
+	if !s.storageReady(w) {
+		return
+	}
 	if !assetExists {
 		dest := poolPath(s.root, sha)
-		if err := os.MkdirAll(filepath.Dir(dest), 0700); err != nil {
+		if err := mkdirIn(filepath.Dir(dest)); err != nil {
 			errorReply(w, 500, "storage_failed")
 			return
 		}
@@ -340,13 +383,21 @@ func (s *store) upload(w http.ResponseWriter, r *http.Request) {
 		Seq: s.state.NextSeq[folderID], Kind: "asset_added", AssetID: sha, FolderID: folderID,
 		UploaderDeviceID: deviceID, OccurredAt: now,
 	})
-	if err := s.saveLocked(); err != nil {
+	rollback := func() {
 		delete(s.state.Links[folderID], sha)
 		s.state.Events[folderID] = s.state.Events[folderID][:len(s.state.Events[folderID])-1]
 		s.state.NextSeq[folderID] = oldSeq
 		if !assetExists {
 			delete(s.state.Assets, sha)
 		}
+	}
+	// Re-check: the pool rename and preview above may have taken a while.
+	if !s.storageReady(w) {
+		rollback()
+		return
+	}
+	if err := s.saveLocked(); err != nil {
+		rollback()
 		errorReply(w, 500, "metadata_write_failed")
 		return
 	}
@@ -391,7 +442,7 @@ func makeJPEGPreview(src, dst string) error {
 			small.Set(x, y, original.At(bounds.Min.X+x*w/newW, bounds.Min.Y+y*h/newH))
 		}
 	}
-	if err := os.MkdirAll(filepath.Dir(dst), 0700); err != nil {
+	if err := mkdirIn(filepath.Dir(dst)); err != nil {
 		return err
 	}
 	out, err := os.CreateTemp(filepath.Dir(dst), "preview-*")
@@ -483,8 +534,32 @@ func (s *store) download(preview bool) http.HandlerFunc {
 		http.ServeFile(w, r, path)
 	}
 }
+
+// openStorageHint explains a storage.Open failure in operator terms.
+func openStorageHint(root string, err error) string {
+	switch {
+	case errors.Is(err, storage.ErrRootMissing):
+		return fmt.Sprintf("storage root %q does not exist. If it is on an external disk, check that the disk is mounted. The server never creates the storage root.", root)
+	case errors.Is(err, storage.ErrNotDirectory):
+		return fmt.Sprintf("storage root %q is not a directory.", root)
+	case errors.Is(err, storage.ErrNotInitialized):
+		if _, statErr := os.Stat(filepath.Join(root, ".system", "state.json")); statErr == nil {
+			return fmt.Sprintf("existing WithAlbum data detected in %q but the volume is not registered. Confirm this is the right disk, then run: withalbum-server -init-storage (existing data is kept).", root)
+		}
+		return fmt.Sprintf("storage root %q is not initialized. Confirm the path is on the intended disk, then run once: withalbum-server -init-storage", root)
+	case errors.Is(err, storage.ErrInvalidMarker):
+		return fmt.Sprintf("volume marker %s in %q is unreadable or unsupported; refusing to start.", storage.MarkerName, root)
+	case errors.Is(err, storage.ErrVolumeMismatch):
+		return fmt.Sprintf("storage root %q holds a different volume than WITHALBUM_VOLUME_ID; refusing to start. Check which disk is mounted.", root)
+	case errors.Is(err, storage.ErrNotWritable):
+		return fmt.Sprintf("storage root %q is not writable (read-only mount or permissions).", root)
+	}
+	return fmt.Sprintf("cannot open storage root %q.", root)
+}
+
 func main() {
 	showVersion := flag.Bool("version", false, "Print WithAlbum Server version and exit")
+	initStorage := flag.Bool("init-storage", false, "Register the existing WITHALBUM_ROOT directory as the storage volume and exit")
 	flag.Parse()
 	if *showVersion {
 		fmt.Println("withalbum-server " + version)
@@ -498,7 +573,25 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	s, err := newStore(root)
+	if *initStorage {
+		m, err := storage.Init(root)
+		if err != nil {
+			if errors.Is(err, storage.ErrAlreadyInitialized) {
+				log.Fatalf("storage root %q is already initialized; nothing changed.", root)
+			}
+			if errors.Is(err, storage.ErrRootMissing) || errors.Is(err, storage.ErrNotDirectory) {
+				log.Fatalf("%s Create the directory on the intended disk first.", openStorageHint(root, err))
+			}
+			log.Fatalf("init storage: %v", err)
+		}
+		fmt.Printf("Initialized storage root %s\nvolume_id=%s\nOptional: set WITHALBUM_VOLUME_ID=%s to refuse any other volume.\n", root, m.VolumeID, m.VolumeID)
+		return
+	}
+	vol, err := storage.Open(root, storage.OpenOptions{ExpectedVolumeID: os.Getenv("WITHALBUM_VOLUME_ID")})
+	if err != nil {
+		log.Fatalf("STORAGE: %s (%v)", openStorageHint(root, err), err)
+	}
+	s, err := newStore(vol)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -520,7 +613,7 @@ func main() {
 			log.Printf("shutdown: %v", err)
 		}
 	}()
-	log.Printf("EXPERIMENTAL / NO AUTH: listen=%s root=%s", addr, root)
+	log.Printf("EXPERIMENTAL / NO AUTH: listen=%s root=%s volume_id=%s", addr, vol.Root(), vol.ID())
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}

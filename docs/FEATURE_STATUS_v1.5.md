@@ -14,7 +14,7 @@
 | 폴더별 event/cursor | 개발 PoC 구현 | `server/main.go` | 장기간 offline 클라이언트/영속 cursor 검증 |
 | 정식 SQLite schema v1.4 | **설계만** | `docs/schema_v1.4.sql` | 실제 DB 저장/마이그레이션/장애 시험 |
 | 파일·DB atomic commit | **미구현** | `docs/ROADMAP.md` | crash/partial failure 재현 자동 테스트 |
-| 외장하드 분리·마운트 식별 | **미구현** | `docs/ROADMAP.md` | 디스크 unplug 시 fail-closed |
+| 외장하드 분리·마운트 식별 | **부분 구현, 실기기 미검증** (볼륨 마커 + st_dev, 쓰기 직전 재확인, 503 `storage_unavailable`) | `internal/storage`, `server/main.go` | 디스크 unplug 시 fail-closed (Mac mini 실기기 E2E), 디스크 UUID 대조 |
 | 사용자 계정/Argon2id/세션 | **설계만** | `docs/ACCESS_CONTROL_v1.4.md` | 로그인/로그아웃/토큰 회수 테스트 |
 | 서버의 계정별 앨범 생성 제한 | **정책 함수만** | `internal/authz` | HTTP E2E 403 및 생성/소유자 test |
 | OWNER·읽기/쓰기/초대 | **정책 함수·설계만** | `internal/authz`, `docs/API_AUTH_v1.4.yaml` | E2E 초대/수락/철회/오너이전 |
