@@ -12,7 +12,7 @@
 | 기본 JPEG/PNG/GIF 프리뷰 | 개발 PoC 구현 | `internal/blobstore/preview.go` | HEIC/RAW/Live Photo/영상 미지원 검증 |
 | JSON 상태 파일 | 개발 PoC 구현 | `internal/meta/jsonstore` (`.system/state.json`) | 교체 전 migration/backup 계획 |
 | 폴더별 event/cursor | 개발 PoC 구현 | `internal/meta/jsonstore` | 장기간 offline 클라이언트/영속 cursor 검증 |
-| 정식 SQLite schema v1.4 | **설계만** | `docs/schema_v1.4.sql` | 실제 DB 저장/마이그레이션/장애 시험 |
+| 정식 SQLite schema v1.4 | **부분 구현(서버 미연결)** | `internal/db/` (마이그레이션 0001/0002), `docs/schema_v1.4.sql` | HTTP 저장소 연결(M4), state.json 이관(M5), 장애 시험 |
 | 파일·DB atomic commit | **미구현** | `docs/ROADMAP.md` | crash/partial failure 재현 자동 테스트 |
 | 외장하드 분리·마운트 식별 | **부분 구현, 실기기 미검증** (볼륨 마커 + st_dev, 쓰기 직전 재확인, 503 `storage_unavailable`) | `internal/storage`, `internal/httpapi` (`storageReady`) | 디스크 unplug 시 fail-closed (Mac mini 실기기 E2E), 디스크 UUID 대조 |
 | 사용자 계정/Argon2id/세션 | **설계만** | `docs/ACCESS_CONTROL_v1.4.md` | 로그인/로그아웃/토큰 회수 테스트 |
