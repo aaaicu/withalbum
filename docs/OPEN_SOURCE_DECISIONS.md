@@ -13,14 +13,13 @@
 
 | 모듈 | 버전 | 라이선스 | 용도 |
 |---|---|---|---|
-| `modernc.org/sqlite` | v1.39.0 | BSD-3-Clause (내장 SQLite 3.50.3은 Public Domain) | cgo 없는 SQLite 드라이버 (go 1.23 호환 최신판, v1.39.1부터 go 1.24 필요) |
-| `modernc.org/libc` | v1.66.3 | BSD-3-Clause (일부 musl 유래 코드 MIT, Go 유래 코드 BSD-3) | SQLite 변환 코드의 C 런타임 |
+| `modernc.org/sqlite` | v1.60.1 | BSD-3-Clause (내장 SQLite 3.53.4는 Public Domain) | cgo 없는 SQLite 드라이버 |
+| `modernc.org/libc` | v1.77.1 | BSD-3-Clause (일부 musl 유래 코드 MIT, Go 유래 코드 BSD-3) | SQLite 변환 코드의 C 런타임 |
 | `modernc.org/mathutil` | v1.7.1 | BSD-3-Clause | 간접 |
-| `modernc.org/memory` | v1.11.0 | BSD-3-Clause (mmap-go 유래 BSD-3) | 간접 |
+| `modernc.org/memory` | v1.12.1 | BSD-3-Clause (mmap-go 유래 BSD-3) | 간접 |
 | `github.com/google/uuid` | v1.6.0 | BSD-3-Clause | 간접 |
 | `github.com/remyoudompheng/bigfft` | v0.0.0-20230129092748-24d4a6f8daec | BSD-3-Clause | 간접 |
-| `golang.org/x/sys` | v0.34.0 | BSD-3-Clause | 간접 |
-| `golang.org/x/exp` | v0.0.0-20250620022241-b7579e27df2b | BSD-3-Clause | 간접 |
+| `golang.org/x/sys` | v0.48.0 | BSD-3-Clause | 간접 |
 | `github.com/dustin/go-humanize` | v1.0.1 | MIT | 간접 |
-| `github.com/mattn/go-isatty` | v0.0.20 | MIT | 간접 |
-| `github.com/ncruces/go-strftime` | v0.1.9 | MIT | 간접 |
+| `github.com/mattn/go-isatty` | v0.0.24 | MIT | 간접 |
+| `github.com/ncruces/go-strftime` | v1.0.0 | MIT | 간접 |

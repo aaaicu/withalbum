@@ -53,7 +53,7 @@ GitHub Releases는 git의 'release/' 폴더가 아니라 GitHub Releases 화면�
 
 ### 프로젝트 최상위 실행 명령
 
-Go 1.23+에서 테스트용 파일로만 확인하세요.
+Go 1.26+에서 테스트용 파일로만 확인하세요.
 
 ```bash
 go test ./...
