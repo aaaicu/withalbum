@@ -61,9 +61,15 @@ func (s *Store) PoolPath(sha string) string {
 	return filepath.Join(s.root, filepath.FromSlash(PoolRelPath(sha)))
 }
 
+// PreviewRelPath is PreviewPath relative to the storage root, with forward
+// slashes.
+func PreviewRelPath(sha string) string {
+	return ".system/previews/" + sha[:2] + "/" + sha + ".jpg"
+}
+
 // PreviewPath is where the JPEG preview of the given SHA-256 hex is stored.
 func (s *Store) PreviewPath(sha string) string {
-	return filepath.Join(s.root, ".system", "previews", sha[:2], sha+".jpg")
+	return filepath.Join(s.root, filepath.FromSlash(PreviewRelPath(sha)))
 }
 
 // StagedFile is a fully written and fsynced upload in .system/incoming.

@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/aaaicu/withalbum/internal/db"
+	"github.com/aaaicu/withalbum/internal/legacyimport"
 	"github.com/aaaicu/withalbum/internal/meta/jsonstore"
 	"github.com/aaaicu/withalbum/internal/meta/sqlitestore"
 	"github.com/aaaicu/withalbum/internal/storage"
@@ -153,4 +156,81 @@ func TestStartupAcceptsImportedState(t *testing.T) {
 		t.Fatal(err)
 	}
 	store.Close()
+}
+
+// TestMigrateLegacyCommand drives "migrate-legacy" end to end on a root that
+// only the previous version could start: dry-run writes nothing, -apply
+// imports, the server then starts on the database, and a second -apply is
+// refused.
+func TestMigrateLegacyCommand(t *testing.T) {
+	vol := newTestVolume(t)
+	state := writeLegacyState(t, vol.Root())
+	t.Setenv("WITHALBUM_ROOT", vol.Root())
+	t.Setenv("WITHALBUM_VOLUME_ID", "")
+	run := func(args ...string) (int, string, string) {
+		var stdout, stderr bytes.Buffer
+		code := runMigrateLegacy(args, &stdout, &stderr)
+		return code, stdout.String(), stderr.String()
+	}
+
+	if code, _, _ := run("-bogus"); code != 2 {
+		t.Fatalf("bad flag: exit %d, want 2", code)
+	}
+	if code, _, _ := run("extra"); code != 2 {
+		t.Fatalf("extra argument: exit %d, want 2", code)
+	}
+	code, out, errOut := run()
+	if code != 0 || !strings.Contains(out, "(dry-run): ok") || !strings.Contains(out, "folders 1") {
+		t.Fatalf("dry-run: exit %d\n%s\n%s", code, out, errOut)
+	}
+	if _, err := os.Stat(sqlitestore.DBPath(vol.Root())); !os.IsNotExist(err) {
+		t.Fatalf("dry-run created the database: %v", err)
+	}
+	code, out, errOut = run("-apply", "-json")
+	if code != 0 {
+		t.Fatalf("apply: exit %d\n%s\n%s", code, out, errOut)
+	}
+	var report legacyimport.Report
+	if err := json.Unmarshal([]byte(out), &report); err != nil || report.Result != "ok" || report.Folders != 1 {
+		t.Fatalf("apply -json report %q: %v", out, err)
+	}
+	if b, err := os.ReadFile(filepath.Join(vol.Root(), report.MigratedPath)); err != nil || !bytes.Equal(b, state) {
+		t.Fatalf("migrated state.json: %v", err)
+	}
+	store, err := openMetadata(t.Context(), vol)
+	if err != nil {
+		t.Fatalf("server start after import: %v", err)
+	}
+	folders, err := store.ListFolders(t.Context())
+	store.Close()
+	if err != nil || len(folders) != 1 || folders[0].Name != "family" || folders[0].ID != "0123456789abcdef0123456789abcdef" {
+		t.Fatalf("folders after import: %+v %v", folders, err)
+	}
+	if code, _, errOut := run("-apply"); code != 1 || !strings.Contains(errOut, "no .system/state.json") {
+		t.Fatalf("second apply: exit %d, %s", code, errOut)
+	}
+}
+
+func TestMigrateLegacyCommandRefusesBrokenState(t *testing.T) {
+	vol := newTestVolume(t)
+	if err := os.Mkdir(filepath.Join(vol.Root(), ".system"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	broken := []byte(`{"folders":{"a":{"id":"a","name":"x","created_at":"t"}},"assets":`)
+	if err := os.WriteFile(jsonstore.StatePath(vol.Root()), broken, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WITHALBUM_ROOT", vol.Root())
+	t.Setenv("WITHALBUM_VOLUME_ID", "")
+	var stdout, stderr bytes.Buffer
+	if code := runMigrateLegacy([]string{"-apply"}, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), "FAILED") {
+		t.Fatalf("exit %d\n%s\n%s", code, stdout.String(), stderr.String())
+	}
+	if b, _ := os.ReadFile(jsonstore.StatePath(vol.Root())); !bytes.Equal(b, broken) {
+		t.Fatal("state.json changed")
+	}
+	entries, _ := os.ReadDir(filepath.Join(vol.Root(), ".system"))
+	if len(entries) != 1 {
+		t.Fatalf(".system holds %d entries, want only state.json", len(entries))
+	}
 }

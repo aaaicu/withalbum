@@ -149,6 +149,17 @@ func applyMigration(ctx context.Context, db *sql.DB, m Migration) (err error) {
 		// Applied concurrently by another connection or process.
 		return tx.Rollback()
 	}
+	if err = applyStep(ctx, tx, m, cur); err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("migration %s: commit: %w", m.Name, err)
+	}
+	return nil
+}
+
+// applyStep runs one migration inside tx, whose database is at version cur.
+func applyStep(ctx context.Context, tx *sql.Tx, m Migration, cur int) error {
 	if cur != m.Version-1 {
 		return fmt.Errorf("migration %s: database at version %d, expected %d", m.Name, cur, m.Version-1)
 	}
@@ -156,19 +167,18 @@ func applyMigration(ctx context.Context, db *sql.DB, m Migration) (err error) {
 		// Checked under the write lock so a concurrent first migration is
 		// not mistaken for a foreign database.
 		var n int
-		if err = tx.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_schema").Scan(&n); err != nil {
+		if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_schema").Scan(&n); err != nil {
 			return fmt.Errorf("migration %s: %w", m.Name, err)
 		}
 		if n > 0 {
-			err = fmt.Errorf("%w: %d schema objects present", ErrForeignDatabase, n)
-			return err
+			return fmt.Errorf("%w: %d schema objects present", ErrForeignDatabase, n)
 		}
 	}
-	if _, err = tx.ExecContext(ctx, m.SQL); err != nil {
+	if _, err := tx.ExecContext(ctx, m.SQL); err != nil {
 		return fmt.Errorf("migration %s: %w", m.Name, err)
 	}
 	// user_version cannot be bound as a parameter; Version is an int.
-	if _, err = tx.ExecContext(ctx, "PRAGMA user_version = "+strconv.Itoa(m.Version)); err != nil {
+	if _, err := tx.ExecContext(ctx, "PRAGMA user_version = "+strconv.Itoa(m.Version)); err != nil {
 		return fmt.Errorf("migration %s: set user_version: %w", m.Name, err)
 	}
 	rows, err := tx.QueryContext(ctx, "PRAGMA foreign_key_check")
@@ -177,15 +187,36 @@ func applyMigration(ctx context.Context, db *sql.DB, m Migration) (err error) {
 	}
 	violation := rows.Next()
 	rows.Close()
-	if err = rows.Err(); err != nil {
+	if err := rows.Err(); err != nil {
 		return fmt.Errorf("migration %s: foreign_key_check: %w", m.Name, err)
 	}
 	if violation {
-		err = fmt.Errorf("migration %s: foreign key violations after applying", m.Name)
+		return fmt.Errorf("migration %s: foreign key violations after applying", m.Name)
+	}
+	return nil
+}
+
+// MigrateNewTx applies every embedded migration to an empty, version-0
+// database inside the caller's transaction, so that creating the schema and
+// the rows written afterwards in the same transaction commit or roll back
+// together. It is meant for building a new database file (the legacy import
+// writes a temporary file this way); existing databases use Migrate.
+func MigrateNewTx(ctx context.Context, tx *sql.Tx) error {
+	ms, err := Migrations()
+	if err != nil {
 		return err
 	}
-	if err = tx.Commit(); err != nil {
-		return fmt.Errorf("migration %s: commit: %w", m.Name, err)
+	var cur int
+	if err := tx.QueryRowContext(ctx, "PRAGMA user_version").Scan(&cur); err != nil {
+		return err
+	}
+	if cur != 0 {
+		return fmt.Errorf("%w: database at version %d, want a new database", ErrForeignDatabase, cur)
+	}
+	for _, m := range ms {
+		if err := applyStep(ctx, tx, m, m.Version-1); err != nil {
+			return err
+		}
 	}
 	return nil
 }

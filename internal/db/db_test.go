@@ -317,3 +317,50 @@ func ddlOnly(s string) string {
 	}
 	return strings.Join(out, "\n")
 }
+
+// TestMigrateNewTx: the schema is created inside the caller's transaction, so
+// a rollback leaves an empty version-0 file and a commit the latest schema.
+func TestMigrateNewTx(t *testing.T) {
+	ctx := context.Background()
+	sqlDB, _ := openTemp(t)
+	tx, err := sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateNewTx(ctx, tx); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := sqlDB.QueryRow("SELECT count(*) FROM sqlite_schema").Scan(&n); err != nil || n != 0 {
+		t.Fatalf("after rollback: %d schema objects, err %v", n, err)
+	}
+	if v, _ := SchemaVersion(ctx, sqlDB); v != 0 {
+		t.Fatalf("after rollback: user_version %d", v)
+	}
+
+	tx, err = sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateNewTx(ctx, tx); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := SchemaVersion(ctx, sqlDB); v != LatestVersion() {
+		t.Fatalf("user_version %d, want %d", v, LatestVersion())
+	}
+	// A database that already has a schema is refused.
+	tx, err = sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if err := MigrateNewTx(ctx, tx); !errors.Is(err, ErrForeignDatabase) {
+		t.Fatalf("MigrateNewTx on migrated db = %v, want ErrForeignDatabase", err)
+	}
+}

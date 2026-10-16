@@ -4,9 +4,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -18,6 +20,7 @@ import (
 
 	"github.com/aaaicu/withalbum/internal/blobstore"
 	"github.com/aaaicu/withalbum/internal/httpapi"
+	"github.com/aaaicu/withalbum/internal/legacyimport"
 	"github.com/aaaicu/withalbum/internal/meta"
 	"github.com/aaaicu/withalbum/internal/meta/jsonstore"
 	"github.com/aaaicu/withalbum/internal/meta/sqlitestore"
@@ -125,7 +128,70 @@ func openMetadata(ctx context.Context, vol *storage.Volume) (meta.MetadataStore,
 	return store, nil
 }
 
+// storageRoot returns the absolute WITHALBUM_ROOT (default ./withalbum-data).
+func storageRoot() (string, error) {
+	root := os.Getenv("WITHALBUM_ROOT")
+	if root == "" {
+		root = "./withalbum-data"
+	}
+	return filepath.Abs(root)
+}
+
+// runMigrateLegacy implements "withalbum-server migrate-legacy [-apply] [-json]"
+// and returns the process exit code: 0 success, 1 failure, 2 usage error.
+func runMigrateLegacy(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("migrate-legacy", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	apply := fs.Bool("apply", false, "Import .system/state.json into SQLite. Without it only checks and reports (nothing is written)")
+	asJSON := fs.Bool("json", false, "Print the report as JSON instead of a summary")
+	fs.Usage = func() {
+		fmt.Fprintln(stderr, "usage: withalbum-server migrate-legacy [-apply] [-json]")
+		fmt.Fprintln(stderr, "Imports the metadata of an earlier version (WITHALBUM_ROOT/.system/state.json) into .system/withalbum.db.")
+		fmt.Fprintln(stderr, "Stop every WithAlbum server using this storage first.")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fs.Usage()
+		return 2
+	}
+	root, err := storageRoot()
+	if err != nil {
+		fmt.Fprintf(stderr, "migrate-legacy: %v\n", err)
+		return 1
+	}
+	vol, err := storage.Open(root, storage.OpenOptions{ExpectedVolumeID: os.Getenv("WITHALBUM_VOLUME_ID")})
+	if err != nil {
+		fmt.Fprintf(stderr, "migrate-legacy: STORAGE: %s (%v)\n", openStorageHint(root, err), err)
+		return 1
+	}
+	report, err := legacyimport.Run(context.Background(), vol, legacyimport.Options{Apply: *apply, Progress: stderr})
+	if *asJSON {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		if encErr := enc.Encode(report); encErr != nil {
+			fmt.Fprintf(stderr, "migrate-legacy: %v\n", encErr)
+			return 1
+		}
+	} else {
+		report.WriteSummary(stdout)
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "migrate-legacy: FAILED: %v\n", err)
+		if *apply && !errors.Is(err, legacyimport.ErrNoLegacyState) {
+			fmt.Fprintln(stderr, "migrate-legacy: the contents of state.json and the original files are never modified. Fix the cause and run -apply again; it continues or starts over safely.")
+		}
+		return 1
+	}
+	return 0
+}
+
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "migrate-legacy" {
+		os.Exit(runMigrateLegacy(os.Args[2:], os.Stdout, os.Stderr))
+	}
 	showVersion := flag.Bool("version", false, "Print WithAlbum Server version and exit")
 	initStorage := flag.Bool("init-storage", false, "Register the existing WITHALBUM_ROOT directory as the storage volume and exit")
 	flag.Parse()
@@ -133,11 +199,7 @@ func main() {
 		fmt.Println("withalbum-server " + version)
 		return
 	}
-	root := os.Getenv("WITHALBUM_ROOT")
-	if root == "" {
-		root = "./withalbum-data"
-	}
-	root, err := filepath.Abs(root)
+	root, err := storageRoot()
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -164,7 +226,8 @@ func main() {
 	if errors.Is(err, errUnmigratedState) {
 		log.Fatalf("METADATA: %q holds metadata from an earlier version (.system/state.json) that has not been migrated to SQLite. "+
 			"This version does not read it and refuses to start; nothing was changed. "+
-			"Keep running the previous version until a migration command (migrate-legacy) is available.", root)
+			"Stop the previous version, then run: withalbum-server migrate-legacy (check only) and withalbum-server migrate-legacy -apply. "+
+			"See docs/MIGRATION_legacy_state.md.", root)
 	}
 	if err != nil {
 		log.Fatalf("METADATA: cannot open %s: %v", sqlitestore.DBPath(root), err)

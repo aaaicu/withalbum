@@ -106,15 +106,10 @@ func now() string { return time.Now().UTC().Format(time.RFC3339Nano) }
 // ensureBootstrapOwner returns the bootstrap administrator's user_id,
 // inserting the account on first use.
 func ensureBootstrapOwner(ctx context.Context, sqlDB *sql.DB) (string, error) {
-	const q = "SELECT user_id FROM users WHERE login_name = ?"
 	var id string
-	err := sqlDB.QueryRowContext(ctx, q, BootstrapLoginName).Scan(&id)
+	err := sqlDB.QueryRowContext(ctx, bootstrapQuery, BootstrapLoginName).Scan(&id)
 	if err == nil || !errors.Is(err, sql.ErrNoRows) {
 		return id, err
-	}
-	newUserID, err := newID()
-	if err != nil {
-		return "", err
 	}
 	tx, err := sqlDB.BeginTx(ctx, nil)
 	if err != nil {
@@ -122,20 +117,37 @@ func ensureBootstrapOwner(ctx context.Context, sqlDB *sql.DB) (string, error) {
 	}
 	defer tx.Rollback()
 	// Re-check under the write lock: another process may have inserted it.
-	err = tx.QueryRowContext(ctx, q, BootstrapLoginName).Scan(&id)
+	if id, err = EnsureBootstrapOwnerTx(ctx, tx); err != nil {
+		return "", err
+	}
+	return id, tx.Commit()
+}
+
+const bootstrapQuery = "SELECT user_id FROM users WHERE login_name = ?"
+
+// EnsureBootstrapOwnerTx returns the bootstrap administrator's user_id inside
+// tx, inserting the locked account if it does not exist yet. The caller
+// commits. The legacy import uses it so that imported folders get the same
+// owner the server would create.
+func EnsureBootstrapOwnerTx(ctx context.Context, tx *sql.Tx) (string, error) {
+	var id string
+	err := tx.QueryRowContext(ctx, bootstrapQuery, BootstrapLoginName).Scan(&id)
 	if err == nil {
 		return id, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return "", err
 	}
+	if id, err = newID(); err != nil {
+		return "", err
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO users
 		(user_id, login_name, display_name, password_hash, server_role, can_create_albums, status, created_at)
 		VALUES (?, ?, 'Administrator', ?, 'SERVER_ADMIN', 1, 'active', ?)`,
-		newUserID, BootstrapLoginName, lockedPasswordHash, now()); err != nil {
+		id, BootstrapLoginName, lockedPasswordHash, now()); err != nil {
 		return "", err
 	}
-	return newUserID, tx.Commit()
+	return id, nil
 }
 
 // CreateFolder implements meta.MetadataStore.
@@ -222,8 +234,8 @@ func (s *Store) GetAssetBySHA(ctx context.Context, sha string) (meta.Asset, erro
 	return a, err
 }
 
-// mediaKind maps a sniffed MIME type to assets.media_kind.
-func mediaKind(mime string) string {
+// MediaKind maps a sniffed MIME type to assets.media_kind.
+func MediaKind(mime string) string {
 	switch {
 	case strings.HasPrefix(mime, "image/"):
 		return "image"
@@ -282,7 +294,7 @@ func (s *Store) CommitUpload(ctx context.Context, req meta.CommitRequest) (meta.
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO assets (asset_id, original_sha256, original_filename, media_kind, preview_ready, created_at)
 			VALUES (?, ?, ?, ?, ?, ?)`,
-			newAssetID, sha, in.Filename, mediaKind(in.MimeType), in.PreviewReady, ts); err != nil {
+			newAssetID, sha, in.Filename, MediaKind(in.MimeType), in.PreviewReady, ts); err != nil {
 			return meta.CommitResult{}, fmt.Errorf("insert asset: %w", err)
 		}
 		// Re-read so the result reflects the stored rows (an already present

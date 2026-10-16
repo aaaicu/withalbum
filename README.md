@@ -17,14 +17,14 @@
 
 - **기능이 동작하는 코드:** Go 기반 localhost 전용 서버, 간단한 웹 페이지, 폴더 생성, 파일 업로드, SHA-256 중복 확인, 제한적인 이미지 프리뷰, 변경 이벤트 조회.
 - **부분 구현(실기기 미검증):** `internal/storage/` 저장소 볼륨 가드. 명시적으로 `-init-storage`한 디렉터리만 사용하고, 기동 시와 쓰기 직전에 볼륨 마커·장치 번호(st_dev)를 재확인해 외장 디스크가 빠지면 쓰기를 거부(503)합니다. 디스크 UUID 대조는 아직 없음.
-- **부분 구현:** 메타데이터는 SQLite(`.system/withalbum.db`, `internal/meta/sqlitestore`)에 저장합니다. 업로드 1건(blob·자산·폴더 연결·시퀀스·이벤트)은 트랜잭션 하나로 커밋되고, 내부 자산 ID는 랜덤입니다(HTTP 응답의 `asset_id`는 호환을 위해 아직 SHA-256). 계정이 없으므로 모든 폴더의 소유자는 로그인할 수 없는 로컬 `admin` 계정입니다. **이전 버전의 `.system/state.json`만 있는 저장소는 기동을 거부합니다(파일은 변경하지 않음, 이관 명령은 후속 M5).**
+- **부분 구현:** 메타데이터는 SQLite(`.system/withalbum.db`, `internal/meta/sqlitestore`)에 저장합니다. 업로드 1건(blob·자산·폴더 연결·시퀀스·이벤트)은 트랜잭션 하나로 커밋되고, 내부 자산 ID는 랜덤입니다(HTTP 응답의 `asset_id`는 호환을 위해 아직 SHA-256). 계정이 없으므로 모든 폴더의 소유자는 로그인할 수 없는 로컬 `admin` 계정입니다. **이전 버전의 `.system/state.json`만 있는 저장소는 기동을 거부합니다(파일은 변경하지 않음). `withalbum-server migrate-legacy`(점검) → `migrate-legacy -apply`로 무손실 이관한 뒤 기동하세요. 절차·롤백: [`docs/MIGRATION_legacy_state.md`](docs/MIGRATION_legacy_state.md).**
 - **코드·테스트만 있는 기능:** `internal/authz/`의 서버/앨범 권한 판정 함수와 단위 테스트. **실제 HTTP 요청에는 적용되지 않음.**
-- **설계만 완료:** state.json → SQLite 이관, 관리자 생성·로그인·세션·초대·폴더 ACL, Mac 설치 마법사, iOS/Android 앱, 역방향 모바일 동기화, Google Drive 어댑터, 장애 복구.
+- **설계만 완료:** 관리자 생성·로그인·세션·초대·폴더 ACL, Mac 설치 마법사, iOS/Android 앱, 역방향 모바일 동기화, Google Drive 어댑터, 장애 복구.
 - **아직 없음:** 서명·공증된 DMG, 정식 Google Drive OAuth 연결, 모바일 앱, 프로덕션 안정성 보장.
 - **보안 경고:** HTTP 서버는 인증이 없으므로 의도적으로 `127.0.0.1`에만 바인딩됩니다. **LAN/인터넷에 공개하거나 대체할 수 없는 원본 사진의 단일 보관소로 사용하지 마세요.**
 
 <!-- 구현 범위 확인:
-internal/meta/sqlitestore: 서버가 쓰는 메타데이터 저장소. internal/meta/jsonstore는 서버 기동에 쓰이지 않고 이관 소스 읽기용으로만 남아 있다. 현재 전체 파일 한 번 업로드, MAX 512MiB.
+internal/meta/sqlitestore: 서버가 쓰는 메타데이터 저장소. internal/meta/jsonstore는 서버 기동에 쓰이지 않는다(이관 테스트에서 이전 버전 데이터를 만드는 용도). 이관은 internal/legacyimport가 state.json을 자체 엄격 파서로 읽는다. 현재 전체 파일 한 번 업로드, MAX 512MiB.
 internal/httpapi: API에 노출되는 자산 ID는 아직 SHA-256이다(DB 내부 assets.asset_id는 랜덤, sha→asset 조회). 무인증 /assets/{sha} 경로는 M10에서 제거. 업로더의 identity도 신뢰할 수 있는 인증 주체에서 오지 않는다.
 internal/httpapi: 현재 예시 원본 다운로드 API는 folder_id/ACL 확인이 없어, 인증을 먼저 통합하지 않고 네트워크를 열면 심각한 정보 유출이 생긴다.
 SQLite 스키마와 YAML API 문서는 목표 규격으로만 분류할 것. 결과/HTTP 응답이 현재 구현과 다를 수 있다.
@@ -67,6 +67,15 @@ WITHALBUM_ROOT="$HOME/WithAlbumTest" ./withalbum-server
 ```
 
 서버는 **저장소 루트를 절대 만들지 않습니다.** 루트가 없거나 `-init-storage`로 등록되지 않았으면 원인을 안내하고 즉시 종료합니다. `-init-storage`는 이미 존재하는 디렉터리에 `.withalbum-volume.json`(volume_id) 마커만 추가하며 기존 `.system/` 데이터는 건드리지 않습니다. 이전 버전에서 쓰던 데이터 폴더도 같은 명령으로 한 번 등록하면 됩니다. 출력된 `volume_id`를 `WITHALBUM_VOLUME_ID` 환경변수로 지정하면 다른 볼륨으로는 기동하지 않습니다(선택). 실행 중 마커가 사라지거나 루트의 장치가 바뀌면 업로드·폴더 생성은 `503 storage_unavailable`로 거부되고 `/api/v1/health`의 `storage`가 `unavailable`이 됩니다. 디스크를 다시 연결했다면 서버를 재시작하세요. 프로덕션 외장하드 폴더를 지정하지 마세요.
+
+**이전 버전(state.json)에서 업그레이드:** 새 버전은 `.system/state.json`만 있는 저장소에서 기동하지 않습니다. 이전 버전 서버를 중지한 뒤 아래 순서로 이관하세요. 원본·프리뷰 파일은 읽기만 하고, state.json은 백업(`state.json.bak-<UTC>`)과 보존본(`state.json.migrated-<UTC>`)으로 남습니다. 실패하거나 중간에 끊겨도 같은 명령을 다시 실행하면 안전하게 이어가거나 처음부터 다시 합니다.
+
+```bash
+WITHALBUM_ROOT="$HOME/WithAlbumTest" ./withalbum-server migrate-legacy         # 점검만, 아무것도 쓰지 않음
+WITHALBUM_ROOT="$HOME/WithAlbumTest" ./withalbum-server migrate-legacy -apply  # 이관
+```
+
+자세한 절차·실패 시 상태·롤백: [`docs/MIGRATION_legacy_state.md`](docs/MIGRATION_legacy_state.md)
 
 <!-- 운영 시 제약:
 WITHALBUM_LISTEN=127.0.0.1:8787 기본. 주의: 바인딩 가드는 운영 인증을 대신하지 않는다.
@@ -245,7 +254,7 @@ WithAlbumRoot/
 └── Imports/                        # Finder에서 직접 놓는 안전한 가져오기 영역 (미구현)
 ```
 
-현재 서버는 `.system/withalbum.db`에 폴더·자산·blob·폴더 연결·시퀀스·이벤트를 저장하고, 원본 풀·기본 프리뷰 디렉터리를 만듭니다. 사용자/기기/세션/멤버/초대/감사 로그 테이블은 스키마만 있습니다. 이전 버전의 `.system/state.json`이 있는 저장소에서는 기동을 거부하며, 그 데이터를 읽거나 바꾸지 않습니다(이관 명령은 후속). 목표 DB는 사용자/기기/세션/앨범/멤버/초대/blobs/assets/폴더 연결/이벤트/감사 로그를 다룹니다.
+현재 서버는 `.system/withalbum.db`에 폴더·자산·blob·폴더 연결·시퀀스·이벤트를 저장하고, 원본 풀·기본 프리뷰 디렉터리를 만듭니다. 사용자/기기/세션/멤버/초대/감사 로그 테이블은 스키마만 있습니다. 이전 버전의 `.system/state.json`이 있는 저장소에서는 기동을 거부하며, 그 데이터를 읽거나 바꾸지 않습니다. `migrate-legacy -apply`가 이관 후 state.json을 `state.json.migrated-<UTC>`로 보존합니다([`docs/MIGRATION_legacy_state.md`](docs/MIGRATION_legacy_state.md)). 목표 DB는 사용자/기기/세션/앨범/멤버/초대/blobs/assets/폴더 연결/이벤트/감사 로그를 다룹니다.
 
 **DB는 로컬로 연결된 디스크(내장 또는 USB/Thunderbolt 외장)에만 두세요.** SQLite WAL 모드는 SMB/NFS 같은 네트워크 파일시스템(NAS 공유 폴더 마운트)에서 잠금이 보장되지 않아 DB가 손상될 수 있습니다.
 
@@ -343,12 +352,13 @@ GitHub에 곧바로 public push, Release 발행, 실제 원본 정리/삭제 등
 
 | 경로 | 역할 / 구현 상태 |
 |---|---|
-| `server/main.go` | **실행됨:** 설정·기동만 (환경변수, `-init-storage`, 볼륨 검증, loopback 가드, 저장소 조립) |
+| `server/main.go` | **실행됨:** 설정·기동만 (환경변수, `-init-storage`, `migrate-legacy` 서브커맨드, 볼륨 검증, loopback 가드, 저장소 조립) |
 | `internal/httpapi/` | **실행됨:** localhost HTTP PoC 핸들러(health, folders, upload, sync, original/preview), 현재 인증 없음. `contract_test.go`는 메타데이터 저장소 구현과 무관한 HTTP 계약 테스트(상태코드·JSON 키·에러 코드) |
 | `internal/httpapi/web/index.html` | **실행됨:** 내장 로컬 관리 UI; 관리자 인증 화면 아님 |
 | `internal/meta/` | **실행됨:** 메타데이터 저장소 인터페이스 `MetadataStore`와 도메인 타입. `metatest/`는 구현 공용 적합성 테스트 |
 | `internal/meta/sqlitestore/` | **실행됨(부분 구현):** SQLite `MetadataStore`. 쓰기는 `BEGIN IMMEDIATE` 트랜잭션 하나(전역 mutex 없음), 읽기는 트랜잭션 없이 조회. 랜덤 내부 asset_id, 잠금된 로컬 bootstrap 관리자(`admin`)가 모든 폴더 소유 |
-| `internal/meta/jsonstore/` | **서버 미사용:** 이전 버전의 `.system/state.json` 구현. 이관 소스 읽기용으로만 유지 |
+| `internal/meta/jsonstore/` | **서버 미사용:** 이전 버전의 `.system/state.json` 구현. 테스트에서 이전 버전 데이터를 만드는 용도로 유지 |
+| `internal/legacyimport/` | **실행됨(`migrate-legacy`):** state.json → SQLite 무손실 이관. dry-run 기본, `-apply` 시 백업 → 임시 DB에 단일 트랜잭션 → 전 행 대조 검증 → 원자적 rename → state.json 보존 rename. 단계별 크래시·결함 입력 테스트 |
 | `internal/blobstore/` | **실행됨:** 업로드 임시 저장(해시·크기·MIME), pool 승격(원자적 rename, 0400), JPEG 프리뷰 |
 | `server/main_test.go` 및 각 패키지 `*_test.go` | **테스트:** 현 PoC 동작 확인, 볼륨 소실 시 503 fail-closed, 프로덕션 안전성 테스트 아님 |
 | `internal/db/` | **실행됨:** `Open`(모든 연결에 foreign_keys/WAL/synchronous=FULL/busy_timeout, 트랜잭션은 BEGIN IMMEDIATE), `Migrate`(`migrations/*.sql` 내장, `PRAGMA user_version`, 상위 버전 거부, integrity_check), 스키마 트리거·FK 테스트 |

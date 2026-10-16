@@ -10,9 +10,10 @@
 | SHA-256 content-addressed 원본 | 개발 PoC 구현 | `internal/blobstore` | 동시성/복구/블롭 접근 권한 시험 |
 | 폴더별 해시 중복 인식 | 개발 PoC 구현 | `internal/meta/sqlitestore` (`CommitUpload`) | 업로드·복제·재시도·동시성 통합 시험 |
 | 기본 JPEG/PNG/GIF 프리뷰 | 개발 PoC 구현 | `internal/blobstore/preview.go` | HEIC/RAW/Live Photo/영상 미지원 검증 |
-| JSON 상태 파일 (이전 버전) | **서버 미사용** — state.json만 있는 저장소는 기동 거부(파일 불변) | `internal/meta/jsonstore`, `server/main.go` (`openMetadata`) | 무손실 이관 명령(M5) |
+| JSON 상태 파일 (이전 버전) | **서버 미사용** — state.json만 있는 저장소는 기동 거부(파일 불변) | `internal/meta/jsonstore`, `server/main.go` (`openMetadata`) | — |
+| state.json → SQLite 이관 | **부분 구현(테스트 검증)** — `migrate-legacy` dry-run/`-apply`, 백업·단일 트랜잭션·전 행 검증·원자적 rename, 단계별 크래시 재실행 복구 | `internal/legacyimport`, `server/main.go`, `docs/MIGRATION_legacy_state.md` | 대용량·실기기(외장 디스크) 이관 검증 |
 | 폴더별 event/cursor | 개발 PoC 구현 | `internal/meta/sqlitestore` (`folder_sequences`, `folder_changes`) | 장기간 offline 클라이언트/영속 cursor 검증 |
-| 정식 SQLite schema v1.4 | **부분 구현(서버 연결)** — 폴더·자산·blob·링크·시퀀스·이벤트 사용, 계정/ACL 테이블 미사용 | `internal/db/` (마이그레이션 0001~0003), `internal/meta/sqlitestore`, `docs/schema_v1.4.sql` | state.json 이관(M5), 장애 시험 |
+| 정식 SQLite schema v1.4 | **부분 구현(서버 연결)** — 폴더·자산·blob·링크·시퀀스·이벤트 사용, 계정/ACL 테이블 미사용 | `internal/db/` (마이그레이션 0001~0003), `internal/meta/sqlitestore`, `docs/schema_v1.4.sql` | 장애 시험 |
 | 파일·DB atomic commit | **미구현** | `docs/ROADMAP.md` | crash/partial failure 재현 자동 테스트 |
 | 외장하드 분리·마운트 식별 | **부분 구현, 실기기 미검증** (볼륨 마커 + st_dev, 쓰기 직전 재확인, 503 `storage_unavailable`) | `internal/storage`, `internal/httpapi` (`storageReady`) | 디스크 unplug 시 fail-closed (Mac mini 실기기 E2E), 디스크 UUID 대조 |
 | 사용자 계정/Argon2id/세션 | **설계만** | `docs/ACCESS_CONTROL_v1.4.md` | 로그인/로그아웃/토큰 회수 테스트 |
