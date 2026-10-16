@@ -8,7 +8,7 @@ build:
 	go build -trimpath -o $(BINARY) ./server
 
 fmt:
-	gofmt -w server/*.go
+	gofmt -w .
 
 vet:
 	go vet ./...

@@ -12,10 +12,7 @@ import (
 )
 
 func TestUploadAndDeltaSync(t *testing.T) {
-	s, err := newStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := newTestStore(t)
 	server := httptest.NewServer(s.mux())
 	defer server.Close()
 	post := func(path, body string) (int, map[string]any) {
@@ -92,10 +89,7 @@ func TestUploadAndDeltaSync(t *testing.T) {
 	}
 }
 func TestInvalidHash(t *testing.T) {
-	s, err := newStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := newTestStore(t)
 	server := httptest.NewServer(s.mux())
 	defer server.Close()
 	_, folder := func() (int, map[string]any) {
