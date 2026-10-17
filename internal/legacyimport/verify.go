@@ -212,7 +212,7 @@ func compare(ctx context.Context, sqlDB *sql.DB, st *state, srcSHA string) ([]st
 	}
 	for _, t := range []table{
 		{"folders", folders, `SELECT f.folder_id, f.folder_name, f.created_at, s.last_seq,
-			f.owner_user_id = (SELECT user_id FROM users WHERE login_name = '` + sqlitestore.BootstrapLoginName + `'),
+			f.owner_user_id = (SELECT user_id FROM account_bootstrap WHERE singleton = 1),
 			f.archived_at IS NULL
 			FROM folders f LEFT JOIN folder_sequences s ON s.folder_id = f.folder_id`},
 		{"assets", assets, `SELECT m.legacy_sha256, a.original_sha256, a.original_filename, b.mime_type, b.bytes,

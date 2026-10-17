@@ -201,7 +201,7 @@ func runMigrateLegacy(args []string, stdout, stderr io.Writer) int {
 // lockHint explains a storage.Volume.Lock failure.
 func lockHint(root string, err error) string {
 	if errors.Is(err, storage.ErrLocked) {
-		return fmt.Sprintf("LOCKED: another WithAlbum server or migrate-legacy -apply is using %q (its process id is in .system/%s). Stop it first.", root, storage.LockName)
+		return fmt.Sprintf("LOCKED: another WithAlbum server, migrate-legacy -apply or admin command is using %q (its process id is in .system/%s). Stop it first.", root, storage.LockName)
 	}
 	return fmt.Sprintf("cannot take the instance lock in %q.", root)
 }
@@ -317,6 +317,9 @@ func logReconcile(r *blobstore.ReconcileReport) {
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "migrate-legacy" {
 		os.Exit(runMigrateLegacy(os.Args[2:], os.Stdout, os.Stderr))
+	}
+	if len(os.Args) > 1 && os.Args[1] == "admin" {
+		os.Exit(runAdmin(os.Args[2:], consoleIO()))
 	}
 	showVersion := flag.Bool("version", false, "Print WithAlbum Server version and exit")
 	initStorage := flag.Bool("init-storage", false, "Register the existing WITHALBUM_ROOT directory as the storage volume and exit")

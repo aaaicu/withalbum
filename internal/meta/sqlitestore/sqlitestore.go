@@ -11,10 +11,13 @@
 // are still the SHA-256 of the original. Internally each asset has a random
 // assets.asset_id; the store maps sha256 -> asset on every call.
 //
-// The PoC has no accounts yet. Open makes sure a locked local bootstrap
+// The PoC HTTP API has no login yet. Open makes sure a bootstrap
 // administrator exists and records it as the owner of every folder (the
-// schema requires an active owner). It cannot log in: its password_hash is
-// not a valid password hash. Account setup takes it over later.
+// schema requires an active owner). It is created locked (its password_hash
+// is not a valid password hash, so it cannot log in) and is identified by
+// account_bootstrap.user_id, not by its login name: `withalbum-server admin
+// init` (internal/users) takes it over, may rename it, and keeps the user_id,
+// so existing folders keep their owner.
 package sqlitestore
 
 import (
@@ -41,8 +44,9 @@ import (
 func DBPath(root string) string { return filepath.Join(root, ".system", "withalbum.db") }
 
 const (
-	// BootstrapLoginName is the login of the locked local administrator that
-	// owns folders while the server has no real accounts.
+	// BootstrapLoginName is the login name the locked bootstrap administrator
+	// is created with. After `admin init` the account may have another name;
+	// find it through account_bootstrap.user_id.
 	BootstrapLoginName = "admin"
 	// lockedPasswordHash is deliberately not a PHC string, so no password
 	// verifier can ever accept it.
@@ -54,6 +58,10 @@ type Store struct {
 	db      *sql.DB
 	ownerID string // users.user_id of the bootstrap administrator
 }
+
+// DB returns the underlying database so that other stores of the same
+// database (accounts, internal/users) share its connection pool.
+func (s *Store) DB() *sql.DB { return s.db }
 
 var (
 	_ meta.MetadataStore  = (*Store)(nil)
@@ -112,7 +120,7 @@ func now() string { return time.Now().UTC().Format(time.RFC3339Nano) }
 // inserting the account on first use.
 func ensureBootstrapOwner(ctx context.Context, sqlDB *sql.DB) (string, error) {
 	var id string
-	err := sqlDB.QueryRowContext(ctx, bootstrapQuery, BootstrapLoginName).Scan(&id)
+	err := sqlDB.QueryRowContext(ctx, bootstrapQuery).Scan(&id)
 	if err == nil || !errors.Is(err, sql.ErrNoRows) {
 		return id, err
 	}
@@ -128,15 +136,17 @@ func ensureBootstrapOwner(ctx context.Context, sqlDB *sql.DB) (string, error) {
 	return id, tx.Commit()
 }
 
-const bootstrapQuery = "SELECT user_id FROM users WHERE login_name = ?"
+const bootstrapQuery = "SELECT user_id FROM account_bootstrap WHERE singleton = 1"
 
 // EnsureBootstrapOwnerTx returns the bootstrap administrator's user_id inside
-// tx, inserting the locked account if it does not exist yet. The caller
-// commits. The legacy import uses it so that imported folders get the same
-// owner the server would create.
+// tx, inserting the locked account (login BootstrapLoginName) and its
+// account_bootstrap row if they do not exist yet. The caller commits. The
+// legacy import uses it so that imported folders get the same owner the
+// server would create. If the login name is already used by another account
+// the insert fails (UNIQUE) and nothing is created.
 func EnsureBootstrapOwnerTx(ctx context.Context, tx *sql.Tx) (string, error) {
 	var id string
-	err := tx.QueryRowContext(ctx, bootstrapQuery, BootstrapLoginName).Scan(&id)
+	err := tx.QueryRowContext(ctx, bootstrapQuery).Scan(&id)
 	if err == nil {
 		return id, nil
 	}
@@ -150,6 +160,9 @@ func EnsureBootstrapOwnerTx(ctx context.Context, tx *sql.Tx) (string, error) {
 		(user_id, login_name, display_name, password_hash, server_role, can_create_albums, status, created_at)
 		VALUES (?, ?, 'Administrator', ?, 'SERVER_ADMIN', 1, 'active', ?)`,
 		id, BootstrapLoginName, lockedPasswordHash, now()); err != nil {
+		return "", err
+	}
+	if _, err := tx.ExecContext(ctx, "INSERT INTO account_bootstrap (singleton, user_id) VALUES (1, ?)", id); err != nil {
 		return "", err
 	}
 	return id, nil

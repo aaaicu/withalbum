@@ -38,8 +38,8 @@ func TestEmbeddedMigrationsAreContiguous(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ms) != 3 || LatestVersion() != 3 {
-		t.Fatalf("got %d migrations, LatestVersion %d; want 3", len(ms), LatestVersion())
+	if len(ms) != 4 || LatestVersion() != 4 {
+		t.Fatalf("got %d migrations, LatestVersion %d; want 4", len(ms), LatestVersion())
 	}
 }
 
@@ -362,5 +362,54 @@ func TestMigrateNewTx(t *testing.T) {
 	defer tx.Rollback()
 	if err := MigrateNewTx(ctx, tx); !errors.Is(err, ErrForeignDatabase) {
 		t.Fatalf("MigrateNewTx on migrated db = %v, want ErrForeignDatabase", err)
+	}
+}
+
+// migrateTo applies only the embedded migrations up to version v.
+func migrateTo(t *testing.T, sqlDB *sql.DB, v int) {
+	t.Helper()
+	ms, err := Migrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fsys := fstest.MapFS{}
+	for _, m := range ms[:v] {
+		fsys["m/"+m.Name] = &fstest.MapFile{Data: []byte(m.SQL)}
+	}
+	if err := migrate(context.Background(), sqlDB, fsys, "m"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMigration0004RecordsExistingBootstrapAccount(t *testing.T) {
+	ctx := context.Background()
+	// A database written by an earlier version: locked 'admin' owns a folder.
+	sqlDB, _ := openTemp(t)
+	migrateTo(t, sqlDB, 3)
+	mustExec(t, sqlDB, "INSERT INTO users(user_id, login_name, display_name, password_hash, server_role, status) VALUES ('boot', 'admin', 'Administrator', '!locked', 'SERVER_ADMIN', 'active')")
+	addUser(t, sqlDB, "other", "active")
+	mustExec(t, sqlDB, "INSERT INTO folders(folder_id, folder_name, owner_user_id) VALUES ('f1', 'Trip', 'boot')")
+	if err := Migrate(ctx, sqlDB); err != nil {
+		t.Fatal(err)
+	}
+	var id string
+	var claimed sql.NullString
+	if err := sqlDB.QueryRow("SELECT user_id, claimed_at FROM account_bootstrap WHERE singleton = 1").Scan(&id, &claimed); err != nil || id != "boot" || claimed.Valid {
+		t.Fatalf("account_bootstrap = %q %v, %v", id, claimed, err)
+	}
+	expectReject(t, sqlDB, "CHECK constraint", "INSERT INTO account_bootstrap(singleton, user_id) VALUES (2, 'other')")
+	expectReject(t, sqlDB, "UNIQUE constraint", "INSERT INTO account_bootstrap(singleton, user_id) VALUES (1, 'other')")
+	expectReject(t, sqlDB, "FOREIGN KEY", "DELETE FROM users WHERE user_id = 'boot'")
+
+	// No locked 'admin' (or a non-locked one): nothing is recorded.
+	empty, _ := openTemp(t)
+	migrateTo(t, empty, 3)
+	mustExec(t, empty, "INSERT INTO users(user_id, login_name, display_name, password_hash) VALUES ('u', 'admin', 'x', '$argon2id$x')")
+	if err := Migrate(ctx, empty); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := empty.QueryRow("SELECT count(*) FROM account_bootstrap").Scan(&n); err != nil || n != 0 {
+		t.Fatalf("account_bootstrap rows %d, %v", n, err)
 	}
 }
