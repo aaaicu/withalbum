@@ -1,7 +1,7 @@
 # 위드앨범(WithAlbum) 계정·오너·초대·권한 설계 v1.4
 
 - 기준: 2026-10-17
-- 상태: **P0 확정 설계 / 정책 함수·계정 코어(콘솔 전용) 구현**. HTTP 서버에 로그인·실제 ACL 적용 전.
+- 상태: **P0 확정 설계 / 정책 함수·계정 코어·HTTP 로그인·기기 세션·계정 관리 API 구현**. 폴더/자산 API에 실제 ACL 적용 전(M10).
 - 적용 대상: `SELF_HOSTED` Mac mini 우선 (동일 Go 서버 코어를 Linux/Raspberry Pi에도 적용).
 - Google Drive 지원: 아래 **[Drive 별도 제한]**을 반드시 확인. 네이티브 ACL과 동일하지 않다.
 
@@ -145,7 +145,17 @@ Drive의 개인 My Drive ACL 역할은 `owner`, `writer`, `commenter`, `reader` 
   - 최초 관리자(**서버 콘솔 전용**): `withalbum-server admin init -login <이름>`. 기존 폴더를 소유한 잠금 bootstrap 계정(`account_bootstrap`, 처음 이름 `admin`)을 **인수**한다. user_id를 유지하므로 레거시 폴더 소유가 그대로이며, 한 번만 가능하다. 인수 전에는 bootstrap 계정을 다른 방법으로 바꿀 수 없고 다른 계정도 만들 수 없다. 이름 `admin`은 인수 전에는 bootstrap 계정이 점유하고, 인수 때 그대로 둘 수도 있으며, 다른 이름으로 바꾸면 일반 계정에 쓸 수 있다(bootstrap 식별은 이름이 아니라 user_id).
   - 일반 사용자: 관리자가 콘솔 `admin create-user`로 생성(기본 USER, `can_create_albums=false`). 가입 신청은 후속.
   - 복구: `admin reset-password` (콘솔 전용, `SECURITY.md` 참조).
-- **미구현:** 로그인/세션/기기 토큰(재설정·비활성 시 세션 회수 포함), 로그인 실패 감사·속도 제한, 초대 워크플로우, 기존 HTTP 핸들러에 미들웨어 접목, TLS, 앱 UX, Drive 계정 연동.
+- **로그인·세션 구현(HTTP, 테스트·로컬 바이너리 스모크 검증):** 규격은 `docs/API_AUTH_v1.4.yaml`.
+  - `internal/auth/session`: 로그인 1회 = `devices` 1행 + `auth_sessions` 1행(마이그레이션 0005로 access 토큰 해시·만료, CSRF 해시, 교환된 refresh 기록 `auth_refresh_used` 추가). 토큰은 256비트 랜덤(base64url), DB에는 SHA-256만 저장. access 15분, refresh 30일(교환 때마다 창 재시작). refresh는 access·refresh를 모두 회전해 이전 토큰은 즉시 무효. 이미 교환된 refresh가 다시 오면 **세션 전체 폐기**(재사용 감지, `auth.refresh_reuse` 감사). 같은 refresh로 동시에 두 번 요청해도 재사용으로 간주된다(앱은 refresh를 직렬화해야 함).
+  - `internal/httpapi/middleware_auth.go` `RequireSession`: Bearer 또는 웹 쿠키. **매 요청 DB에서 세션·기기·계정 상태를 재조회**해 `authz.Principal`을 만든다(`PrincipalFrom`). 비활성·기기 해지·만료는 다음 요청에서 401, 역할·앨범 생성 권한 변경도 다음 요청에 반영.
+  - 웹(platform `web`): 토큰을 본문에 주지 않고 HttpOnly·SameSite=Strict 쿠키(`withalbum_access` Path=/api/, `withalbum_refresh` Path=/api/v1/auth/) + 읽을 수 있는 `withalbum_csrf` 쿠키. 쿠키로 인증된 GET/HEAD/OPTIONS 이외 요청은 `X-CSRF-Token` 필수(없거나 틀리면 403). Authorization 헤더가 있으면 쿠키는 무시. 본문은 `application/json`만 허용(교차 사이트 폼 차단). Secure는 TLS 요청에서 설정(현재는 loopback HTTP 전용, TLS는 M15).
+  - 사용자 열거 방지: 없는 계정·잠금 계정·비활성 계정·틀린 비밀번호 모두 같은 401 본문, 없는/잠금 계정도 더미 해시로 Argon2id 1회 수행(스모크 측정: 없는 계정 111ms, 틀린 비밀번호 107ms, 기본 파라미터).
+  - Argon2id 동시 계산 수 제한(`password.Limiter`, 기본 2개 = 최대 128MiB, 슬롯 대기 5초 초과 시 503 busy).
+  - 속도 제한(`internal/auth/ratelimit`, 메모리, 프로세스 재시작 시 초기화): IP당 10회 버스트 후 6초에 1회, 계정+IP 실패 5회 / 계정 전체 실패 20회 per 15분 → 429 + Retry-After. 존재하지 않는 계정 이름에도 똑같이 적용. 키 수 상한(가득 차면 새 키 거부, fail closed). 프록시 헤더는 신뢰하지 않는다.
+  - 감사: 로그인 성공/실패(사유·IP, 비밀번호 제외), 제한 시작(차단 1회당 1행), 로그아웃, 기기 해지, refresh 재사용, 비밀번호 변경·재설정(폐기된 세션 수), 계정 생성·비활성·권한 변경(HTTP 관리자 행위자 포함).
+  - 세션 회수: 콘솔·관리자 비밀번호 재설정은 모든 세션, 본인 비밀번호 변경(`POST /me/password`)은 현재 세션 외 전부, 계정 비활성화는 모든 세션을 같은 트랜잭션에서 폐기(`session.RevokeUserTx`). 재활성화해도 이전 세션은 살아나지 않는다.
+  - 관리자 API: `GET/POST /admin/users`, `GET/PATCH /admin/users/{id}`(status), `PATCH /admin/users/{id}/permissions`(server_role·can_create_albums 한 트랜잭션). SERVER_ADMIN 아니면 403. 최초 관리자는 여전히 콘솔 `admin init`만.
+- **미구현:** 폴더/업로드/다운로드 핸들러에 미들웨어 접목(M10, 그 전까지 loopback 전용), 초대 워크플로우, TLS, 앱 UX, Drive 계정 연동, 로그인 성공 시 Argon2id 파라미터 재해시, 오래된 세션 행 정리, 관리자에 의한 타인 기기 목록/해지.
 - 구현 순서: SQLite 트랜잭션 및 마이그레이션 → 최초 관리자 생성/로그인 → 권한 미들웨어 → 폴더 오너/멤버 권한 → 초대/수락/회수 → 전체 통합 테스트 → Mac LAN 테스트.
 - **중요:** 현재 PoC는 인증이 없어서 `127.0.0.1`만 바인딩되며 사용자 데이터나 외부 접근에 사용하면 안 된다.
 

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -29,8 +30,9 @@ import (
 	"github.com/aaaicu/withalbum/internal/storage"
 )
 
-// This is a LAN/localhost demonstration server, NOT a production service.
-// In particular, it intentionally has NO AUTHENTICATION. Never publish its port.
+// This is a localhost demonstration server, NOT a production service. Login
+// and sessions exist, but the folder and asset routes are not protected yet
+// (M10) and there is no TLS (M15). Never publish its port.
 
 // Set with -ldflags "-X main.version=<version>" by the release builder.
 var version = "dev"
@@ -223,6 +225,7 @@ type appOptions struct {
 	VolumeID     string // WITHALBUM_VOLUME_ID; empty: any registered volume
 	MinFreeBytes int64
 	Faults       httpapi.FaultInjector // tests only
+	Auth         httpapi.AuthOptions   // zero: production defaults
 }
 
 // app is a started server: a verified volume, its instance lock, the
@@ -250,7 +253,7 @@ func (a *app) Close() error {
 //  4. reconcile .system with the metadata after a possible crash: remove
 //     unfinished uploads, quarantine unreferenced pool files to
 //     .system/orphans, report missing or damaged originals,
-//  5. build the HTTP API.
+//  5. build the HTTP API with its login and session services.
 func openApp(ctx context.Context, root string, opt appOptions) (*app, error) {
 	vol, err := storage.Open(root, storage.OpenOptions{ExpectedVolumeID: opt.VolumeID})
 	if err != nil {
@@ -289,8 +292,16 @@ func openApp(ctx context.Context, root string, opt appOptions) (*app, error) {
 		return fail(fmt.Errorf("RECOVERY: startup reconciliation failed; refusing to start: %w", err))
 	}
 	logReconcile(a.report)
+	dbm, ok := a.meta.(interface{ DB() *sql.DB })
+	if !ok {
+		return fail(fmt.Errorf("metadata store %T has no account database", a.meta))
+	}
+	auth, err := httpapi.NewAuth(dbm.DB(), opt.Auth)
+	if err != nil {
+		return fail(fmt.Errorf("AUTH: %w", err))
+	}
 	a.api = httpapi.New(httpapi.Config{Volume: vol, Meta: a.meta, Blobs: a.blobs, Version: version,
-		MinFreeBytes: opt.MinFreeBytes, IntegrityWarning: !a.report.Healthy(), Faults: opt.Faults})
+		MinFreeBytes: opt.MinFreeBytes, IntegrityWarning: !a.report.Healthy(), Faults: opt.Faults, Auth: auth})
 	return a, nil
 }
 
@@ -352,7 +363,7 @@ func main() {
 		addr = "127.0.0.1:8787"
 	}
 	if !loopbackOnly(addr) {
-		log.Fatalf("SECURITY: refusing non-loopback address %q (authentication has not been implemented)", addr)
+		log.Fatalf("SECURITY: refusing non-loopback address %q (folder and asset routes are not access-controlled yet and there is no TLS)", addr)
 	}
 	minFree, err := minFreeBytes(os.Getenv("WITHALBUM_MIN_FREE_BYTES"))
 	if err != nil {
@@ -381,7 +392,7 @@ func main() {
 			log.Printf("shutdown: %v", err)
 		}
 	}()
-	log.Printf("EXPERIMENTAL / NO AUTH: listen=%s root=%s volume_id=%s", addr, a.vol.Root(), a.vol.ID())
+	log.Printf("EXPERIMENTAL / FOLDER AND ASSET API UNAUTHENTICATED: listen=%s root=%s volume_id=%s", addr, a.vol.Root(), a.vol.ID())
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}

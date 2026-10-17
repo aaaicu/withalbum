@@ -6,21 +6,28 @@
 //     valid Argon2id PHC string; the store never sees a plaintext password and
 //     never returns a hash. Hash before calling, outside the transaction, so
 //     the write lock is not held during the expensive computation.
+//
 //   - The bootstrap administrator (account_bootstrap, created locked by
 //     sqlitestore and owning every folder of earlier versions) is taken over
 //     exactly once by ClaimBootstrap: new login name, display name and
 //     password, same user_id, so existing folders keep their owner. Until
 //     then the account cannot be changed in any other way, and no other
 //     account can be created.
+//
 //   - At least one usable administrator (active SERVER_ADMIN whose password is
 //     not locked) remains after the bootstrap: the last one cannot be
 //     disabled or demoted.
+//
 //   - An account that owns folders cannot be disabled (trigger
 //     cannot_disable_owner).
+//
 //   - Every successful change writes an audit_log row in the same transaction.
 //
-// Sessions do not exist yet. When the login API adds them, disabling an account
-// and resetting a password must also revoke its sessions.
+//   - Resetting a password revokes every session of the account, changing
+//     one's own password every session but the current one, and disabling an
+//     account all of them, in the same transaction (session.RevokeUserTx).
+//     Role and album-creation changes need no revocation: the session layer
+//     re-reads the account on every request.
 package users
 
 import (
@@ -38,6 +45,7 @@ import (
 
 	"github.com/aaaicu/withalbum/internal/audit"
 	"github.com/aaaicu/withalbum/internal/auth/password"
+	"github.com/aaaicu/withalbum/internal/auth/session"
 )
 
 // Role is users.server_role.
@@ -73,7 +81,7 @@ type User struct {
 // Actor is who makes a change, for the audit log.
 type Actor struct {
 	UserID string // "" for the server console
-	Via    string // "console"; later "http"
+	Via    string // "console" or "http"
 }
 
 // Console is the operator at the server console (CLI).
@@ -393,9 +401,24 @@ func requireOtherAdmin(ctx context.Context, tx *sql.Tx, id string) error {
 	return nil
 }
 
-// SetPassword replaces the account's password hash (console recovery and,
-// later, password changes). It does not change the account status.
+// SetPassword replaces the account's password hash (console recovery or an
+// administrator) and revokes every session of the account. It does not
+// change the account status.
 func (s *Store) SetPassword(ctx context.Context, id, hash string, actor Actor) error {
+	return s.setPassword(ctx, id, hash, "", "account.password_reset", session.ReasonPasswordReset, actor)
+}
+
+// ChangeOwnPassword replaces the password of the account logged in with
+// session keepSessionID and revokes all its other sessions. The caller has
+// verified the current password.
+func (s *Store) ChangeOwnPassword(ctx context.Context, id, hash, keepSessionID string, actor Actor) error {
+	if keepSessionID == "" {
+		return errors.New("users: ChangeOwnPassword needs the current session")
+	}
+	return s.setPassword(ctx, id, hash, keepSessionID, "account.password_change", session.ReasonPasswordChange, actor)
+}
+
+func (s *Store) setPassword(ctx context.Context, id, hash, keepSessionID, action, reason string, actor Actor) error {
 	if !password.Valid(hash) {
 		return ErrInvalidHash
 	}
@@ -403,7 +426,11 @@ func (s *Store) SetPassword(ctx context.Context, id, hash string, actor Actor) e
 		if _, err := tx.ExecContext(ctx, "UPDATE users SET password_hash = ? WHERE user_id = ?", hash, id); err != nil {
 			return err
 		}
-		return record(ctx, tx, actor, "account.password_reset", id, map[string]any{"login": u.LoginName})
+		n, err := session.RevokeUserTx(ctx, tx, id, keepSessionID, reason)
+		if err != nil {
+			return err
+		}
+		return record(ctx, tx, actor, action, id, map[string]any{"login": u.LoginName, "sessions_revoked": n})
 	})
 }
 
@@ -427,51 +454,85 @@ func (s *Store) SetStatus(ctx context.Context, id string, status Status, actor A
 			}
 			return err
 		}
-		action := "account.enable"
-		if status == StatusDisabled {
-			action = "account.disable"
+		if status == StatusActive {
+			return record(ctx, tx, actor, "account.enable", id, map[string]any{"login": u.LoginName})
 		}
-		return record(ctx, tx, actor, action, id, map[string]any{"login": u.LoginName})
+		n, err := session.RevokeUserTx(ctx, tx, id, "", session.ReasonAccountDisable)
+		if err != nil {
+			return err
+		}
+		return record(ctx, tx, actor, "account.disable", id, map[string]any{"login": u.LoginName, "sessions_revoked": n})
 	})
 }
 
 // SetRole changes the server role.
 func (s *Store) SetRole(ctx context.Context, id string, role Role, actor Actor) error {
-	if role != RoleServerAdmin && role != RoleUser {
-		return ErrInvalidRole
-	}
-	return s.change(ctx, id, func(tx *sql.Tx, u User) error {
-		if u.Role == role {
-			return nil
-		}
-		if role != RoleServerAdmin && usableAdmin(u) {
-			if err := requireOtherAdmin(ctx, tx, id); err != nil {
-				return err
-			}
-		}
-		if _, err := tx.ExecContext(ctx, "UPDATE users SET server_role = ? WHERE user_id = ?", string(role), id); err != nil {
-			return err
-		}
-		return record(ctx, tx, actor, "account.role_change", id, map[string]any{
-			"login": u.LoginName, "from": string(u.Role), "to": string(role)})
-	})
+	return s.SetPermissions(ctx, id, Permissions{Role: &role}, actor)
 }
 
 // SetCanCreateAlbums grants or revokes album creation for a USER account
 // (SERVER_ADMIN may always create albums, see internal/authz).
 func (s *Store) SetCanCreateAlbums(ctx context.Context, id string, allowed bool, actor Actor) error {
+	return s.SetPermissions(ctx, id, Permissions{CanCreateAlbums: &allowed}, actor)
+}
+
+// List returns every account, ordered by login name.
+func (s *Store) List(ctx context.Context) ([]User, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT "+userColumns+" FROM users ORDER BY login_name COLLATE NOCASE, user_id")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	list := []User{}
+	for rows.Next() {
+		u, err := scanUser(rows)
+		if err != nil {
+			return nil, err
+		}
+		list = append(list, u)
+	}
+	return list, rows.Err()
+}
+
+// Permissions is a change of server permissions; nil fields stay as they are.
+type Permissions struct {
+	Role            *Role
+	CanCreateAlbums *bool
+}
+
+// SetPermissions applies p in one transaction (both changes or neither).
+func (s *Store) SetPermissions(ctx context.Context, id string, p Permissions, actor Actor) error {
+	if p.Role != nil && *p.Role != RoleServerAdmin && *p.Role != RoleUser {
+		return ErrInvalidRole
+	}
 	return s.change(ctx, id, func(tx *sql.Tx, u User) error {
-		if u.CanCreateAlbums == allowed {
-			return nil
+		if p.Role != nil && *p.Role != u.Role {
+			if *p.Role != RoleServerAdmin && usableAdmin(u) {
+				if err := requireOtherAdmin(ctx, tx, id); err != nil {
+					return err
+				}
+			}
+			if _, err := tx.ExecContext(ctx, "UPDATE users SET server_role = ? WHERE user_id = ?", string(*p.Role), id); err != nil {
+				return err
+			}
+			if err := record(ctx, tx, actor, "account.role_change", id, map[string]any{
+				"login": u.LoginName, "from": string(u.Role), "to": string(*p.Role)}); err != nil {
+				return err
+			}
 		}
-		v := 0
-		if allowed {
-			v = 1
+		if p.CanCreateAlbums != nil && *p.CanCreateAlbums != u.CanCreateAlbums {
+			v := 0
+			if *p.CanCreateAlbums {
+				v = 1
+			}
+			if _, err := tx.ExecContext(ctx, "UPDATE users SET can_create_albums = ? WHERE user_id = ?", v, id); err != nil {
+				return err
+			}
+			if err := record(ctx, tx, actor, "account.album_creation_change", id, map[string]any{
+				"login": u.LoginName, "can_create_albums": *p.CanCreateAlbums}); err != nil {
+				return err
+			}
 		}
-		if _, err := tx.ExecContext(ctx, "UPDATE users SET can_create_albums = ? WHERE user_id = ?", v, id); err != nil {
-			return err
-		}
-		return record(ctx, tx, actor, "account.album_creation_change", id, map[string]any{
-			"login": u.LoginName, "can_create_albums": allowed})
+		return nil
 	})
 }

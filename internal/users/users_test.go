@@ -420,3 +420,34 @@ func TestSetCanCreateAlbums(t *testing.T) {
 		t.Fatalf("audit actor = %q, %v", actor, err)
 	}
 }
+
+func TestSetPermissionsIsAtomic(t *testing.T) {
+	ctx := context.Background()
+	_, s, boot := setup(t)
+	claim(t, s, "alice")
+	bob := create(t, s, "bob", RoleUser)
+	yes := true
+	user, bad := RoleUser, Role("ROOT")
+	// The role change fails (last administrator), so the album permission
+	// granted in the same call is not applied either.
+	if err := s.SetPermissions(ctx, boot, Permissions{Role: &user, CanCreateAlbums: &yes}, Console); !errors.Is(err, ErrLastAdmin) {
+		t.Fatalf("SetPermissions = %v", err)
+	}
+	if err := s.SetPermissions(ctx, bob.ID, Permissions{Role: &bad, CanCreateAlbums: &yes}, Console); !errors.Is(err, ErrInvalidRole) {
+		t.Fatalf("SetPermissions(bad role) = %v", err)
+	}
+	if u, _ := s.Get(ctx, bob.ID); u.CanCreateAlbums {
+		t.Fatal("partial permission change applied")
+	}
+	admin := RoleServerAdmin
+	if err := s.SetPermissions(ctx, bob.ID, Permissions{Role: &admin, CanCreateAlbums: &yes}, Console); err != nil {
+		t.Fatal(err)
+	}
+	if u, _ := s.Get(ctx, bob.ID); u.Role != RoleServerAdmin || !u.CanCreateAlbums {
+		t.Fatalf("bob = %+v", u)
+	}
+	list, err := s.List(ctx)
+	if err != nil || len(list) != 2 || list[0].LoginName != "alice" || list[1].LoginName != "bob" {
+		t.Fatalf("List = %+v, %v", list, err)
+	}
+}

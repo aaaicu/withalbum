@@ -30,14 +30,15 @@
 
 ## 현재 코드의 진짜 상태 (절대 혼동 금지)
 
-- `server/main.go`(기동) + `internal/httpapi`(핸들러) + `internal/meta/sqlitestore` + `internal/blobstore`: 인증 없는 localhost 전용 Go PoC. 메타데이터는 SQLite `.system/withalbum.db`(`meta.MetadataStore` 인터페이스 뒤). 512MiB 단일 요청 원본 업로드/초보적 프리뷰. DB 내부 asset_id는 랜덤이지만 **API의 자산 식별자는 아직 SHA-256**이고 실제 ACL은 없음. 폴더 소유자는 bootstrap 관리자 계정(`account_bootstrap.user_id`, 처음엔 로그인 불가한 잠금 `admin`).
+- `server/main.go`(기동) + `internal/httpapi`(핸들러) + `internal/meta/sqlitestore` + `internal/blobstore`: 폴더/자산 API는 인증 없는 localhost 전용 Go PoC. 메타데이터는 SQLite `.system/withalbum.db`(`meta.MetadataStore` 인터페이스 뒤). 512MiB 단일 요청 원본 업로드/초보적 프리뷰. DB 내부 asset_id는 랜덤이지만 **API의 자산 식별자는 아직 SHA-256**이고 실제 ACL은 없음. 폴더 소유자는 bootstrap 관리자 계정(`account_bootstrap.user_id`, 처음엔 로그인 불가한 잠금 `admin`).
 - `internal/meta/jsonstore`: 서버 기동에 쓰이지 않음(테스트에서 이전 버전 데이터 생성용). state.json만 있는 저장소는 기동 거부.
 - `internal/legacyimport` + `withalbum-server migrate-legacy [-apply]`: state.json → SQLite 무손실 이관(dry-run 기본, 백업·임시 DB 단일 트랜잭션·전 행 검증·원자적 rename·state.json 보존). 테스트와 로컬 스모크(이전 버전 바이너리로 만든 데이터)로 검증, 대용량·외장 디스크 실기기 이관은 미검증.
 - 업로드 커밋 순서·기동 재조정(`blobstore.Reconcile`, `server/main.go` `openApp`)·여유 공간 507·단일 인스턴스 잠금: 장애 주입·SIGKILL 테스트로 검증, 전원 차단·실기기 미검증.
-- `internal/auth/password`(Argon2id) + `internal/users`(사용자 저장소, 마지막 관리자 보호, 감사 로그 `internal/audit`) + `server/admin.go`(`admin init`=bootstrap 인수·`create-user`·`reset-password`, 콘솔 전용, 저장소 잠금 필요): 테스트·로컬 바이너리 스모크로 검증. **HTTP 로그인·세션 없음.**
-- `internal/authz`: 권한 함수와 테스트만 있으며 HTTP handler 미연결.
-- `internal/db`: SQLite 열기·PRAGMA·마이그레이션(0001 schema v1.4, 0002 이관 보조, 0003 `assets.preview_ready`, 0004 `account_bootstrap`). `docs/schema_v1.4.sql`은 마이그레이션 0001과 동일(정본은 `internal/db/migrations/`). users·audit_log는 콘솔 admin 명령만 사용, 세션·멤버·초대 테이블은 아직 미사용.
-- `docs/API_AUTH_v1.4.yaml`: **미구현 목표 설계**.
+- `internal/auth/password`(Argon2id) + `internal/users`(사용자 저장소, 마지막 관리자 보호, 감사 로그 `internal/audit`) + `server/admin.go`(`admin init`=bootstrap 인수·`create-user`·`reset-password`, 콘솔 전용, 저장소 잠금 필요): 테스트·로컬 바이너리 스모크로 검증. 비밀번호 재설정·비활성화는 세션을 같은 트랜잭션에서 회수.
+- `internal/auth/session`(기기 세션, access 15분/refresh 30일 회전·재사용 시 세션 폐기, 토큰 SHA-256만 저장) + `internal/auth/ratelimit`(메모리 속도 제한) + `password.Limiter`(Argon2id 동시 2개, 더미 해시로 열거 방지) + `internal/httpapi/auth.go`·`middleware_auth.go`(`/api/v1/auth/*`, `/api/v1/me*`, `/api/v1/admin/users*`, `RequireSession`, 웹 쿠키+CSRF): 테스트·로컬 바이너리 스모크로 검증. **기존 폴더/업로드/동기화/다운로드 핸들러는 아직 미들웨어 미연결(무인증, M10).**
+- `internal/authz`: 권한 함수와 테스트. HTTP에서는 `/api/v1/admin/*`의 `ManageAccounts` 판정에만 사용, 앨범 핸들러 미연결.
+- `internal/db`: SQLite 열기·PRAGMA·마이그레이션(0001 schema v1.4, 0002 이관 보조, 0003 `assets.preview_ready`, 0004 `account_bootstrap`, 0005 세션 토큰 컬럼·`auth_refresh_used`). `docs/schema_v1.4.sql`은 마이그레이션 0001과 동일(정본은 `internal/db/migrations/`). users·audit_log·devices·auth_sessions 사용, 멤버·초대 테이블은 아직 미사용.
+- `docs/API_AUTH_v1.4.yaml`: `/auth/*`·`/me*`·`/admin/users*`는 **구현됨**, 폴더·초대·자산 경로는 **미구현 목표 설계**.
 - Flutter/iOS/Android, OAuth Drive, 외부 통신, 실시간 푸시, GUI DMG, 신뢰 가능한 백업 복원은 없음.
 - README v1.5는 **기획·인수인계 정리판**이고 새 기능 릴리스가 아님.
 

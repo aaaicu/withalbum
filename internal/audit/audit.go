@@ -4,8 +4,10 @@
 // audit row commit or roll back together. Entries must never carry secrets:
 // Record refuses detail keys that look like passwords, hashes or tokens.
 //
-// Draft: only account changes (internal/users) are recorded so far. Denied
-// attempts, logins and album events follow with the HTTP API.
+// Recorded so far: account changes (internal/users), logins (successful and
+// failed, with the reason), login throttling (once per block), logout,
+// device revocation and refresh-token reuse (internal/auth/session). Album
+// events follow with the album API.
 package audit
 
 import (
