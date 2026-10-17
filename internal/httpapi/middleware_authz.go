@@ -62,6 +62,7 @@ var routePolicies = []RoutePolicy{
 	{"GET /api/v1/admin/users/{userID}", AccessServer, authz.ManageAccounts},
 	{"PATCH /api/v1/admin/users/{userID}", AccessServer, authz.ManageAccounts},
 	{"PATCH /api/v1/admin/users/{userID}/permissions", AccessServer, authz.ManageAccounts},
+	{"GET /api/v1/admin/server/tls", AccessServer, authz.ManageServer},
 	{"GET /api/v1/folders", AccessSession, ""},
 	{"POST /api/v1/folders", AccessServer, authz.CreateAlbum},
 	{"GET /api/v1/folders/{folderID}", AccessAlbum, authz.GetAlbumMetadata},

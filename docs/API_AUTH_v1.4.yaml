@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: WithAlbum Self-Hosted Identity and Authorization API
-  version: 1.4.3-draft
+  version: 1.4.4-draft
   description: >-
     Access-control contract. IMPLEMENTED in the Go server: /api/v1/auth/*,
     /api/v1/me*, /api/v1/admin/users* (login, device sessions, account
@@ -16,8 +16,22 @@ info:
     transaction that re-checks the caller. Still TARGET DESIGN (marked
     "not implemented"): the asset list (M16). The unauthenticated PoC
     routes /api/v1/assets/{sha256}/* of
-    API_v1.2.yaml are removed. There is no TLS yet (M15): the server listens
-    on loopback only.
+    API_v1.2.yaml are removed.
+
+
+    Transport (M15). Plain HTTP is served on loopback only. A LAN listener
+    (-allow-lan) requires TLS 1.3 with the server's self-signed certificate
+    and at least one administrator who can log in. Clients do not validate
+    the certificate against a CA or the host name; they pin the SHA-256 of
+    its SubjectPublicKeyInfo (64 hex digits), obtained out of band from the
+    pairing payload withalbum://pair?v=1&url=<https URL>&spki_sha256=<hex>
+    (server console "withalbum-server tls", or the dashboard for a
+    SERVER_ADMIN), and refuse any other key. The key survives certificate
+    renewal, so the pin only changes if the identity is deleted. Every
+    response carries X-Content-Type-Options: nosniff, X-Frame-Options: DENY,
+    Referrer-Policy: no-referrer, Cross-Origin-Resource-Policy: same-origin
+    and a Content-Security-Policy without any source (the dashboard page has
+    its own); HSTS is sent over TLS for DNS host names other than localhost.
 
 
     Access. Only the dashboard page (GET /), GET /api/v1/health,
@@ -70,9 +84,9 @@ info:
     no-store.
 servers:
   - url: http://127.0.0.1:8787
-    description: Current development server (loopback only)
-  - url: https://withalbum-server.local.example
-    description: Target (TLS, M15)
+    description: Development server, plain HTTP (loopback only)
+  - url: https://192.0.2.10:8787
+    description: LAN server (-tls -allow-lan), self-signed certificate pinned by its SPKI SHA-256
 security:
   - bearerAuth: []
   - cookieAuth: []
@@ -344,6 +358,38 @@ paths:
         '403': {description: 'forbidden or csrf_failed'}
         '404': {description: user_not_found}
         '409': {description: 'last_admin, not_initialized'}
+  /api/v1/admin/server/tls:
+    get:
+      tags: [Server Admin]
+      summary: TLS identity and pairing payloads (SERVER_ADMIN only)
+      description: >-
+        Fingerprints and pairing payloads only, never key material. A device
+        should be paired from the payload after comparing the fingerprint
+        with the server console output (withalbum-server tls), since a page
+        reached through an intercepted connection could show a forged one.
+      responses:
+        '200':
+          description: TLS state
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [enabled]
+                properties:
+                  enabled: {type: boolean, description: 'false: plain HTTP on loopback; no other field'}
+                  spki_sha256: {type: string, pattern: '^[0-9a-f]{64}$', description: The pin}
+                  cert_sha256: {type: string, pattern: '^[0-9a-f]{64}$'}
+                  not_after: {type: string, format: date-time}
+                  pairing:
+                    type: array
+                    items:
+                      type: object
+                      required: [url, payload]
+                      properties:
+                        url: {type: string, example: 'https://192.0.2.10:8787'}
+                        payload: {type: string, example: 'withalbum://pair?spki_sha256=...&url=https%3A%2F%2F192.0.2.10%3A8787&v=1'}
+        '401': {description: unauthorized}
+        '403': {description: forbidden (not a SERVER_ADMIN)}
   /api/v1/folders:
     post:
       tags: [Albums]
@@ -724,7 +770,7 @@ paths:
         - $ref: '#/components/parameters/FolderID'
         - $ref: '#/components/parameters/AssetID'
       responses:
-        '200': {description: 'Original bytes (Content-Type as sniffed at upload, Range supported, Cache-Control: no-store)'}
+        '200': {description: 'Original bytes (Content-Type as sniffed at upload, Range supported, Cache-Control: no-store). Always Content-Disposition: attachment and Content-Security-Policy with sandbox, so a stored HTML/SVG file never runs as a page of the server origin'}
         '401': {description: unauthorized}
         '403': {description: 'forbidden (UPLOADER; the same answer for any asset id)'}
         '404': {description: 'folder_not_found, asset_not_found (unknown, or an asset of another folder)'}

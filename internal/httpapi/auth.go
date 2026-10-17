@@ -134,7 +134,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c := client(r)
-	if ok, wait := s.auth.Limiter.Allow(c.IP, req.LoginName); !ok {
+	if ok, wait := s.auth.Limiter.Allow(rateKey(c.IP), req.LoginName); !ok {
 		rateLimited(w, wait)
 		return
 	}
@@ -142,10 +142,10 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		DeviceName: req.DeviceName, Platform: req.Platform, Client: c})
 	switch {
 	case err == nil:
-		s.auth.Limiter.Success(c.IP, req.LoginName)
+		s.auth.Limiter.Success(rateKey(c.IP), req.LoginName)
 		s.tokenReply(w, r, t, id)
 	case errors.Is(err, session.ErrInvalidCredentials):
-		if s.auth.Limiter.Failure(c.IP, req.LoginName) {
+		if s.auth.Limiter.Failure(rateKey(c.IP), req.LoginName) {
 			if err := s.auth.Sessions.AuditThrottled(r.Context(), req.LoginName, c); err != nil {
 				internalError(w, "audit login throttle", err)
 				return
@@ -228,13 +228,13 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c := client(r)
-	if ok, wait := s.auth.Limiter.Allow(c.IP, id.LoginName); !ok {
+	if ok, wait := s.auth.Limiter.Allow(rateKey(c.IP), id.LoginName); !ok {
 		rateLimited(w, wait)
 		return
 	}
 	err := s.auth.Sessions.VerifyPassword(r.Context(), id.UserID, req.CurrentPassword)
 	if errors.Is(err, session.ErrInvalidCredentials) {
-		s.auth.Limiter.Failure(c.IP, id.LoginName)
+		s.auth.Limiter.Failure(rateKey(c.IP), id.LoginName)
 		errorReply(w, 403, "invalid_credentials")
 		return
 	}
@@ -246,7 +246,7 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
 		internalError(w, "verify password", err)
 		return
 	}
-	s.auth.Limiter.Success(c.IP, id.LoginName)
+	s.auth.Limiter.Success(rateKey(c.IP), id.LoginName)
 	h, err := s.auth.Passwords.Hash(r.Context(), req.NewPassword)
 	if errors.Is(err, password.ErrBusy) {
 		busy(w)

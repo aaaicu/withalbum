@@ -46,7 +46,7 @@
 <body>
   <main>
     <div class="brand"><span class="mark" aria-hidden="true">▧</span><div><h1>WithAlbum Server</h1><div class="sub">내 컴퓨터에서 직접 운영하는 사진 서버</div></div></div>
-    <div class="warning"><strong>개발 중 · 로컬 실험용</strong><div>로그인과 앨범 권한은 동작하지만 TLS와 데이터 복구 체계가 아직 없습니다. 중요한 사진의 유일한 보관 장소로 사용하거나 인터넷에 공개하지 마세요.</div></div>
+    <div class="warning"><strong>개발 중 · 실험용</strong><div>로그인·앨범 권한·백업이 동작합니다. 같은 집 LAN 공개는 TLS(자체 서명 인증서 + 지문 확인)일 때만 가능하며, 인터넷에 공개하거나 중요한 사진의 유일한 보관 장소로 사용하지 마세요. 이 관리 화면은 서버 컴퓨터에서(localhost) 여는 것을 권장합니다.</div></div>
     <section id="loginBox" hidden><h2>로그인</h2><div class="muted">서버 콘솔에서 만든 계정으로 로그인하세요 (<code>withalbum-server admin init</code> / <code>admin create-user</code>).</div>
       <form id="login" class="field"><input id="loginName" type="text" autocomplete="username" placeholder="아이디" required><input id="password" type="password" autocomplete="current-password" placeholder="비밀번호" required><button>로그인</button></form>
       <div class="status" id="loginFeedback" role="status" aria-live="polite"></div>
@@ -61,6 +61,9 @@
       <section class="wide"><h2>앨범</h2><div class="muted">내가 소유하거나 초대된 앨범만 보입니다.</div>
         <form id="create" class="field" hidden><input id="folderName" type="text" maxlength="80" placeholder="예: 가족여행" required><button>앨범 만들기</button></form>
         <ul id="folders"><li>로딩 중...</li></ul>
+      </section>
+      <section class="wide" id="tlsBox" hidden><h2>기기 연결 (TLS 지문)</h2><div class="muted">앱에서 서버를 추가할 때 아래 연결 정보(QR 내용)를 사용합니다. 지문이 서버 콘솔의 <code>withalbum-server tls</code> 출력과 같은지 꼭 확인하세요.</div>
+        <div id="tlsInfo" class="status"></div><ul id="pairing"></ul>
       </section>
       <section class="wide"><h2>파일 업로드 테스트</h2><div class="field"><select id="folderSelect" aria-label="대상 앨범"><option value="">앨범 선택</option></select><input id="file" type="file" accept="image/*,video/*" aria-label="파일 선택"><button id="upload" type="button">업로드</button></div><div class="status" id="feedback" role="status" aria-live="polite"></div></section>
     </div>
@@ -94,12 +97,29 @@
       $('app').hidden = true; $('loginBox').hidden = false;
       $('loginFeedback').textContent = message || '';
     }
+    async function showTLS() {
+      try {
+        const t = await api('/api/v1/admin/server/tls');
+        $('pairing').replaceChildren();
+        if (!t.enabled) { $('tlsInfo').textContent = 'TLS 꺼짐: 루프백 전용 평문 HTTP로 실행 중입니다. LAN 기기를 연결하려면 -tls -allow-lan 으로 다시 시작하세요.'; return; }
+        $('tlsInfo').textContent = '공개키 지문(SPKI SHA-256): ' + t.spki_sha256.match(/../g).join(':').toUpperCase() + ' · 인증서 만료: ' + t.not_after;
+        t.pairing.forEach(p => {
+          const li = document.createElement('li');
+          const code = document.createElement('code');
+          code.textContent = p.payload;
+          li.append(p.url + '  ', code);
+          $('pairing').appendChild(li);
+        });
+      } catch (err) { $('tlsInfo').textContent = 'TLS 정보를 불러오지 못했습니다: ' + err.message; }
+    }
     async function reload() {
       try {
         const [me, health, folders] = await Promise.all([api('/api/v1/me'), api('/api/v1/health'), api('/api/v1/folders')]);
         $('loginBox').hidden = true; $('app').hidden = false;
         $('who').textContent = me.user.display_name + ' (' + me.user.login_name + ')';
         $('create').hidden = !(me.user.server_role === 'SERVER_ADMIN' || me.user.can_create_albums);
+        $('tlsBox').hidden = me.user.server_role !== 'SERVER_ADMIN';
+        if (me.user.server_role === 'SERVER_ADMIN') showTLS();
         $('health').textContent = health.status === 'ok' && health.storage === 'ok' ? '정상 실행' : '점검 필요';
         $('version').textContent = health.version;
         $('count').textContent = folders.folders.length + '개';

@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Added (M15, TLS / LAN gate)
+- `-tls`: 자체 서명 TLS(`internal/tlsid`). 첫 기동 시 ECDSA P-256 키와 인증서를 `.system/tls/server.pem`(키+인증서 한 파일, 0600, 디렉터리 0700, 임시 파일·fsync·rename)에 생성. TLS 1.3 전용. 인증서는 820일, 만료 60일 전·listen IP 누락 시 **같은 키로** 재발급(핀 불변). 0600이 아니거나 심볼릭 링크·손상 파일은 기동 거부(조용히 새 키를 만들지 않음).
+- `-allow-lan`: non-loopback `WITHALBUM_LISTEN`은 `-allow-lan` + `-tls` + 로그인 가능한 활성 SERVER_ADMIN ≥1 모두 충족 시에만, 사설 IP(RFC 1918, fc00::/7) 또는 와일드카드만. 공인 IP·호스트 이름은 거부. 평문 HTTP는 loopback만.
+- 지문·페어링: 기동 로그와 `withalbum-server tls [-json]`에 SPKI SHA-256 핀(콜론 hex, curl용 base64), 인증서 SHA-256, 만료일, 페어링 페이로드 `withalbum://pair?v=1&url=…&spki_sha256=…`. `GET /api/v1/admin/server/tls`(SERVER_ADMIN), 대시보드 관리자 섹션. 규격 `docs/API_AUTH_v1.4.yaml` 1.4.4-draft.
+- 모든 응답에 `X-Content-Type-Options`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Cross-Origin-Resource-Policy: same-origin`, 소스 없는 CSP. HSTS는 TLS + DNS 호스트(localhost·IP 제외)에만.
+- 보안 점검 결과를 `SECURITY.md`에 기록.
+
+### Fixed (security, M15 review)
+- 원본 다운로드가 업로드 시 추정한 Content-Type(예: `text/html`) 그대로 서버 origin의 문서로 열릴 수 있던 문제(저장형 XSS): 원본 응답에 `Content-Security-Policy: …; sandbox`와 `Content-Disposition: attachment`.
+- 로그인 속도 제한의 IP 키가 IPv6 전체 주소라 /64 안에서 주소를 바꿔 우회 가능 → IPv6는 /64 접두사로.
+- 평문 loopback 리스너의 DNS 리바인딩: Host가 localhost·루프백 IP가 아니면 421 `invalid_host`.
+- 프리뷰 디코딩을 동시에 1개로 제한(대형 PNG 동시 업로드로 메모리 고갈 방지). `MaxHeaderBytes` 1MiB → 64KiB.
+
 ### Added (M14, backup / restore / verify)
 - `withalbum-server verify [-hash] [-json]` (`internal/integrity`): DB `integrity_check`·`foreign_key_check`, 모든 원본의 존재·크기, `-hash`면 SHA-256 전수 재검증(같은 크기 내용 손상 감지). 문제마다 원본과 그 자산·폴더를 보고, 아무것도 바꾸지 않음(서버 실행 중 가능). 종료 코드 0 정상 / 1 문제 / 3 검사 불가.
 - `withalbum-server backup -init -to DIR` / `backup -to DIR [-rehash]` (`internal/backup`): 백업 대상 마커 `.withalbum-backup-target.json`(저장소 마커와 별개, 쓰기 직전 재확인)·대상 잠금. DB는 `VACUUM INTO` 스냅샷, 원본은 스냅샷에 있는 것만 복사하며 해시 검증(손상 원본이면 실패, 좋은 사본을 덮지 않음), 대상 `pool/`·`previews/` 공유로 증분, `snapshots/<id>/manifest.json`(DB·원본·프리뷰 SHA-256). 미완성 스냅샷은 `.partial-` 이름으로만 존재. 같은 디스크 경고, 0700/0600/0400.
