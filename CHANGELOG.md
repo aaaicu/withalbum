@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Added (M14, backup / restore / verify)
+- `withalbum-server verify [-hash] [-json]` (`internal/integrity`): DB `integrity_check`·`foreign_key_check`, 모든 원본의 존재·크기, `-hash`면 SHA-256 전수 재검증(같은 크기 내용 손상 감지). 문제마다 원본과 그 자산·폴더를 보고, 아무것도 바꾸지 않음(서버 실행 중 가능). 종료 코드 0 정상 / 1 문제 / 3 검사 불가.
+- `withalbum-server backup -init -to DIR` / `backup -to DIR [-rehash]` (`internal/backup`): 백업 대상 마커 `.withalbum-backup-target.json`(저장소 마커와 별개, 쓰기 직전 재확인)·대상 잠금. DB는 `VACUUM INTO` 스냅샷, 원본은 스냅샷에 있는 것만 복사하며 해시 검증(손상 원본이면 실패, 좋은 사본을 덮지 않음), 대상 `pool/`·`previews/` 공유로 증분, `snapshots/<id>/manifest.json`(DB·원본·프리뷰 SHA-256). 미완성 스냅샷은 `.partial-` 이름으로만 존재. 같은 디스크 경고, 0700/0600/0400.
+- `withalbum-server restore -from SNAPSHOT [-check] [-replace]`: 전수 검증 → `.system-restore` 스테이징 → 마이그레이션·**모든 세션·기기 폐기**·감사 로그 `storage.restore` → 저널 `.withalbum-restore.json` → 기존 `.system`을 `.system.before-restore-<UTC>`로 보존 rename → 활성화. 기본은 빈 초기화 저장소에만, 서버 실행 중이면 `LOCKED`. 중단 시 재실행으로 완료, 저널이 있는 동안 다른 명령·서버는 기동 거부(`storage.ErrRestorePending`).
+- `session.RevokeAllTx`, `session.ReasonRestore`, `storage.InitBackupTarget`/`OpenBackupTarget`/`SameDevice`/`LockFile`.
+- 문서 `docs/BACKUP_RESTORE.md`: 백업 형식, 잠금 정책(실행 중 가능/중지 필요), 복원 훈련, 손상 원본 복구, orphans/ 보존 정책(자동 삭제 안 함), launchd 예시.
+
 - 최소 Go 버전 1.23 → 1.26 (지원 종료 버전 탈피), modernc.org/sqlite v1.39.0 → v1.60.1 (SQLite 3.53.4).
 
 ### Added (M11, album sharing)

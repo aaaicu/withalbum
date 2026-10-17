@@ -64,6 +64,7 @@ const (
 	ReasonPasswordChange = "password_change"
 	ReasonPasswordReset  = "password_reset"
 	ReasonAccountDisable = "account_disabled"
+	ReasonRestore        = "restore"
 )
 
 var (
@@ -680,5 +681,24 @@ func RevokeUserTx(ctx context.Context, tx *sql.Tx, userID, exceptSessionID, reas
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE devices SET revoked_at = ? WHERE revoked_at IS NULL AND user_id = ?
 		AND device_id NOT IN (SELECT device_id FROM auth_sessions WHERE session_id = ?)`, now, userID, exceptSessionID)
+	return n, err
+}
+
+// RevokeAllTx revokes every session and device of every account inside the
+// caller's transaction and returns the number of sessions revoked. The
+// restore command (internal/backup) calls it on the restored database: a
+// backup may hold sessions that were revoked after it was taken (a lost
+// phone), and they must not come back to life.
+func RevokeAllTx(ctx context.Context, tx *sql.Tx, reason string) (int64, error) {
+	now := fmtTime(time.Now())
+	res, err := tx.ExecContext(ctx, "UPDATE auth_sessions SET revoked_at = ?, revoke_reason = ? WHERE revoked_at IS NULL", now, reason)
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	_, err = tx.ExecContext(ctx, "UPDATE devices SET revoked_at = ? WHERE revoked_at IS NULL", now)
 	return n, err
 }

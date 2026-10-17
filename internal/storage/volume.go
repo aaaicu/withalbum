@@ -35,7 +35,20 @@ var (
 	ErrVolumeMismatch     = errors.New("storage volume id does not match")
 	ErrNotWritable        = errors.New("storage root is not writable")
 	ErrVolumeChanged      = errors.New("storage volume changed since startup")
+	// ErrRestorePending means RestoreJournalName exists in the root: a
+	// restore was interrupted between swapping directories. Only the restore
+	// command may open the volume until it has finished.
+	ErrRestorePending = errors.New("an interrupted restore must be finished first")
 )
+
+// RestoreJournalName is written into the storage root by the restore command
+// (internal/backup) right before it swaps .system, and removed afterwards.
+const RestoreJournalName = ".withalbum-restore.json"
+
+// BackupMarkerName identifies an initialized backup target directory
+// (internal/backup). It differs from MarkerName so that a backup disk can
+// never be opened as a storage root, and vice versa.
+const BackupMarkerName = ".withalbum-backup-target.json"
 
 // Marker is the content of MarkerName.
 type Marker struct {
@@ -48,14 +61,19 @@ type Marker struct {
 type OpenOptions struct {
 	// ExpectedVolumeID, when non-empty, pins the volume (WITHALBUM_VOLUME_ID).
 	ExpectedVolumeID string
+	// AllowPendingRestore opens a root that holds RestoreJournalName. Only
+	// the restore command sets it.
+	AllowPendingRestore bool
 }
 
 // Volume is a verified storage root. It is safe for concurrent use.
 type Volume struct {
-	root   string // symlink-resolved absolute path
-	id     string
-	dev    uint64
-	hasDev bool
+	root    string // symlink-resolved absolute path
+	id      string
+	dev     uint64
+	hasDev  bool
+	marker  string // MarkerName or BackupMarkerName
+	lockDir string // directory of the instance lock, relative to root
 }
 
 // Root returns the symlink-resolved storage root.
@@ -66,12 +84,21 @@ func (v *Volume) ID() string { return v.id }
 
 // Init writes a new marker into an existing directory. It never creates the
 // root itself and never touches existing data other than adding the marker.
-func Init(root string) (Marker, error) {
+func Init(root string) (Marker, error) { return initMarker(root, MarkerName) }
+
+// InitBackupTarget registers an existing directory as a backup target by
+// writing BackupMarkerName into it. Like Init it never creates the directory.
+func InitBackupTarget(dir string) (Marker, error) { return initMarker(dir, BackupMarkerName) }
+
+func initMarker(root, name string) (Marker, error) {
 	resolved, err := resolveDir(root)
 	if err != nil {
 		return Marker{}, err
 	}
-	markerPath := filepath.Join(resolved, MarkerName)
+	if _, err := os.Lstat(filepath.Join(resolved, otherMarker(name))); err == nil {
+		return Marker{}, fmt.Errorf("%w: the directory already holds %s", ErrAlreadyInitialized, otherMarker(name))
+	}
+	markerPath := filepath.Join(resolved, name)
 	if _, err := os.Lstat(markerPath); err == nil {
 		return Marker{}, ErrAlreadyInitialized
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -116,28 +143,81 @@ func Init(root string) (Marker, error) {
 // Open verifies that root is an initialized, writable storage root and
 // records its device number for later Check calls. It creates nothing in root
 // except a short-lived probe file.
+//
+// A root holding RestoreJournalName is refused with ErrRestorePending unless
+// opt.AllowPendingRestore is set.
 func Open(root string, opt OpenOptions) (*Volume, error) {
+	v, err := open(root, MarkerName, ".system", opt.ExpectedVolumeID, true)
+	if err != nil {
+		return nil, err
+	}
+	if !opt.AllowPendingRestore {
+		if _, err := os.Lstat(filepath.Join(v.root, RestoreJournalName)); err == nil {
+			return nil, ErrRestorePending
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+	}
+	return v, nil
+}
+
+// OpenBackupTarget verifies a directory registered with InitBackupTarget.
+// writable=false skips the write probe, for reading a backup from a
+// read-only disk. Its instance lock (Lock) lives in the directory itself.
+func OpenBackupTarget(dir string, writable bool) (*Volume, error) {
+	return open(dir, BackupMarkerName, ".", "", writable)
+}
+
+func open(root, marker, lockDir, expectedID string, writable bool) (*Volume, error) {
 	resolved, err := resolveDir(root)
 	if err != nil {
 		return nil, err
 	}
-	m, err := readMarker(resolved)
+	m, err := readMarker(resolved, marker)
 	if err != nil {
 		return nil, err
 	}
-	if want := strings.ToLower(strings.TrimSpace(opt.ExpectedVolumeID)); want != "" && want != m.VolumeID {
+	if want := strings.ToLower(strings.TrimSpace(expectedID)); want != "" && want != m.VolumeID {
 		return nil, ErrVolumeMismatch
 	}
-	if err := probeWritable(resolved); err != nil {
-		return nil, err
+	if writable {
+		if err := probeWritable(resolved); err != nil {
+			return nil, err
+		}
 	}
 	fi, err := os.Stat(resolved)
 	if err != nil {
 		return nil, err
 	}
-	v := &Volume{root: resolved, id: m.VolumeID}
+	v := &Volume{root: resolved, id: m.VolumeID, marker: marker, lockDir: lockDir}
 	v.dev, v.hasDev = devOf(fi)
 	return v, nil
+}
+
+func otherMarker(name string) string {
+	if name == MarkerName {
+		return BackupMarkerName
+	}
+	return MarkerName
+}
+
+// SameDevice reports whether two existing paths live on the same file
+// system (st_dev). known is false where device numbers are unavailable.
+func SameDevice(a, b string) (same, known bool, err error) {
+	fa, err := os.Stat(a)
+	if err != nil {
+		return false, false, err
+	}
+	fb, err := os.Stat(b)
+	if err != nil {
+		return false, false, err
+	}
+	da, okA := devOf(fa)
+	db, okB := devOf(fb)
+	if !okA || !okB {
+		return false, false, nil
+	}
+	return da == db, true, nil
 }
 
 // Check re-verifies that the root still holds the same marker and lives on the
@@ -155,7 +235,7 @@ func (v *Volume) Check() error {
 			return ErrVolumeChanged
 		}
 	}
-	m, err := readMarker(v.root)
+	m, err := readMarker(v.root, v.marker)
 	if err != nil {
 		if errors.Is(err, ErrNotInitialized) {
 			return err
@@ -193,8 +273,8 @@ func resolveDir(root string) (string, error) {
 	return resolved, nil
 }
 
-func readMarker(root string) (Marker, error) {
-	data, err := os.ReadFile(filepath.Join(root, MarkerName))
+func readMarker(root, name string) (Marker, error) {
+	data, err := os.ReadFile(filepath.Join(root, name))
 	if errors.Is(err, os.ErrNotExist) {
 		return Marker{}, ErrNotInitialized
 	}
