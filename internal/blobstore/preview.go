@@ -2,6 +2,7 @@ package blobstore
 
 import (
 	"errors"
+	"fmt"
 	"image"
 	_ "image/gif" // register GIF for image.Decode
 	"image/jpeg"
@@ -13,13 +14,24 @@ import (
 )
 
 // MakePreview writes the JPEG preview for the pooled original with the given
-// hash. It returns an error for files that are not decodable images.
-func (s *Store) MakePreview(sha string) error {
+// hash. It returns an error for files that are not decodable images. A
+// panic in an image decoder is returned as an error too: a preview is
+// derived data and must never take the upload of the original down with it.
+func (s *Store) MakePreview(sha string) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("preview: decoder panic: %v", r)
+		}
+	}()
 	return MakeJPEGPreview(s.PoolPath(sha), s.PreviewPath(sha))
 }
 
+// previewTempPrefix is the name prefix of preview temp files.
+const previewTempPrefix = "preview-"
+
 // MakeJPEGPreview decodes a JPEG/PNG/GIF image at src and writes a JPEG whose
-// longer side is at most 1600px to dst (temp file, fsync, rename).
+// longer side is at most 1600px to dst (temp file, fsync, rename, directory
+// fsync).
 func MakeJPEGPreview(src, dst string) error {
 	file, err := os.Open(src)
 	if err != nil {
@@ -62,7 +74,7 @@ func MakeJPEGPreview(src, dst string) error {
 	if err := storage.MkdirIn(filepath.Dir(dst)); err != nil {
 		return err
 	}
-	out, err := os.CreateTemp(filepath.Dir(dst), "preview-*")
+	out, err := os.CreateTemp(filepath.Dir(dst), previewTempPrefix+"*")
 	if err != nil {
 		return err
 	}
@@ -78,5 +90,9 @@ func MakeJPEGPreview(src, dst string) error {
 	if err := out.Close(); err != nil {
 		return err
 	}
-	return os.Rename(out.Name(), dst)
+	if err := os.Rename(out.Name(), dst); err != nil {
+		return err
+	}
+	// preview_ready is committed after this; make the file's entry durable first.
+	return storage.SyncDir(filepath.Dir(dst))
 }

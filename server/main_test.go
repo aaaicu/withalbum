@@ -230,7 +230,9 @@ func TestMigrateLegacyCommandRefusesBrokenState(t *testing.T) {
 		t.Fatal("state.json changed")
 	}
 	entries, _ := os.ReadDir(filepath.Join(vol.Root(), ".system"))
-	if len(entries) != 1 {
-		t.Fatalf(".system holds %d entries, want only state.json", len(entries))
+	for _, e := range entries {
+		if e.Name() != "state.json" && e.Name() != storage.LockName {
+			t.Fatalf(".system holds %s, want only state.json and the instance lock", e.Name())
+		}
 	}
 }

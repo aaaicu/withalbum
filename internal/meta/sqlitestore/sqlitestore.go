@@ -33,6 +33,8 @@ import (
 	"github.com/aaaicu/withalbum/internal/db"
 	"github.com/aaaicu/withalbum/internal/meta"
 	"github.com/aaaicu/withalbum/internal/storage"
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 // DBPath returns the database location inside a storage root.
@@ -53,7 +55,10 @@ type Store struct {
 	ownerID string // users.user_id of the bootstrap administrator
 }
 
-var _ meta.MetadataStore = (*Store)(nil)
+var (
+	_ meta.MetadataStore  = (*Store)(nil)
+	_ blobstore.BlobIndex = (*Store)(nil)
+)
 
 // Open opens (creating if missing) the database of a verified volume,
 // migrates it to the latest schema and ensures the bootstrap administrator.
@@ -150,8 +155,33 @@ func EnsureBootstrapOwnerTx(ctx context.Context, tx *sql.Tx) (string, error) {
 	return id, nil
 }
 
+// classify wraps SQLite errors that callers must tell apart: lock
+// contention beyond busy_timeout (meta.ErrBusy), a full disk
+// (storage.ErrNoSpace) and I/O errors (storage.ErrIO). Other errors are
+// returned unchanged.
+func classify(err error) error {
+	var se *sqlite.Error
+	if err == nil || !errors.As(err, &se) {
+		return err
+	}
+	switch se.Code() & 0xff { // primary result code
+	case sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED:
+		return fmt.Errorf("%w: %w", meta.ErrBusy, err)
+	case sqlite3.SQLITE_FULL:
+		return fmt.Errorf("%w: %w", storage.ErrNoSpace, err)
+	case sqlite3.SQLITE_IOERR:
+		return fmt.Errorf("%w: %w", storage.ErrIO, err)
+	}
+	return err
+}
+
 // CreateFolder implements meta.MetadataStore.
 func (s *Store) CreateFolder(ctx context.Context, name string) (meta.Folder, error) {
+	f, err := s.createFolder(ctx, name)
+	return f, classify(err)
+}
+
+func (s *Store) createFolder(ctx context.Context, name string) (meta.Folder, error) {
 	id, err := newID()
 	if err != nil {
 		return meta.Folder{}, err
@@ -250,6 +280,11 @@ func MediaKind(mime string) string {
 // asset_id (only for a new original), folder link, folder sequence bump and
 // the change event. Either all of it is committed or none of it.
 func (s *Store) CommitUpload(ctx context.Context, req meta.CommitRequest) (meta.CommitResult, error) {
+	res, err := s.commitUpload(ctx, req)
+	return res, classify(err)
+}
+
+func (s *Store) commitUpload(ctx context.Context, req meta.CommitRequest) (meta.CommitResult, error) {
 	sha := req.Asset.ID
 	newAssetID, err := newID()
 	if err != nil {
@@ -325,6 +360,11 @@ func (s *Store) CommitUpload(ctx context.Context, req meta.CommitRequest) (meta.
 		req.FolderID, seq, meta.EventAssetAdded, assetID, ts, req.DeviceID); err != nil {
 		return meta.CommitResult{}, fmt.Errorf("insert change: %w", err)
 	}
+	if req.BeforeCommit != nil {
+		if err := req.BeforeCommit(); err != nil {
+			return meta.CommitResult{}, fmt.Errorf("before commit: %w", err)
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return meta.CommitResult{}, err
 	}
@@ -381,6 +421,27 @@ func (s *Store) ListEvents(ctx context.Context, folderID string, cursor int64, l
 		return meta.EventPage{}, err
 	}
 	return page, nil
+}
+
+// ForEachBlob implements blobstore.BlobIndex: it calls fn for every blobs
+// row in ascending sha256 order. It is a plain query (no transaction).
+func (s *Store) ForEachBlob(ctx context.Context, fn func(sha string, size int64) error) error {
+	rows, err := s.db.QueryContext(ctx, "SELECT sha256, bytes FROM blobs ORDER BY sha256")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var sha string
+		var size int64
+		if err := rows.Scan(&sha, &size); err != nil {
+			return err
+		}
+		if err := fn(sha, size); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
 }
 
 // HasLegacyImport reports whether a state.json whose bytes hash to sourceSHA256

@@ -18,6 +18,7 @@
 - **기능이 동작하는 코드:** Go 기반 localhost 전용 서버, 간단한 웹 페이지, 폴더 생성, 파일 업로드, SHA-256 중복 확인, 제한적인 이미지 프리뷰, 변경 이벤트 조회.
 - **부분 구현(실기기 미검증):** `internal/storage/` 저장소 볼륨 가드. 명시적으로 `-init-storage`한 디렉터리만 사용하고, 기동 시와 쓰기 직전에 볼륨 마커·장치 번호(st_dev)를 재확인해 외장 디스크가 빠지면 쓰기를 거부(503)합니다. 디스크 UUID 대조는 아직 없음.
 - **부분 구현:** 메타데이터는 SQLite(`.system/withalbum.db`, `internal/meta/sqlitestore`)에 저장합니다. 업로드 1건(blob·자산·폴더 연결·시퀀스·이벤트)은 트랜잭션 하나로 커밋되고, 내부 자산 ID는 랜덤입니다(HTTP 응답의 `asset_id`는 호환을 위해 아직 SHA-256). 계정이 없으므로 모든 폴더의 소유자는 로그인할 수 없는 로컬 `admin` 계정입니다. **이전 버전의 `.system/state.json`만 있는 저장소는 기동을 거부합니다(파일은 변경하지 않음). `withalbum-server migrate-legacy`(점검) → `migrate-legacy -apply`로 무손실 이관한 뒤 기동하세요. 절차·롤백: [`docs/MIGRATION_legacy_state.md`](docs/MIGRATION_legacy_state.md).**
+- **부분 구현(테스트 검증, 실기기 미검증):** 업로드 원자적 커밋·크래시 복구. 성공 응답(200/201)은 원본 파일(임시 파일 fsync → pool rename → 디렉터리 fsync)과 DB 트랜잭션이 모두 디스크에 기록된 뒤에만 보냅니다. 기동 시 재조정이 미완료 업로드 임시 파일을 지우고, DB에 없는 pool 파일은 `.system/orphans/`로 옮기며(삭제 안 함), DB에 있는데 파일이 없거나 크기가 다른 원본은 로그와 `/api/v1/health`의 `integrity: warning`으로 알립니다. 여유 공간이 예약분(`WITHALBUM_MIN_FREE_BYTES`, 기본 1GiB) 아래로 내려갈 업로드는 기록 전에 `507 insufficient_storage`로 거부합니다. 같은 저장소에 서버/이관 명령이 두 개 뜨지 않도록 `.system/withalbum.lock`을 잠급니다. 단계별 장애 주입과 실제 SIGKILL 테스트로 검증했고, 실제 전원 차단·외장 디스크 분리는 미검증입니다.
 - **코드·테스트만 있는 기능:** `internal/authz/`의 서버/앨범 권한 판정 함수와 단위 테스트. **실제 HTTP 요청에는 적용되지 않음.**
 - **설계만 완료:** 관리자 생성·로그인·세션·초대·폴더 ACL, Mac 설치 마법사, iOS/Android 앱, 역방향 모바일 동기화, Google Drive 어댑터, 장애 복구.
 - **아직 없음:** 서명·공증된 DMG, 정식 Google Drive OAuth 연결, 모바일 앱, 프로덕션 안정성 보장.
@@ -67,6 +68,8 @@ WITHALBUM_ROOT="$HOME/WithAlbumTest" ./withalbum-server
 ```
 
 서버는 **저장소 루트를 절대 만들지 않습니다.** 루트가 없거나 `-init-storage`로 등록되지 않았으면 원인을 안내하고 즉시 종료합니다. `-init-storage`는 이미 존재하는 디렉터리에 `.withalbum-volume.json`(volume_id) 마커만 추가하며 기존 `.system/` 데이터는 건드리지 않습니다. 이전 버전에서 쓰던 데이터 폴더도 같은 명령으로 한 번 등록하면 됩니다. 출력된 `volume_id`를 `WITHALBUM_VOLUME_ID` 환경변수로 지정하면 다른 볼륨으로는 기동하지 않습니다(선택). 실행 중 마커가 사라지거나 루트의 장치가 바뀌면 업로드·폴더 생성은 `503 storage_unavailable`로 거부되고 `/api/v1/health`의 `storage`가 `unavailable`이 됩니다. 디스크를 다시 연결했다면 서버를 재시작하세요. 프로덕션 외장하드 폴더를 지정하지 마세요.
+
+**업로드 안전성과 복구:** 업로드는 성공 응답 전에 파일과 DB가 모두 디스크에 기록됩니다(macOS는 `F_FULLFSYNC`). 실패 응답이나 연결 끊김이면 아무것도 확정되지 않았으므로 같은 파일을 다시 올리면 됩니다. 서버가 강제 종료되면 다음 기동 때 자동으로 정리합니다: `.system/incoming/`의 미완료 임시 파일 삭제, DB에 없는 원본은 `.system/orphans/<sha256>.orphan.<UTC>`로 이동(자동 삭제하지 않음, 필요 없으면 직접 지우세요), 결과는 로그 `recovery: ...` 한 줄로 요약됩니다. DB에 기록된 원본이 pool에 없거나 크기가 다르면 `INTEGRITY ERROR` 로그와 health `integrity: warning`이 나오며, 같은 파일을 다시 업로드하면 사라진 원본이 복원됩니다. 업로드 후 남을 여유 공간이 `WITHALBUM_MIN_FREE_BYTES`(바이트, 기본 `1073741824` = 1GiB) 미만이면 `507 insufficient_storage`, 디스크 I/O 오류는 `503 storage_io_error`, DB 쓰기 경합(5초 초과)은 `503 busy` + `Retry-After: 1`입니다. 같은 저장소로 서버를 두 번 띄우거나 서버 실행 중 `migrate-legacy -apply`를 실행하면 `LOCKED`로 거부됩니다(이 버전 이후끼리만; 이전 버전 서버는 잠금을 모르므로 직접 중지하세요).
 
 **이전 버전(state.json)에서 업그레이드:** 새 버전은 `.system/state.json`만 있는 저장소에서 기동하지 않습니다. 이전 버전 서버를 중지한 뒤 아래 순서로 이관하세요. 원본·프리뷰 파일은 읽기만 하고, state.json은 백업(`state.json.bak-<UTC>`)과 보존본(`state.json.migrated-<UTC>`)으로 남습니다. 실패하거나 중간에 끊겨도 같은 명령을 다시 실행하면 안전하게 이어가거나 처음부터 다시 합니다.
 
@@ -247,9 +250,11 @@ Google Drive 전체 제약과 공개 사용자 안내 문구는 [GOOGLE_DRIVE_MO
 WithAlbumRoot/
 ├── .system/
 │   ├── withalbum.db                # SQLite 메타데이터 DB (WAL, 0600). 새로 초기화한 저장소에서 자동 생성
-│   ├── incoming/                   # 불완전 업로드 격리 영역
+│   ├── withalbum.lock              # 단일 인스턴스 잠금 (서버·migrate-legacy -apply)
+│   ├── incoming/                   # 불완전 업로드 격리 영역 (기동 시 정리)
 │   ├── pool/<hash-prefix>/<sha256> # 보호된 원본 blob (현재 PoC 존재)
 │   ├── previews/                   # 경량 이미지·영상 프리뷰
+│   ├── orphans/                    # 기동 재조정이 격리한, DB에 없는 원본 (자동 삭제 안 함)
 │   └── backups/                    # 보존/복구 정책 확정 후 (미구현)
 └── Imports/                        # Finder에서 직접 놓는 안전한 가져오기 영역 (미구현)
 ```
@@ -260,7 +265,8 @@ WithAlbumRoot/
 
 <!-- 저장 안정성 / Claude의 최우선 개선 사항:
 **부분 해결(M1 볼륨 가드)** 루트 MkdirAll 제거, `-init-storage` 마커(volume_id) + st_dev 비교로 기동 시·쓰기 직전 fail-closed. 실기기(Mac mini 외장 디스크 언플러그) 미검증.
-남은 것: 디스크 UUID(diskutil)·statfs 마운트 지점 대조, 가용 용량(507), 디렉터리 fsync, 고아 blob 정리. 마커를 복사한 다른 디스크는 같은 volume_id로 기동 시 통과할 수 있다.
+**부분 해결(M6)** 커밋 순서(staging fsync → pool rename → 디렉터리 fsync → DB tx, tx 안에서 COMMIT 직전 볼륨·pool 파일 재확인), 기동 재조정(incoming 정리, 고아 → orphans/ 격리, 누락·크기 불일치 보고), 여유 공간 사전검사 507, ENOSPC/EIO/SQLITE_BUSY 구분, darwin F_FULLFSYNC(SQLite PRAGMA fullfsync), 단일 인스턴스 flock. 장애 주입·SIGKILL 테스트로 검증, 전원 차단·실기기 미검증.
+남은 것: 디스크 UUID(diskutil)·statfs 마운트 지점 대조, 원본 전수 해시 재검증(scrub, 기동 재조정은 크기만 비교), orphans/ 보존 정책. 마커를 복사한 다른 디스크는 같은 volume_id로 기동 시 통과할 수 있다.
 CAS pool 원본에 대해 해시가 같더라도 멀티파일 Live Photo, 메타데이터/자산 ID/폴더 연결은 별도 객체.
 여러 계정·동시 업로드·디스크 전원 차단·DB 커밋 전후 실패·중복 응답 손실에서 원본 손실 없이 재시도.
 최종 원본은 불변(immutable) 처리, 파일 경로 외부 노출 금지, Finder로 옮기는 폴더와 시스템 pool 분리.
@@ -275,10 +281,10 @@ CAS pool 원본에 대해 해시가 같더라도 멀티파일 Live Photo, 메타
 | Method | Path | 동작 | 보안 상태 |
 |---|---|---|---|
 | `GET` | `/` | 로컬 브라우저 UI | 인증 없음/loopback |
-| `GET` | `/api/v1/health` | 서버 상태 + `storage: ok\|unavailable` | 인증 없음 |
+| `GET` | `/api/v1/health` | 서버 상태 + `storage: ok\|unavailable` + `integrity: ok\|warning` | 인증 없음 |
 | `GET` | `/api/v1/folders` | 전체 데모 폴더 반환 | **권한 없음** |
 | `POST` | `/api/v1/folders` | 이름으로 폴더 생성 | **권한 없음** |
-| `POST` | `/api/v1/folders/{folderID}/assets` | 원본 전체 업로드/해시 검증 | **권한 없음** |
+| `POST` | `/api/v1/folders/{folderID}/assets` | 원본 전체 업로드/해시 검증. 200/201은 파일+DB 커밋 후에만. 507 `insufficient_storage`, 503 `storage_unavailable`·`storage_io_error`·`busy`(Retry-After) | **권한 없음** |
 | `GET` | `/api/v1/folders/{folderID}/sync?cursor=N` | 데모 변경 이벤트 | **권한 없음** |
 | `GET` | `/api/v1/assets/{assetID}/original` | 원본 다운로드 | **권한 없음** |
 | `GET` | `/api/v1/assets/{assetID}/preview` | 기초 프리뷰 | **권한 없음** |

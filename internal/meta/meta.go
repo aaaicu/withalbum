@@ -61,6 +61,9 @@ var (
 	// ErrIDGeneration means no random identifier could be generated.
 	ErrIDGeneration = errors.New("id generation failed")
 	ErrInvalidLimit = errors.New("limit must be positive")
+	// ErrBusy means a write could not get the database write lock in time
+	// (concurrent writers). Nothing was written; retrying later is safe.
+	ErrBusy = errors.New("metadata store is busy")
 )
 
 // CommitRequest links an uploaded blob to a folder.
@@ -70,6 +73,13 @@ type CommitRequest struct {
 	// Asset is registered only if no asset with Asset.ID exists yet. The store
 	// sets UploadedAt. The blob file must already be in place.
 	Asset Asset
+	// BeforeCommit, if set, is called after all changes are prepared and
+	// immediately before they are made durable, while the store holds its
+	// write lock. If it returns an error nothing is written and CommitUpload
+	// returns an error wrapping it. It is not called when the result is
+	// ResultAlreadyPresent (nothing to write). The HTTP API re-verifies the
+	// storage volume and the pool file here.
+	BeforeCommit func() error
 }
 
 // CommitResult reports what CommitUpload did. Asset is the stored asset, which

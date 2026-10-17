@@ -4,6 +4,15 @@
 // Uploads are first written to .system/incoming (Stage), then moved into the
 // pool with an atomic rename (Promote). Callers must verify the storage
 // volume (storage.Volume.Check) before calling Stage or Promote.
+//
+// Commit order of an upload (see internal/httpapi): Stage fsyncs the temp
+// file, Promote renames it into the pool and fsyncs the pool directory, and
+// only then is the metadata transaction committed. A crash at any point
+// leaves at most an unreferenced temp or pool file, never a metadata row
+// without its file. Reconcile cleans up after such a crash at startup.
+//
+// On macOS, os.File.Sync issues F_FULLFSYNC (the Go runtime does this), so
+// file and directory syncs reach the disk, not just its cache.
 package blobstore
 
 import (
@@ -15,6 +24,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/aaaicu/withalbum/internal/storage"
 )
@@ -23,15 +33,20 @@ import (
 // underlying error.
 var (
 	ErrTempCreate = errors.New("cannot create temp file")
-	ErrCopy       = errors.New("cannot copy upload")
+	ErrCopy       = errors.New("cannot read upload") // reading the request body failed
+	ErrWrite      = errors.New("cannot write temp file")
 	ErrTooLarge   = errors.New("upload exceeds limit")
 	ErrEmpty      = errors.New("upload is empty")
 	ErrSync       = errors.New("cannot sync temp file")
 	ErrClose      = errors.New("cannot close temp file")
 )
 
+// uploadTempPrefix is the name prefix of Stage temp files in .system/incoming.
+const uploadTempPrefix = "upload-"
+
 // Store is safe for concurrent use.
 type Store struct {
+	vol  *storage.Volume
 	root string
 }
 
@@ -47,7 +62,7 @@ func New(vol *storage.Volume) (*Store, error) {
 			return nil, err
 		}
 	}
-	return &Store{root: root}, nil
+	return &Store{vol: vol, root: root}, nil
 }
 
 // PoolRelPath is PoolPath relative to the storage root, with forward slashes.
@@ -93,11 +108,26 @@ func (w *sniffWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// errWriter remembers the first error of the underlying writer, so that
+// Stage can tell a failed disk write from a failed read of the request.
+type errWriter struct {
+	w   io.Writer
+	err error
+}
+
+func (e *errWriter) Write(p []byte) (int, error) {
+	n, err := e.w.Write(p)
+	if err != nil && e.err == nil {
+		e.err = err
+	}
+	return n, err
+}
+
 // Stage copies r into a temp file while hashing it. It reads at most limit+1
 // bytes and fails with ErrTooLarge beyond limit. On error nothing is left in
 // .system/incoming; on success the caller must Remove or Promote the file.
 func (s *Store) Stage(r io.Reader, limit int64) (*StagedFile, error) {
-	temp, err := os.CreateTemp(filepath.Join(s.root, ".system", "incoming"), "upload-*")
+	temp, err := os.CreateTemp(filepath.Join(s.root, ".system", "incoming"), uploadTempPrefix+"*")
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrTempCreate, err)
 	}
@@ -109,7 +139,11 @@ func (s *Store) Stage(r io.Reader, limit int64) (*StagedFile, error) {
 	}
 	h := sha256.New()
 	sniff := &sniffWriter{}
-	count, err := io.Copy(io.MultiWriter(temp, h, sniff), io.LimitReader(r, limit+1))
+	file := &errWriter{w: temp}
+	count, err := io.Copy(io.MultiWriter(file, h, sniff), io.LimitReader(r, limit+1))
+	if file.err != nil {
+		return fail(fmt.Errorf("%w: %w", ErrWrite, file.err))
+	}
 	if err != nil {
 		return fail(fmt.Errorf("%w: %w", ErrCopy, err))
 	}
@@ -132,20 +166,108 @@ func (s *Store) Stage(r io.Reader, limit int64) (*StagedFile, error) {
 	return staged, nil
 }
 
-// Promote atomically moves a staged file to PoolPath(sha) and makes it
-// read-only. An existing pool file with the same hash is replaced; both have
-// identical content. sha must be f.SHA256 (the verified hash).
+// Promote durably moves a staged file to PoolPath(sha): the file is made
+// read-only, renamed into place and the pool directory is fsynced (also the
+// pool itself when the prefix directory is new). sha must be f.SHA256 (the
+// verified hash).
+//
+// If a pool file for sha already exists (a concurrent upload of the same
+// bytes, or a file left by a crash before the metadata commit) it is re-hashed:
+// when it matches it is reused and the staged file is left for the caller
+// to Remove; when it does not match, the damaged file is moved to
+// .system/orphans (never deleted) and replaced by the staged file.
 func (s *Store) Promote(f *StagedFile, sha string) error {
 	if sha != f.SHA256 {
 		return errors.New("blobstore: promote hash does not match staged file")
 	}
 	dest := s.PoolPath(sha)
-	if err := storage.MkdirIn(filepath.Dir(dest)); err != nil {
+	dir := filepath.Dir(dest)
+	_, statErr := os.Lstat(dir)
+	if err := storage.MkdirIn(dir); err != nil {
 		return err
 	}
+	if errors.Is(statErr, os.ErrNotExist) {
+		if err := storage.SyncDir(filepath.Dir(dir)); err != nil {
+			return err
+		}
+	}
+	switch ok, err := fileMatches(dest, sha, f.Size); {
+	case err != nil:
+		return err
+	case ok:
+		// Reuse. The existing file was fsynced by whoever wrote it; sync its
+		// directory entry in case that writer crashed before doing so.
+		return storage.SyncDir(dir)
+	default:
+		if _, err := os.Lstat(dest); err == nil {
+			if _, err := s.quarantine(dest, sha, "mismatch"); err != nil {
+				return err
+			}
+		}
+	}
+	// Read-only before it becomes visible. exFAT and similar file systems
+	// ignore modes; that is not an error.
+	_ = os.Chmod(f.Path, 0400)
 	if err := os.Rename(f.Path, dest); err != nil {
 		return err
 	}
-	_ = os.Chmod(dest, 0400)
-	return nil
+	return storage.SyncDir(dir)
+}
+
+// fileMatches reports whether path is a regular file of the given size whose
+// SHA-256 is sha. A missing file is (false, nil).
+func fileMatches(path, sha string, size int64) (bool, error) {
+	fi, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !fi.Mode().IsRegular() || fi.Size() != size {
+		return false, nil
+	}
+	got, err := hashFile(path)
+	if err != nil {
+		return false, err
+	}
+	return got == sha, nil
+}
+
+// hashFile returns the lowercase hex SHA-256 of the file at path.
+func hashFile(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, file); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// OrphansRelDir holds pool files that no metadata references and damaged
+// pool files. Nothing in it is ever deleted automatically.
+const OrphansRelDir = ".system/orphans"
+
+// quarantine moves path into .system/orphans as "<sha>.<reason>.<UTC time>"
+// and fsyncs both directories. It returns the new path.
+func (s *Store) quarantine(path, sha, reason string) (string, error) {
+	dir := filepath.Join(s.root, filepath.FromSlash(OrphansRelDir))
+	if err := storage.MkdirIn(dir); err != nil {
+		return "", err
+	}
+	dst := filepath.Join(dir, sha+"."+reason+"."+time.Now().UTC().Format("20060102T150405.000000000Z"))
+	if _, err := os.Lstat(dst); err == nil {
+		return "", fmt.Errorf("blobstore: quarantine target %s exists", dst)
+	}
+	if err := os.Rename(path, dst); err != nil {
+		return "", err
+	}
+	if err := storage.SyncDir(dir); err != nil {
+		return "", err
+	}
+	return dst, storage.SyncDir(filepath.Dir(path))
 }

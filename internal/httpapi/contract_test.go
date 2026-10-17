@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"image/jpeg"
@@ -17,6 +18,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 
 	"github.com/aaaicu/withalbum/internal/blobstore"
@@ -37,6 +39,12 @@ type contractEnv struct {
 // metadata store returned by newStore.
 func newContractEnv(t *testing.T, newStore func(t *testing.T, vol *storage.Volume) meta.MetadataStore) contractEnv {
 	t.Helper()
+	return newContractEnvWith(t, newStore, nil)
+}
+
+// newContractEnvWith is newContractEnv with a hook to adjust the Config.
+func newContractEnvWith(t *testing.T, newStore func(t *testing.T, vol *storage.Volume) meta.MetadataStore, adjust func(*httpapi.Config)) contractEnv {
+	t.Helper()
 	root := t.TempDir()
 	if _, err := storage.Init(root); err != nil {
 		t.Fatal(err)
@@ -51,7 +59,11 @@ func newContractEnv(t *testing.T, newStore func(t *testing.T, vol *storage.Volum
 	}
 	store := newStore(t, vol)
 	t.Cleanup(func() { store.Close() })
-	api := httpapi.New(httpapi.Config{Volume: vol, Meta: store, Blobs: blobs, Version: "test"})
+	cfg := httpapi.Config{Volume: vol, Meta: store, Blobs: blobs, Version: "test"}
+	if adjust != nil {
+		adjust(&cfg)
+	}
+	api := httpapi.New(cfg)
 	return contractEnv{Handler: api.Handler(), Root: vol.Root(), Volume: vol, Meta: store}
 }
 
@@ -70,6 +82,9 @@ func runContract(t *testing.T, newStore func(t *testing.T, vol *storage.Volume) 
 	t.Run("Download", func(t *testing.T) { contractDownload(t, newEnv(t)) })
 	t.Run("FailClosed", func(t *testing.T) { contractFailClosed(t, newEnv(t)) })
 	t.Run("ConcurrentUploads", func(t *testing.T) { contractConcurrentUploads(t, newEnv(t)) })
+	t.Run("InsufficientStorage", func(t *testing.T) { contractInsufficientStorage(t, newStore) })
+	t.Run("WriteErrors", func(t *testing.T) { contractWriteErrors(t, newStore) })
+	t.Run("RestoreMissingOriginal", func(t *testing.T) { contractRestoreMissingOriginal(t, newEnv(t)) })
 }
 
 type reply struct {
@@ -210,8 +225,8 @@ func countFilesUnder(t *testing.T, dir string) int {
 
 func contractHealth(t *testing.T, env contractEnv) {
 	m := wantJSON(t, "health", do(t, env.Handler, "GET", "/api/v1/health", nil, nil), 200)
-	wantKeys(t, "health", m, "status", "version", "storage")
-	if m["status"] != "ok" || m["storage"] != "ok" {
+	wantKeys(t, "health", m, "status", "version", "storage", "integrity")
+	if m["status"] != "ok" || m["storage"] != "ok" || m["integrity"] != "ok" {
 		t.Fatalf("health %v", m)
 	}
 }
@@ -515,5 +530,169 @@ func contractConcurrentUploads(t *testing.T, env contractEnv) {
 	}
 	if n := countFilesUnder(t, filepath.Join(env.Root, ".system", "incoming")); n != 0 {
 		t.Fatalf("incoming has %d files", n)
+	}
+}
+
+// wantNoBlobs asserts that incoming/ and pool/ hold no files.
+func wantNoBlobs(t *testing.T, what, root string) {
+	t.Helper()
+	for _, dir := range []string{"incoming", "pool"} {
+		if n := countFilesUnder(t, filepath.Join(root, ".system", dir)); n != 0 {
+			t.Fatalf("%s: %s has %d files", what, dir, n)
+		}
+	}
+}
+
+// contractInsufficientStorage: uploads that would leave less than
+// MinFreeBytes are refused with 507 before anything reaches the pool.
+func contractInsufficientStorage(t *testing.T, newStore func(t *testing.T, vol *storage.Volume) meta.MetadataStore) {
+	var mu sync.Mutex
+	free := uint64(0)
+	setFree := func(n uint64) { mu.Lock(); free = n; mu.Unlock() }
+	const reserve = 1000
+	env := newContractEnvWith(t, newStore, func(c *httpapi.Config) {
+		c.MinFreeBytes = reserve
+		c.FreeBytes = func() (uint64, error) { mu.Lock(); defer mu.Unlock(); return free, nil }
+	})
+	h := env.Handler
+	fid := createFolder(t, h, "full")["id"].(string)
+	body := []byte(strings.Repeat("p", 100))
+
+	setFree(reserve) // nothing above the reserve
+	wantError(t, "at reserve", uploadTo(t, h, fid, body, nil), 507, "insufficient_storage")
+	setFree(reserve + 50) // known length does not fit: refused before reading
+	wantError(t, "content-length over budget", uploadTo(t, h, fid, body, nil), 507, "insufficient_storage")
+	// Unknown length (chunked): staged up to the budget, then refused.
+	req := httptest.NewRequest("POST", "/api/v1/folders/"+fid+"/assets", io.MultiReader(bytes.NewReader(body)))
+	req.ContentLength = -1
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	wantError(t, "chunked over budget", reply{Status: w.Code, Header: w.Header(), Body: w.Body.Bytes()}, 507, "insufficient_storage")
+	wantNoBlobs(t, "after 507", env.Root)
+	if n := len(syncPage(t, h, fid, "")["events"].([]any)); n != 0 {
+		t.Fatalf("events = %d after 507", n)
+	}
+	// Larger than MaxUploadSize stays 413 even when space is short.
+	big := httptest.NewRequest("POST", "/api/v1/folders/"+fid+"/assets", bytes.NewReader(body))
+	big.ContentLength = httpapi.MaxUploadSize + 1
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, big)
+	if w.Code != 413 {
+		t.Fatalf("oversized declared length: %d %s", w.Code, w.Body)
+	}
+
+	setFree(reserve + 100) // exactly fits
+	wantJSON(t, "fits", uploadTo(t, h, fid, body, nil), 201)
+}
+
+// faultMap injects the error returned by the function registered for a point.
+type faultMap struct {
+	mu sync.Mutex
+	at map[string]func() error
+}
+
+func (f *faultMap) set(point string, fn func() error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.at == nil {
+		f.at = map[string]func() error{}
+	}
+	if fn == nil {
+		delete(f.at, point)
+		return
+	}
+	f.at[point] = fn
+}
+
+func (f *faultMap) Fault(point string) error {
+	f.mu.Lock()
+	fn := f.at[point]
+	f.mu.Unlock()
+	if fn == nil {
+		return nil
+	}
+	return fn()
+}
+
+func errFn(err error) func() error { return func() error { return err } }
+
+// contractWriteErrors: a full disk, an I/O error, a busy database or a lost
+// volume at each step of the upload gets its own status, never a success,
+// never an event; the retry then succeeds exactly once.
+func contractWriteErrors(t *testing.T, newStore func(t *testing.T, vol *storage.Volume) meta.MetadataStore) {
+	faults := &faultMap{}
+	env := newContractEnvWith(t, newStore, func(c *httpapi.Config) { c.Faults = faults })
+	h := env.Handler
+	fid := createFolder(t, h, "errors")["id"].(string)
+	enospc := &fs.PathError{Op: "write", Path: "x", Err: syscall.ENOSPC}
+	eio := &fs.PathError{Op: "rename", Path: "x", Err: syscall.EIO}
+	for i, tc := range []struct {
+		point  string
+		fn     func() error
+		status int
+		code   string
+	}{
+		{httpapi.FaultAfterStage, errFn(enospc), 507, "insufficient_storage"},
+		{httpapi.FaultAfterStage, errFn(eio), 503, "storage_io_error"},
+		{httpapi.FaultAfterPromote, errFn(enospc), 507, "insufficient_storage"},
+		{httpapi.FaultAfterPromote, errFn(eio), 503, "storage_io_error"},
+		{httpapi.FaultAfterPreview, errFn(errors.New("boom")), 500, "storage_failed"},
+		{httpapi.FaultBeforeCommit, errFn(fmt.Errorf("%w: sqlite", storage.ErrNoSpace)), 507, "insufficient_storage"},
+		{httpapi.FaultBeforeCommit, errFn(fmt.Errorf("%w: sqlite", storage.ErrIO)), 503, "storage_io_error"},
+		{httpapi.FaultBeforeCommit, errFn(fmt.Errorf("%w: locked", meta.ErrBusy)), 503, "busy"},
+		{httpapi.FaultBeforeCommit, errFn(errors.New("boom")), 500, "metadata_write_failed"},
+		// The volume disappears between the last handler check and COMMIT.
+		{httpapi.FaultBeforeCommit, func() error { return os.Remove(filepath.Join(env.Root, storage.MarkerName)) }, 503, "storage_unavailable"},
+	} {
+		body := []byte(fmt.Sprintf("payload %d", i))
+		what := fmt.Sprintf("%s %s", tc.point, tc.code)
+		faults.set(tc.point, tc.fn)
+		r := uploadTo(t, h, fid, body, nil)
+		faults.set(tc.point, nil)
+		wantError(t, what, r, tc.status, tc.code)
+		if tc.code == "busy" && r.Header.Get("Retry-After") != "1" {
+			t.Fatalf("%s: Retry-After %q", what, r.Header.Get("Retry-After"))
+		}
+		if n := countFilesUnder(t, filepath.Join(env.Root, ".system", "incoming")); n != 0 {
+			t.Fatalf("%s: incoming has %d files", what, n)
+		}
+		if n := len(syncPage(t, h, fid, "")["events"].([]any)); n != i {
+			t.Fatalf("%s: %d events, want %d", what, n, i)
+		}
+		if tc.code == "storage_unavailable" {
+			if _, err := storage.Init(env.Root); err != nil {
+				t.Fatal(err)
+			}
+			// The re-created marker has a new volume id; this server
+			// keeps refusing writes until it is restarted.
+			wantError(t, what+" retry", uploadTo(t, h, fid, body, nil), 503, "storage_unavailable")
+			continue
+		}
+		// The retry succeeds once, reusing a pool file left behind.
+		wantJSON(t, what+" retry", uploadTo(t, h, fid, body, nil), 201)
+		if n := len(syncPage(t, h, fid, "")["events"].([]any)); n != i+1 {
+			t.Fatalf("%s retry: %d events, want %d", what, n, i+1)
+		}
+	}
+}
+
+// contractRestoreMissingOriginal: when the pool file of a known original is
+// gone, uploading the same bytes again puts it back.
+func contractRestoreMissingOriginal(t *testing.T, env contractEnv) {
+	h := env.Handler
+	a := createFolder(t, h, "a")["id"].(string)
+	b := createFolder(t, h, "b")["id"].(string)
+	body := []byte("an original that got lost")
+	wantJSON(t, "upload", uploadTo(t, h, a, body, nil), 201)
+	pool := filepath.Join(env.Root, ".system", "pool", shaHex(body)[:2], shaHex(body))
+	if err := os.Remove(pool); err != nil {
+		t.Fatal(err)
+	}
+	m := wantJSON(t, "re-upload", uploadTo(t, h, b, body, nil), 201)
+	if m["result"] != "linked" {
+		t.Fatalf("re-upload %v", m)
+	}
+	if got, err := os.ReadFile(pool); err != nil || !bytes.Equal(got, body) {
+		t.Fatalf("pool file not restored: %v", err)
 	}
 }

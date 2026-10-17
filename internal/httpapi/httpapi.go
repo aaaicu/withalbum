@@ -9,10 +9,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -30,25 +32,78 @@ const syncPageSize = 100
 //go:embed web/index.html
 var dashboardHTML []byte
 
-// Config wires the server to its storage. All fields except Version are required.
+// DefaultMinFreeBytes is the free space an upload must leave on the volume
+// (WITHALBUM_MIN_FREE_BYTES), so that the database, previews and the
+// operating system never run out of room.
+const DefaultMinFreeBytes int64 = 1 << 30
+
+// Fault injection points, in the order an upload passes them. See
+// FaultInjector.
+const (
+	FaultAfterStage   = "after_stage"   // temp file written and fsynced
+	FaultAfterPromote = "after_promote" // renamed into the pool, directory fsynced
+	FaultPreview      = "preview"       // replaces preview generation
+	FaultAfterPreview = "after_preview" // preview done, metadata not yet committed
+	FaultBeforeCommit = "before_commit" // inside the metadata transaction, before COMMIT
+	FaultAfterCommit  = "after_commit"  // committed, response not yet sent
+)
+
+// FaultInjector is for tests only and must be nil in production. Fault is
+// called at each point an upload passes; a non-nil error is handled exactly
+// like an error of the step just before that point (FaultPreview: like a
+// failed preview), so tests can simulate a full disk (syscall.ENOSPC), a
+// dying disk (syscall.EIO) or a busy database (meta.ErrBusy). A test may
+// also block in Fault and kill the process to simulate a crash there.
+type FaultInjector interface {
+	Fault(point string) error
+}
+
+// Config wires the server to its storage. Volume, Meta and Blobs are required.
 type Config struct {
 	Volume  *storage.Volume
 	Meta    meta.MetadataStore
 	Blobs   *blobstore.Store
 	Version string
+	// MinFreeBytes is the free space an upload must leave on the volume.
+	// Uploads that would go below it are refused with 507 before anything
+	// is written. Zero only requires that the upload itself fits.
+	MinFreeBytes int64
+	// FreeBytes reports the free space of the volume (nil: Volume.FreeBytes).
+	FreeBytes func() (uint64, error)
+	// IntegrityWarning makes /api/v1/health report "integrity": "warning",
+	// e.g. when startup reconciliation found missing or damaged originals.
+	IntegrityWarning bool
+	// Faults is for tests only (see FaultInjector); nil in production.
+	Faults FaultInjector
 }
 
 // Server holds the HTTP handlers.
 type Server struct {
-	vol     *storage.Volume
-	meta    meta.MetadataStore
-	blobs   *blobstore.Store
-	version string
+	vol              *storage.Volume
+	meta             meta.MetadataStore
+	blobs            *blobstore.Store
+	version          string
+	minFree          int64
+	freeBytes        func() (uint64, error)
+	integrityWarning bool
+	faults           FaultInjector
 }
 
 // New returns a Server for cfg.
 func New(cfg Config) *Server {
-	return &Server{vol: cfg.Volume, meta: cfg.Meta, blobs: cfg.Blobs, version: cfg.Version}
+	s := &Server{vol: cfg.Volume, meta: cfg.Meta, blobs: cfg.Blobs, version: cfg.Version,
+		minFree: max(cfg.MinFreeBytes, 0), freeBytes: cfg.FreeBytes, integrityWarning: cfg.IntegrityWarning, faults: cfg.Faults}
+	if s.freeBytes == nil {
+		s.freeBytes = cfg.Volume.FreeBytes
+	}
+	return s
+}
+
+func (s *Server) fault(point string) error {
+	if s.faults == nil {
+		return nil
+	}
+	return s.faults.Fault(point)
 }
 
 func jsonReply(w http.ResponseWriter, status int, body any) {
@@ -80,7 +135,11 @@ func (s *Server) Handler() http.Handler {
 		if err := s.vol.Check(); err != nil {
 			storageState = "unavailable"
 		}
-		jsonReply(w, 200, map[string]string{"status": "ok", "version": s.version, "storage": storageState})
+		integrity := "ok"
+		if s.integrityWarning {
+			integrity = "warning"
+		}
+		jsonReply(w, 200, map[string]string{"status": "ok", "version": s.version, "storage": storageState, "integrity": integrity})
 	})
 	mux.HandleFunc("GET /api/v1/folders", s.getFolders)
 	mux.HandleFunc("POST /api/v1/folders", s.createFolder)
@@ -129,7 +188,7 @@ func (s *Server) createFolder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		errorReply(w, 500, "metadata_write_failed")
+		writeFailed(w, "create folder", err, "metadata_write_failed")
 		return
 	}
 	jsonReply(w, 201, folder)
@@ -145,6 +204,65 @@ func (s *Server) storageReady(w http.ResponseWriter) bool {
 	}
 	return true
 }
+
+// writeFailed replies to a failed write. Errors that a client should handle
+// differently from a plain server error get their own status:
+//
+//   - full volume (ENOSPC, EDQUOT, SQLITE_FULL): 507 insufficient_storage
+//   - I/O error (EIO, SQLITE_IOERR): 503 storage_io_error
+//   - database write lock not available in time: 503 busy, Retry-After: 1
+//   - storage volume gone or replaced: 503 storage_unavailable
+//
+// Everything else is 500 with the given code.
+func writeFailed(w http.ResponseWriter, what string, err error, code string) {
+	log.Printf("%s failed: %v", what, err)
+	switch {
+	case storage.IsNoSpace(err):
+		errorReply(w, 507, "insufficient_storage")
+	case storage.IsIOError(err):
+		errorReply(w, 503, "storage_io_error")
+	case errors.Is(err, meta.ErrBusy):
+		w.Header().Set("Retry-After", "1")
+		errorReply(w, 503, "busy")
+	case errors.Is(err, errVolumeLost):
+		errorReply(w, 503, "storage_unavailable")
+	default:
+		errorReply(w, 500, code)
+	}
+}
+
+// errVolumeLost marks a failed volume re-check inside the commit.
+var errVolumeLost = errors.New("storage volume lost")
+
+// uploadBudget returns how many bytes this upload may write: the free space
+// minus the reserve, capped at MaxUploadSize. ok is false (and a reply was
+// sent) when the volume cannot take any upload or cannot be queried.
+func (s *Server) uploadBudget(w http.ResponseWriter) (int64, bool) {
+	free, err := s.freeBytes()
+	if errors.Is(err, storage.ErrFreeSpaceUnsupported) {
+		return MaxUploadSize, true // no statfs on this platform; ENOSPC still maps to 507
+	}
+	if err != nil {
+		log.Printf("cannot query free space, refusing write: %v", err)
+		errorReply(w, 503, "storage_unavailable")
+		return 0, false
+	}
+	if free <= uint64(s.minFree) {
+		log.Printf("refusing upload: %d bytes free, reserve %d", free, s.minFree)
+		errorReply(w, 507, "insufficient_storage")
+		return 0, false
+	}
+	return int64(min(free-uint64(s.minFree), uint64(MaxUploadSize))), true
+}
+
+// upload stores one original. Commit order (each step durable before the
+// next): temp file in incoming/ fsynced -> renamed into the pool and the pool
+// directory fsynced -> preview (optional) -> one metadata transaction, inside
+// which the volume and the pool file are re-checked right before COMMIT ->
+// response. A success status is therefore only sent once file and metadata
+// are both on disk. A crash or error before COMMIT leaves at most a temp file
+// or an unreferenced pool file, which startup reconciliation removes or
+// quarantines (blobstore.Reconcile); retrying the upload is always safe.
 func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	folderID := r.PathValue("folderID")
@@ -155,31 +273,58 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 		metaReadFailed(w, err)
 		return
 	}
+	deviceID := strings.TrimSpace(r.Header.Get("X-Device-ID"))
+	if len(deviceID) > 100 {
+		errorReply(w, 400, "invalid_device_id")
+		return
+	}
 	// Fail fast before spooling the body to a volume that is already gone.
 	if !s.storageReady(w) {
 		return
 	}
+	// Refuse before writing anything if the upload cannot fit. A body of
+	// unknown length is limited to the budget while it is staged.
+	budget, ok := s.uploadBudget(w)
+	if !ok {
+		return
+	}
+	if r.ContentLength > budget && r.ContentLength <= MaxUploadSize {
+		errorReply(w, 507, "insufficient_storage")
+		return
+	}
 
-	staged, err := s.blobs.Stage(r.Body, MaxUploadSize)
+	staged, err := s.blobs.Stage(r.Body, budget)
+	if err == nil {
+		if err = s.fault(FaultAfterStage); err != nil {
+			staged.Remove()
+		}
+	}
 	switch {
 	case err == nil:
-	case errors.Is(err, blobstore.ErrTempCreate):
-		errorReply(w, 500, "temp_failed")
-		return
 	case errors.Is(err, blobstore.ErrTooLarge):
-		errorReply(w, 413, "file_too_large")
+		if budget < MaxUploadSize && r.ContentLength <= MaxUploadSize {
+			errorReply(w, 507, "insufficient_storage")
+		} else {
+			errorReply(w, 413, "file_too_large")
+		}
 		return
 	case errors.Is(err, blobstore.ErrEmpty):
 		errorReply(w, 400, "empty_file")
 		return
-	case errors.Is(err, blobstore.ErrSync):
-		errorReply(w, 500, "file_sync_failed")
+	case errors.Is(err, blobstore.ErrCopy):
+		errorReply(w, 400, "upload_failed")
+		return
+	case errors.Is(err, blobstore.ErrTempCreate):
+		writeFailed(w, "stage upload", err, "temp_failed")
 		return
 	case errors.Is(err, blobstore.ErrClose):
-		errorReply(w, 500, "temp_close_failed")
+		writeFailed(w, "stage upload", err, "temp_close_failed")
 		return
-	default: // blobstore.ErrCopy
-		errorReply(w, 400, "upload_failed")
+	case errors.Is(err, blobstore.ErrWrite):
+		writeFailed(w, "stage upload", err, "temp_write_failed")
+		return
+	default: // ErrSync, injected faults
+		writeFailed(w, "stage upload", err, "file_sync_failed")
 		return
 	}
 	defer staged.Remove()
@@ -197,28 +342,46 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 	if name == "" || name == "." || name == "/" || len(name) > 240 {
 		name = sha
 	}
-	deviceID := strings.TrimSpace(r.Header.Get("X-Device-ID"))
-	if len(deviceID) > 100 {
-		errorReply(w, 400, "invalid_device_id")
-		return
-	}
 
 	previewReady := false
 	existing, err := s.meta.GetAssetBySHA(ctx, sha)
 	switch {
 	case err == nil:
 		previewReady = existing.PreviewReady
+		// The metadata knows this original but its pool file is gone (see
+		// the startup report): these are the same bytes, restore it.
+		if _, statErr := os.Lstat(s.blobs.PoolPath(sha)); errors.Is(statErr, os.ErrNotExist) {
+			if !s.storageReady(w) {
+				return
+			}
+			if err := s.blobs.Promote(staged, sha); err != nil {
+				writeFailed(w, "restore missing original", err, "storage_failed")
+				return
+			}
+			log.Printf("restored missing original %s from a new upload", sha)
+		}
 	case errors.Is(err, meta.ErrAssetNotFound):
-		// Blob before metadata: the pool file must exist before CommitUpload
-		// makes the asset visible. A crash in between leaves an orphan blob.
+		// Blob before metadata: the pool file must be durable before
+		// CommitUpload makes the asset visible.
 		if !s.storageReady(w) {
 			return
 		}
-		if err := s.blobs.Promote(staged, sha); err != nil {
-			errorReply(w, 500, "storage_failed")
+		err := s.blobs.Promote(staged, sha)
+		if err == nil {
+			err = s.fault(FaultAfterPromote)
+		}
+		if err != nil {
+			writeFailed(w, "promote upload", err, "storage_failed")
 			return
 		}
-		previewReady = s.blobs.MakePreview(sha) == nil
+		// The preview is derived data: its failure never fails the upload.
+		if err := s.fault(FaultPreview); err == nil {
+			previewReady = s.blobs.MakePreview(sha) == nil
+		}
+		if err := s.fault(FaultAfterPreview); err != nil {
+			writeFailed(w, "upload", err, "storage_failed")
+			return
+		}
 	default:
 		metaReadFailed(w, err)
 		return
@@ -227,17 +390,39 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 	if !s.storageReady(w) {
 		return
 	}
+	poolPath := s.blobs.PoolPath(sha)
 	res, err := s.meta.CommitUpload(ctx, meta.CommitRequest{
 		FolderID: folderID,
 		DeviceID: deviceID,
 		Asset:    meta.Asset{ID: sha, Filename: name, MimeType: staged.MimeType, Bytes: staged.Size, PreviewReady: previewReady},
+		// Runs under the database write lock right before COMMIT, so the
+		// window between this check and the commit is as small as possible.
+		BeforeCommit: func() error {
+			if err := s.fault(FaultBeforeCommit); err != nil {
+				return err
+			}
+			if err := s.vol.Check(); err != nil {
+				return fmt.Errorf("%w: %w", errVolumeLost, err)
+			}
+			fi, err := os.Stat(poolPath)
+			if err != nil {
+				return fmt.Errorf("pool file before commit: %w", err)
+			}
+			if fi.Size() != staged.Size {
+				return fmt.Errorf("pool file has %d bytes before commit, want %d", fi.Size(), staged.Size)
+			}
+			return nil
+		},
 	})
+	if err == nil {
+		err = s.fault(FaultAfterCommit)
+	}
 	if errors.Is(err, meta.ErrFolderNotFound) {
 		errorReply(w, 404, "folder_not_found")
 		return
 	}
 	if err != nil {
-		errorReply(w, 500, "metadata_write_failed")
+		writeFailed(w, "commit upload", err, "metadata_write_failed")
 		return
 	}
 	status := 201

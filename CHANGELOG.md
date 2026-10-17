@@ -17,7 +17,18 @@
 - `withalbum-server migrate-legacy [-apply] [-json]` (`internal/legacyimport`): 이전 버전 `.system/state.json`을 SQLite로 무손실 이관. 기본은 점검만(state.json 엄격 파싱·일관성 검사, 모든 원본 크기·SHA-256 재계산, 프리뷰 존재 확인, 보고서). `-apply`는 `state.json.bak-<UTC>` 백업 → `withalbum.db.importing`에 스키마+전체 행+`legacy_imports`를 트랜잭션 하나로 기록 → 재오픈 후 전 행 대조 검증 → `withalbum.db`로 rename → state.json을 `state.json.migrated-<UTC>`로 rename(삭제 안 함). 결함 입력은 아무것도 쓰지 않고 거부, 중단 시 재실행으로 이어가거나 처음부터 다시 함. 절차: `docs/MIGRATION_legacy_state.md`.
 - `db.MigrateNewTx`: 새 DB의 스키마 생성을 호출자 트랜잭션 안에서 수행.
 
+- 업로드 원자적 커밋·크래시 복구 (**부분 구현, 실기기 미검증**): 성공 응답은 임시 파일 fsync → pool rename → pool 디렉터리 fsync → DB 트랜잭션이 모두 끝난 뒤에만 보낸다. DB 트랜잭션 안에서 COMMIT 직전에 볼륨과 pool 파일을 재확인한다(`meta.CommitRequest.BeforeCommit`).
+- 기동 재조정 `blobstore.Reconcile`: `.system/incoming`의 미완료 업로드·프리뷰 임시 파일 삭제, DB에 없는 pool 파일은 `.system/orphans/`로 격리(삭제 안 함), DB에 있으나 pool에 없거나 크기가 다른 원본은 로그 `INTEGRITY ERROR`와 health `integrity: warning`. 결과는 로그 `recovery: ...` 한 줄 요약.
+- 여유 공간 사전검사: 업로드 후 여유 공간이 `WITHALBUM_MIN_FREE_BYTES`(기본 1GiB) 미만이면 기록 전에 `507 insufficient_storage`. 길이를 모르는 본문은 예산까지만 받는다. 디스크가 가득 찬 경우(ENOSPC/EDQUOT/SQLITE_FULL)도 507.
+- 단일 인스턴스 잠금 `.system/withalbum.lock`(flock): 같은 저장소에서 두 번째 서버나 서버 실행 중 `migrate-legacy -apply`를 `LOCKED`로 거부.
+- 같은 SHA-256의 pool 파일이 이미 있으면 해시를 재검증해 재사용하고, 내용이 다르면(손상) `orphans/`로 옮긴 뒤 교체한다. DB에 있으나 pool 파일이 사라진 원본은 같은 파일을 다시 업로드하면 복원된다.
+- 테스트 전용 장애 주입 훅 `httpapi.FaultInjector`(프로덕션에서는 nil), 단계별 크래시 이미지 테스트와 실제 SIGKILL 테스트(`server/crash_test.go`).
+
 ### Changed
+- `/api/v1/health` 응답에 `integrity: ok|warning` 키 추가.
+- 업로드 오류 응답 추가: `507 insufficient_storage`, `503 storage_io_error`(디스크 I/O 오류), `503 busy` + `Retry-After: 1`(DB 쓰기 경합이 busy_timeout 5초 초과; 이전에는 500), `500 temp_write_failed`(임시 파일 쓰기 실패; 이전에는 400 `upload_failed`). 폴더 생성의 DB 오류도 같은 규칙(507/503)을 따른다. `X-Device-ID` 길이 검사가 본문 저장 전으로 이동(응답 동일).
+- SQLite 연결 PRAGMA에 `fullfsync=1` 추가(macOS에서 커밋을 디스크 캐시 너머까지 기록; 다른 OS는 영향 없음). 측정(내장 SSD, macOS, 1회): 100KiB 업로드 100건 13.4ms → 24.6ms/건, 200MiB 1건 0.31s → 0.34s.
+- 프리뷰 파일도 rename 후 디렉터리를 fsync하고, 디코더 패닉은 오류로 바꿔 원본 커밋에 영향을 주지 않는다.
 - **업그레이드 시 주의:** 이전 버전의 `.system/state.json`만 있는 저장소에서는 서버가 기동을 거부한다(state.json과 다른 파일을 변경하지 않음, 종료 코드 1). `migrate-legacy`로 이관한 뒤 기동할 것. DB와 state.json이 함께 있으면 state.json이 이관 기록(`legacy_imports`)에 있을 때만 기동한다.
 - HTTP 응답 형식은 동일하다. 응답의 `asset_id`는 호환을 위해 계속 SHA-256이며, 내부적으로 sha → 자산을 조회한다.
 - **업그레이드 시 필요한 조치:** 서버가 더 이상 저장소 루트를 만들지 않는다. 기존 데이터 폴더도 `withalbum-server -init-storage`를 한 번 실행해야 기동한다(없으면 원인 안내 후 종료).

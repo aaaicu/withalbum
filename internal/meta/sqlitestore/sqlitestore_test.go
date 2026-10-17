@@ -1,13 +1,17 @@
 package sqlitestore
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/aaaicu/withalbum/internal/db"
 	"github.com/aaaicu/withalbum/internal/meta"
 	"github.com/aaaicu/withalbum/internal/meta/metatest"
 	"github.com/aaaicu/withalbum/internal/storage"
@@ -317,5 +321,81 @@ func TestRestartPreservesState(t *testing.T) {
 	}
 	if p, _ := r.ListEvents(ctx, f1.ID, 3, 10); len(p.Events) != 1 || p.Events[0].Seq != 4 {
 		t.Fatalf("seq after reopen %+v", p)
+	}
+}
+
+func TestForEachBlobInSHAOrder(t *testing.T) {
+	ctx := t.Context()
+	s := open(t, newVolume(t))
+	defer s.Close()
+	f, err := s.CreateFolder(ctx, "f")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []int{5, 1, 9, 3} {
+		if _, err := s.CommitUpload(ctx, meta.CommitRequest{FolderID: f.ID, Asset: meta.Asset{ID: sha(n), Filename: "x", MimeType: "image/jpeg", Bytes: int64(n + 1)}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var got []string
+	err = s.ForEachBlob(ctx, func(h string, size int64) error {
+		got = append(got, fmt.Sprintf("%s:%d", h, size))
+		return nil
+	})
+	want := []string{sha(1) + ":2", sha(3) + ":4", sha(5) + ":6", sha(9) + ":10"}
+	if err != nil || strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("ForEachBlob = %v %v", got, err)
+	}
+	stop := errors.New("stop")
+	calls := 0
+	if err := s.ForEachBlob(ctx, func(string, int64) error { calls++; return stop }); !errors.Is(err, stop) || calls != 1 {
+		t.Fatalf("ForEachBlob stop = %v after %d calls", err, calls)
+	}
+}
+
+// TestWriteContentionIsErrBusy: while another connection holds the write
+// lock longer than busy_timeout (5s), writes fail with meta.ErrBusy and
+// change nothing.
+func TestWriteContentionIsErrBusy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits for busy_timeout")
+	}
+	t.Parallel()
+	ctx := t.Context()
+	vol := newVolume(t)
+	s := open(t, vol)
+	defer s.Close()
+	f, err := s.CreateFolder(ctx, "f")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := db.Open(DBPath(vol.Root()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	tx, err := other.BeginTx(ctx, nil) // BEGIN IMMEDIATE: takes the write lock
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	_, err = s.CommitUpload(ctx, meta.CommitRequest{FolderID: f.ID, Asset: meta.Asset{ID: sha(0), Filename: "x", MimeType: "image/jpeg", Bytes: 1}})
+	if !errors.Is(err, meta.ErrBusy) {
+		t.Fatalf("CommitUpload under contention = %v, want ErrBusy", err)
+	}
+	if waited := time.Since(start); waited < 4*time.Second {
+		t.Fatalf("gave up after %v, before busy_timeout", waited)
+	}
+	if _, err := s.CreateFolder(context.Background(), "g"); !errors.Is(err, meta.ErrBusy) {
+		t.Fatalf("CreateFolder under contention = %v, want ErrBusy", err)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(t, s, "SELECT count(*) FROM assets"); n != 0 {
+		t.Fatalf("assets = %d after busy commit", n)
+	}
+	if _, err := s.CommitUpload(ctx, meta.CommitRequest{FolderID: f.ID, Asset: meta.Asset{ID: sha(0), Filename: "x", MimeType: "image/jpeg", Bytes: 1}}); err != nil {
+		t.Fatalf("retry after contention: %v", err)
 	}
 }

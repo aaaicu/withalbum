@@ -179,6 +179,11 @@ func (s *Store) CommitUpload(_ context.Context, req meta.CommitRequest) (meta.Co
 	if link, exists := s.state.Links[folderID][sha]; exists {
 		return meta.CommitResult{Result: meta.ResultAlreadyPresent, Asset: s.state.Assets[link.AssetID]}, nil
 	}
+	if req.BeforeCommit != nil {
+		if err := req.BeforeCommit(); err != nil {
+			return meta.CommitResult{}, fmt.Errorf("before commit: %w", err)
+		}
+	}
 	ts := now()
 	asset, assetExists := s.state.Assets[sha]
 	result := meta.ResultLinked
