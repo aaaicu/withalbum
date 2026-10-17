@@ -20,6 +20,7 @@
 - **부분 구현:** 메타데이터는 SQLite(`.system/withalbum.db`, `internal/meta/sqlitestore`)에 저장합니다. 업로드 1건(blob·자산·폴더 연결·시퀀스·이벤트)은 트랜잭션 하나로 커밋되고, 자산 ID는 랜덤이며 폴더마다 따로 발급됩니다(같은 바이트라도 다른 폴더에서는 다른 자산). 새 폴더의 소유자는 만든 사람이고, 이전 버전·이관 데이터의 폴더는 bootstrap 관리자 계정이 소유합니다(처음에는 로그인할 수 없는 잠금 상태의 `admin`, 콘솔 `withalbum-server admin init`으로 인수하면 user_id가 유지되어 그 폴더를 그대로 소유). **이전 버전의 `.system/state.json`만 있는 저장소는 기동을 거부합니다(파일은 변경하지 않음). `withalbum-server migrate-legacy`(점검) → `migrate-legacy -apply`로 무손실 이관한 뒤 기동하세요. 절차·롤백: [`docs/MIGRATION_legacy_state.md`](docs/MIGRATION_legacy_state.md).**
 - **부분 구현(테스트 검증, 실기기 미검증):** 업로드 원자적 커밋·크래시 복구. 성공 응답(200/201)은 원본 파일(임시 파일 fsync → pool rename → 디렉터리 fsync)과 DB 트랜잭션이 모두 디스크에 기록된 뒤에만 보냅니다. 기동 시 재조정이 미완료 업로드 임시 파일을 지우고, DB에 없는 pool 파일은 `.system/orphans/`로 옮기며(삭제 안 함), DB에 있는데 파일이 없거나 크기가 다른 원본은 로그와 `/api/v1/health`의 `integrity: warning`으로 알립니다. 여유 공간이 예약분(`WITHALBUM_MIN_FREE_BYTES`, 기본 1GiB) 아래로 내려갈 업로드는 기록 전에 `507 insufficient_storage`로 거부합니다. 같은 저장소에 서버/이관 명령이 두 개 뜨지 않도록 `.system/withalbum.lock`을 잠급니다. 단계별 장애 주입과 실제 SIGKILL 테스트로 검증했고, 실제 전원 차단·외장 디스크 분리는 미검증입니다.
 - **부분 구현:** 계정 코어. Argon2id 비밀번호 해시(`internal/auth/password`), 사용자 저장소(`internal/users`, 마지막 활성 관리자 보호·감사 로그), 콘솔 명령 `withalbum-server admin init | create-user | reset-password`.
+- **부분 구현(테스트·로컬 바이너리 스모크 검증, Mac 브라우저 점검 전):** 설치 화면(M24). 저장소가 없거나 관리자가 없으면 서버가 **이 컴퓨터의 평문 루프백 리스너에서만** 설치 모드로 뜨고, 콘솔에 1회용 설치 코드(12자, 30분, 5회 오입력 시 잠김)를 출력합니다. 브라우저 `http://127.0.0.1:8787/setup`에서 코드 → 저장장치 선택(macOS `/Volumes`·홈 폴더·직접 경로, 쓰기 테스트) → 관리자 계정 → 같은 프로세스에서 정상 모드로 전환(설치 라우트 404). 선택한 루트와 볼륨 ID는 사용자 설정 파일(`WITHALBUM_CONFIG`, 기본 `~/Library/Application Support/WithAlbum/server.json`)에 고정됩니다. TLS·LAN 리스너에는 설치 라우트가 없고, 콘솔 경로(`-init-storage`, `admin init`)는 그대로입니다. 위협 모델: [`SECURITY.md`](SECURITY.md#setup-screen-m24-threat-model).
 - **부분 구현:** HTTP 로그인·기기 세션·계정 관리 API(`/api/v1/auth/login|refresh|logout`, `/api/v1/me`, `/api/v1/me/password`, `/api/v1/me/devices`, `/api/v1/admin/users*`, 규격 [`docs/API_v2.yaml`](docs/API_v2.yaml)). access 15분/refresh 30일 회전(로그인 후 최대 90일)·재사용 감지(앱 응답 유실 30초 유예 1회), Bearer(앱)·HttpOnly 쿠키+CSRF(웹), 로그인 속도 제한·실패 감사, 비밀번호 재설정·계정 비활성화 시 세션 회수.
 - **부분 구현(테스트·로컬 바이너리 스모크 검증):** 앨범 ACL. 대시보드 페이지·health·login·refresh를 뺀 모든 API는 세션 필요(없으면 401). 폴더·업로드·동기화·원본/프리뷰는 요청마다 DB의 소유자·멤버십으로 `internal/authz` 판정(`internal/httpapi/middleware_authz.go`, 라우트별 정책 표, 미선언 라우트는 기동 시 panic). 관리자라도 소유·멤버가 아닌 앨범은 404, 역할 부족은 403, 다른 폴더의 자산 ID는 404. UPLOADER는 업로드만 가능하고 응답은 항상 같은 202 영수증. 업로드는 커밋 직전 DB 트랜잭션 안에서 권한을 재확인. 기본 USER는 앨범 생성 불가(`can_create_albums`). 무인증 `/api/v1/assets/{sha}/*`는 제거. 앨범 공유(OWNER만): 등록 계정 초대(7일, 대상 본인만 수락), 초대 취소, 역할 변경·추방(다음 요청부터 반영), 소유권 이전(이전 오너는 CONTRIBUTOR, 1 트랜잭션, 실패 시 롤백), 앨범 보관. 모든 변경은 같은 트랜잭션에서 감사 로그. 관리자는 **보관된 앨범만** 다른 활성 계정에 재배정할 수 있음(탈퇴 계정 비활성화용, 접근 권한은 생기지 않음, M17).
 - **설계만 완료:** Mac 설치 마법사, iOS/Android 앱, 역방향 모바일 동기화, Google Drive 어댑터, 장애 복구.
@@ -70,7 +71,9 @@ WITHALBUM_ROOT="$HOME/WithAlbumTest" ./withalbum-server
 # 같은 컴퓨터 브라우저: http://127.0.0.1:8787
 ```
 
-서버는 **저장소 루트를 절대 만들지 않습니다.** 루트가 없거나 `-init-storage`로 등록되지 않았으면 원인을 안내하고 즉시 종료합니다. `-init-storage`는 이미 존재하는 디렉터리에 `.withalbum-volume.json`(volume_id) 마커만 추가하며 기존 `.system/` 데이터는 건드리지 않습니다. 이전 버전에서 쓰던 데이터 폴더도 같은 명령으로 한 번 등록하면 됩니다. 출력된 `volume_id`를 `WITHALBUM_VOLUME_ID` 환경변수로 지정하면 다른 볼륨으로는 기동하지 않습니다(선택). 실행 중 마커가 사라지거나 루트의 장치가 바뀌면 업로드·폴더 생성은 `503 storage_unavailable`로 거부되고 `/api/v1/health`의 `storage`가 `unavailable`이 됩니다. 디스크를 다시 연결했다면 서버를 재시작하세요. 프로덕션 외장하드 폴더를 지정하지 마세요.
+**설치 화면으로 시작하기(M24, 이 Mac에서만):** `WITHALBUM_ROOT` 없이 `./withalbum-server`를 실행하면, 등록된 저장소가 없을 때 설치 모드로 뜨고 콘솔에 `SETUP: open http://127.0.0.1:8787/setup ... setup code XXXX-XXXX-XXXX`를 출력합니다. 같은 컴퓨터 브라우저에서 그 주소를 열고 코드를 입력한 뒤 저장장치와 관리자 계정을 정하면, 서버는 재시작 없이 일반 대시보드로 바뀝니다. 선택한 저장 폴더는 사용자 설정 파일에 기록되어 다음 기동과 콘솔 명령이 같은 저장소를 씁니다(`WITHALBUM_ROOT`가 있으면 그것이 우선, 설정 파일의 루트가 없으면 설치 모드로 가지 않고 종료). 설치 화면이 만드는 폴더는 사용자가 고른 디스크(또는 홈 폴더) 바로 아래 `WithAlbum` 하나뿐이며, 만들기 직전에 디스크가 마운트되어 있는지 다시 확인합니다. `-tls`·`-allow-lan`으로 시작하면 설치 화면은 열리지 않습니다(콘솔 명령을 쓰세요).
+
+서버는 **저장소 루트를 절대 만들지 않습니다.** 루트가 없거나 `-init-storage`로 등록되지 않았으면 원인을 안내하고 즉시 종료합니다(위 설치 모드 조건 제외). `-init-storage`는 이미 존재하는 디렉터리에 `.withalbum-volume.json`(volume_id) 마커만 추가하며 기존 `.system/` 데이터는 건드리지 않습니다. 이전 버전에서 쓰던 데이터 폴더도 같은 명령으로 한 번 등록하면 됩니다. 출력된 `volume_id`를 `WITHALBUM_VOLUME_ID` 환경변수로 지정하면 다른 볼륨으로는 기동하지 않습니다(선택). 실행 중 마커가 사라지거나 루트의 장치가 바뀌면 업로드·폴더 생성은 `503 storage_unavailable`로 거부되고 `/api/v1/health`의 `storage`가 `unavailable`이 됩니다. 디스크를 다시 연결했다면 서버를 재시작하세요. 프로덕션 외장하드 폴더를 지정하지 마세요.
 
 **업로드 안전성과 복구:** 업로드는 성공 응답 전에 파일과 DB가 모두 디스크에 기록됩니다(macOS는 `F_FULLFSYNC`). 실패 응답이나 연결 끊김이면 아무것도 확정되지 않았으므로 같은 파일을 다시 올리면 됩니다. 서버가 강제 종료되면 다음 기동 때 자동으로 정리합니다: `.system/incoming/`의 미완료 임시 파일 삭제, DB에 없는 원본은 `.system/orphans/<sha256>.orphan.<UTC>`로 이동(자동 삭제하지 않음, 필요 없으면 직접 지우세요), 결과는 로그 `recovery: ...` 한 줄로 요약됩니다. DB에 기록된 원본이 pool에 없거나 크기가 다르면 `INTEGRITY ERROR` 로그와 health `integrity: warning`이 나오며, 같은 파일을 다시 업로드하면 사라진 원본이 복원됩니다. 업로드 후 남을 여유 공간이 `WITHALBUM_MIN_FREE_BYTES`(바이트, 기본 `1073741824` = 1GiB) 미만이면 `507 insufficient_storage`, 디스크 I/O 오류는 `503 storage_io_error`, DB 쓰기 경합(5초 초과)은 `503 busy` + `Retry-After: 1`입니다. 같은 저장소로 서버를 두 번 띄우거나 서버 실행 중 `migrate-legacy -apply`를 실행하면 `LOCKED`로 거부됩니다(이 버전 이후끼리만; 이전 버전 서버는 잠금을 모르므로 직접 중지하세요).
 
@@ -85,7 +88,7 @@ WITHALBUM_ROOT="$HOME/WithAlbumTest" ./withalbum-server migrate-legacy -apply  #
 
 자세한 절차·실패 시 상태·롤백: [`docs/MIGRATION_legacy_state.md`](docs/MIGRATION_legacy_state.md)
 
-**관리자 계정(콘솔 전용):** 최초 관리자는 서버 콘솔에서만 만들 수 있습니다(HTTP로는 불가). **서버를 중지한 뒤** 실행하세요. 서버 실행 중에는 저장소 잠금 때문에 `LOCKED`로 거부됩니다. 비밀번호는 터미널에서 에코 없이 두 번 입력하며(최소 12자, 최대 1024바이트), 터미널이 아니면 stdin의 한 줄을 읽습니다. 명령행 인자로는 받지 않습니다.
+**관리자 계정(콘솔 또는 이 Mac의 설치 화면):** 최초 관리자는 서버 콘솔이나, 콘솔의 설치 코드를 아는 사람이 같은 컴퓨터(루프백)의 설치 화면에서만 만들 수 있습니다(네트워크로는 불가). **서버를 중지한 뒤** 실행하세요. 서버 실행 중에는 저장소 잠금 때문에 `LOCKED`로 거부됩니다. 비밀번호는 터미널에서 에코 없이 두 번 입력하며(최소 12자, 최대 1024바이트), 터미널이 아니면 stdin의 한 줄을 읽습니다. 명령행 인자로는 받지 않습니다.
 
 ```bash
 WITHALBUM_ROOT="$HOME/WithAlbumTest" ./withalbum-server admin init -login alice            # 최초 1회
@@ -383,6 +386,8 @@ GitHub에 곧바로 public push, Release 발행, 실제 원본 정리/삭제 등
 | 경로 | 역할 / 구현 상태 |
 |---|---|
 | `server/main.go` | **실행됨:** 설정·기동만 (환경변수, `-init-storage`, `migrate-legacy`·`admin`·`verify`·`backup`·`restore`·`tls` 서브커맨드, `-tls`/`-allow-lan`, 볼륨 검증, 저장소 조립). listen 게이트·TLS 기동은 `server/listen.go` |
+| `server/setup.go` | **실행됨(테스트·바이너리 스모크):** 저장소 루트 결정(`WITHALBUM_ROOT` → 설정 파일 → `./withalbum-data`), 설치 모드 진입 조건(평문 루프백 리스너만), 등록(`storage.Init` + `openApp` + 설정 파일), `ClaimBootstrap`, 정상 모드로 핸들러 원자적 교체 |
+| `internal/httpapi/setup.go`, `web/setup.html` | **실행됨(httptest·jsdom 스모크, 브라우저 점검 전):** 설치 화면 전용 라우트 표(정상 라우트 표와 분리)·1회용 코드·설치 세션 쿠키·CSRF·동일 출처 검사·저장장치 후보(마운트 재확인)·관리자 생성. 해시 기반 CSP |
 | `server/admin.go` | **실행됨(콘솔):** `admin init`(bootstrap 관리자 인수) / `create-user` / `reset-password`. 저장소 잠금 필요(서버 중지 상태), 비밀번호는 에코 없는 TTY 2회 입력 또는 stdin 한 줄 |
 | `internal/auth/password/` | **실행됨(콘솔):** Argon2id PHC 해시(기본 m=64MiB,t=3,p=2), 상수시간 검증, 정규형·파라미터 상한 검사, 잠금 값(`!` 접두) 항상 거부, 재해시 필요 판정, 비밀번호 정책 |
 | `internal/users/` | **실행됨:** 사용자 저장소(생성·조회·비활성·역할·앨범 생성 권한·비밀번호), bootstrap 인수 1회, 마지막 활성 관리자 보호, 감사 로그(`internal/audit`). 콘솔 명령과 `/api/v1/admin/users*`에서 사용 |

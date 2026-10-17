@@ -50,7 +50,15 @@ func TestMain(m *testing.M) {
 		crashChild(point)
 		return
 	}
-	os.Exit(m.Run())
+	// Never read or write the real per-user config file (server/setup.go).
+	dir, err := os.MkdirTemp("", "withalbum-test-config-")
+	if err != nil {
+		panic(err)
+	}
+	os.Setenv("WITHALBUM_CONFIG", filepath.Join(dir, "server.json"))
+	code := m.Run()
+	os.RemoveAll(dir)
+	os.Exit(code)
 }
 
 // blockAt announces reaching point on stdout and then blocks forever, so the

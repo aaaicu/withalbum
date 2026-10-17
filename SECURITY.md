@@ -30,7 +30,7 @@ On the plain loopback listener, requests whose `Host` is not `localhost` or a lo
 
 ### Response hardening
 
-Every response carries `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Cross-Origin-Resource-Policy: same-origin` and `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'` (the dashboard page sets its own: its single inline script and single inline style are allowed by SHA-256 hash only — no `'unsafe-inline'` —, `connect-src 'self'`, `img-src 'none'`, `form-action 'none'`, `frame-ancestors 'none'`, and `require-trusted-types-for 'script'`; the page writes the DOM with `textContent` only). Downloaded originals additionally get `sandbox` and `Content-Disposition: attachment`, so a stored HTML or SVG file never runs as a page of the server origin.
+Every response carries `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Cross-Origin-Resource-Policy: same-origin` and `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'` (the dashboard page sets its own: its single inline script and single inline style are allowed by SHA-256 hash only — no `'unsafe-inline'` —, `connect-src 'self'`, `img-src blob:` (album preview tiles the script fetched through the session API; no image is loaded by URL), `form-action 'none'`, `frame-ancestors 'none'`, and `require-trusted-types-for 'script'`; the page writes the DOM with `textContent` only; the setup page is the same with `img-src 'none'`). Downloaded originals additionally get `sandbox` and `Content-Disposition: attachment`, so a stored HTML or SVG file never runs as a page of the server origin.
 
 `Strict-Transport-Security: max-age=31536000` (no `includeSubDomains`, no `preload`) is sent only over TLS and only when `Host` is a DNS name other than `localhost`: browsers ignore HSTS for IP addresses and on connections with certificate errors, and HSTS for `localhost` would force HTTPS on every other local server of the machine.
 
@@ -62,9 +62,34 @@ Keep the tools updated; decoder vulnerabilities in them are outside the
 server's control. Without the tools nothing is lost: the original is stored
 and its preview reported as "unsupported".
 
+## Setup screen (M24): threat model
+
+The browser setup screen lets the person at the Mac pick the storage disk and create the first administrator without typing console commands. It runs **before any account exists**, so it is the most exposed moment of the server's life. Design and threat model, written before the implementation:
+
+**What it protects.** Who becomes the first administrator (and therefore owns every folder of an existing, unclaimed storage); which directory receives the originals; the setup secrets themselves.
+
+**Who could attack it, and how.**
+
+| Attacker | Attack | Defence |
+|---|---|---|
+| Device on the LAN or internet | Reach the setup routes and claim the administrator first | Setup mode exists only on the **plain loopback listener** (`127.0.0.1`/`::1`/`localhost`, no `-tls`, no `-allow-lan`). The server refuses to start setup mode on any other listen configuration; LAN and TLS listeners never get a setup route (they require an administrator anyway, M15). The bound address is re-checked after `listen` (`checkBoundAddr`). |
+| Web page in the user's browser (another site) | Cross-site requests to `127.0.0.1` (CSRF), or DNS rebinding of its own name to `127.0.0.1` | `Host` must be loopback (`421 invalid_host`, same as normal mode); every setup API call needs `Content-Type: application/json` (no CORS preflight is ever answered), a same-origin `Origin`/`Sec-Fetch-Site` when the browser sends them, and after unlocking a per-session CSRF token header. The session cookie is `HttpOnly`, `SameSite=Strict`, `Path=/setup`. |
+| Another local account on the same Mac, a browser extension, a local malicious page or process | Talk to the loopback port directly | A **one-time setup code** printed only on the console that started the server: 12 characters from a 32-letter alphabet (60 bits, `crypto/rand`), kept only in memory as a SHA-256, compared in constant time, valid **30 minutes**, **single use** (the first correct entry consumes it and opens one setup session), and **5 wrong entries disable it** until the server is restarted (a new code is printed then). Nothing about the machine — not even the disk list — is answered before the code is entered. |
+| Script injection into the setup page | Run script in the page that holds the session | Strict CSP: the single inline script and style are allowed by SHA-256 hash only, `default-src 'none'`, `connect-src 'self'`, `img-src 'none'`, `form-action 'none'`, `frame-ancestors 'none'`, Trusted Types required; the page writes the DOM with `textContent` only. Paths and volume names are data, never markup. |
+| Wrong disk (M1) | Data written to the internal disk because an external disk was unplugged | The server never creates a storage root on its own. The setup screen only registers a directory the user picked: an existing directory, or one new `WithAlbum` folder directly under a disk the user explicitly selected — and only after re-checking that the disk is still mounted (its device differs from `/Volumes`). Disks under `/Volumes` that are not mounted are shown but cannot be chosen. Registration uses the same `storage.Init` / `storage.Open` volume checks as the console, and the chosen root and volume id are pinned in the per-user config file (below). |
+| Long-running exposure | Setup mode left open | Setup routes exist only while the server is in setup mode. When the administrator is created, the same process switches to normal mode and the setup routes are gone (`404`); a restarted server never enters setup mode again for that storage. |
+
+**Information shown.** After the code is entered: candidate directories with their path, file system type, free/total space, and whether they hold WithAlbum data. Paths are acceptable here because only the person at the console can unlock the screen and only over loopback; nothing of this is reachable in normal mode.
+
+**Where the choice is kept.** Without `WITHALBUM_ROOT`, the chosen storage root and its volume id are written to a per-user config file (`WITHALBUM_CONFIG`, default `os.UserConfigDir()/WithAlbum/server.json`, mode `0600`, directory `0700`, written atomically). Later starts and the console commands use it; `WITHALBUM_ROOT` always takes precedence. A root named in that file that is missing or unregistered stops the server (fail closed) instead of entering setup mode, because it means the registered disk is not there.
+
+**Switching to normal mode without a restart.** Setup mode and normal mode use the same plain loopback listener. Registering the storage runs the normal startup sequence (`openApp`: volume check, instance lock, metadata, reconciliation), and the lock is held from then on, so no console command can change the storage meanwhile. Creating the administrator uses the same `ClaimBootstrap` transaction as `admin init` (audit rows `account.bootstrap_claim` and `setup.complete`, `via=setup`); only then is the request handler atomically replaced by the normal API handler built from that same opened storage. No setup state survives the switch.
+
+**Accepted risks.** Anyone who can read the server's console output (the terminal, or the LaunchAgent log file) can complete setup within the code's lifetime; protect that log like the console. A local process can burn the code with 5 wrong guesses (denial of service until restart). The plain loopback listener is not encrypted; other local users cannot read loopback traffic of another user's browser on macOS, but a local administrator (root) can.
+
 ## Administrator accounts and recovery (console only)
 
-The first administrator can only be created at the server console, never over HTTP:
+The first administrator can be created at the server console or, on the machine itself, with the setup screen above; never over the network:
 
 ```bash
 WITHALBUM_ROOT=/path/to/root withalbum-server admin init -login <name>

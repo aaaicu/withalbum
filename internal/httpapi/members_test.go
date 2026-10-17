@@ -120,6 +120,11 @@ func TestInvitationFlow(t *testing.T) {
 	// Before acceptance: no access at all.
 	wantError(t, "before accept", e.as(t, "outsider", "GET", f, nil, nil), 404, "folder_not_found")
 	wantError(t, "before accept", e.as(t, "outsider", "GET", orig, nil, nil), 404, "folder_not_found")
+	// The dashboard says invitees see nothing but the album name (and who
+	// invited them) before accepting: no members, photos or counts.
+	for _, p := range []string{f + "/members", f + "/assets", f + "/sync", f + "/invitations", f + "/assets/" + e.photo + "/preview"} {
+		wantError(t, "before accept "+p, e.as(t, "outsider", "GET", p, nil, nil), 404, "folder_not_found")
+	}
 	mine := wantJSON(t, "my invitations", e.as(t, "outsider", "GET", "/api/v1/invitations", nil, nil), 200)["invitations"].([]any)
 	if len(mine) != 1 {
 		t.Fatalf("invitations %v", mine)

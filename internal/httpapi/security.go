@@ -30,11 +30,13 @@ const downloadCSP = apiCSP + "; sandbox"
 // ever reached the page as markup. The page writes the DOM only through
 // textContent and element construction; Trusted Types (where the browser
 // supports them) additionally refuse every HTML-string sink such as
-// innerHTML. It talks to its own origin only, loads no images and submits
-// no form (login and every change go through fetch with the CSRF header).
+// innerHTML. It talks to its own origin only and submits no form (login and
+// every change go through fetch with the CSRF header). Images are only
+// blob: URLs the script made from previews it fetched with the session
+// (album detail); no image is loaded by URL.
 var dashboardCSP = "default-src 'none'; script-src " + inlineHash(dashboardHTML, "script") +
 	"; style-src " + inlineHash(dashboardHTML, "style") +
-	"; connect-src 'self'; img-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" +
+	"; connect-src 'self'; img-src blob:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" +
 	"; require-trusted-types-for 'script'; trusted-types 'none'"
 
 // inlineHash returns the CSP source of the one <tag>...</tag> element of
@@ -42,7 +44,7 @@ var dashboardCSP = "default-src 'none'; script-src " + inlineHash(dashboardHTML,
 func inlineHash(page []byte, tag string) string {
 	open, end := []byte("<"+tag+">"), []byte("</"+tag+">")
 	if bytes.Count(page, []byte("<"+tag)) != 1 || bytes.Count(page, open) != 1 || bytes.Count(page, end) != 1 {
-		panic("httpapi: the dashboard needs exactly one plain <" + tag + "> element")
+		panic("httpapi: an embedded page needs exactly one plain <" + tag + "> element")
 	}
 	_, rest, _ := bytes.Cut(page, open)
 	body, _, _ := bytes.Cut(rest, end)

@@ -46,7 +46,7 @@ func TestDashboardPage(t *testing.T) {
 	page := string(r.Body)
 	csp := r.Header.Get("Content-Security-Policy")
 	for _, want := range []string{"default-src 'none'", "script-src " + cspHash(inlineBody(t, page, "script")) + ";",
-		"style-src " + cspHash(inlineBody(t, page, "style")) + ";", "connect-src 'self'", "img-src 'none'", "base-uri 'none'",
+		"style-src " + cspHash(inlineBody(t, page, "style")) + ";", "connect-src 'self'", "img-src blob:;", "base-uri 'none'",
 		"form-action 'none'", "frame-ancestors 'none'", "require-trusted-types-for 'script'"} {
 		if !strings.Contains(csp, want) {
 			t.Errorf("CSP %q lacks %q", csp, want)

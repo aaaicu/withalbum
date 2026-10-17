@@ -228,6 +228,9 @@ type Claim struct {
 	LoginName    string // may stay BootstrapLoginName ("admin")
 	DisplayName  string
 	PasswordHash string
+	// SetupComplete also records "setup.complete" (the setup screen, M24)
+	// in the same transaction.
+	SetupComplete bool
 }
 
 // ClaimBootstrap takes over the locked bootstrap administrator: it sets the
@@ -285,6 +288,12 @@ func (s *Store) ClaimBootstrap(ctx context.Context, c Claim, actor Actor) (User,
 	if err := record(ctx, tx, actor, "account.bootstrap_claim", id, map[string]any{
 		"previous_login": u.LoginName, "login": c.LoginName, "owned_folders": owned}); err != nil {
 		return User{}, err
+	}
+	if c.SetupComplete {
+		if err := audit.Record(ctx, tx, audit.Entry{ActorUserID: id, Action: "setup.complete", TargetType: "server",
+			Result: audit.Allowed, Details: map[string]any{"via": actor.Via, "admin_user_id": id}}); err != nil {
+			return User{}, err
+		}
 	}
 	if u, err = getUser(ctx, tx, id); err != nil {
 		return User{}, err

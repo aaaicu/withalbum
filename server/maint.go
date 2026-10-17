@@ -45,7 +45,7 @@ func openSource(cmd string, stderr io.Writer) (*storage.Volume, bool) {
 		fmt.Fprintf(stderr, "%s: %v\n", cmd, err)
 		return nil, false
 	}
-	vol, err := storage.Open(root, storage.OpenOptions{ExpectedVolumeID: os.Getenv("WITHALBUM_VOLUME_ID")})
+	vol, err := storage.Open(root, storage.OpenOptions{ExpectedVolumeID: expectedVolumeID()})
 	if err != nil {
 		fmt.Fprintf(stderr, "%s: STORAGE: %s (%v)\n", cmd, openStorageHint(root, err), err)
 		return nil, false
@@ -244,7 +244,7 @@ func runRestore(args []string, stdout, stderr io.Writer) int {
 		progress = stderr
 	}
 	report, err := backup.Restore(context.Background(), *from, root, backup.RestoreOptions{CheckOnly: *check, Replace: *replace,
-		ExpectedVolumeID: os.Getenv("WITHALBUM_VOLUME_ID"), Progress: progress})
+		ExpectedVolumeID: expectedVolumeID(), Progress: progress})
 	if err != nil {
 		switch {
 		case errors.Is(err, storage.ErrLocked):
