@@ -43,6 +43,7 @@
 - `docs/API_v2.yaml`(2.0.0-draft, M16): **유일한 공식 API 규격**, 모든 경로 구현됨. `internal/httpapi/openapi_test.go`가 라우트 정책 표와 경로·메서드·공개 여부·401/403/404 문서화를 대조. `docs/API_AUTH_v1.4.yaml`·`docs/API_v1.2.yaml`은 폐기(역사).
 - sync API v2(M16): `internal/httpapi/sync.go` + `internal/meta/sqlitestore/sync.go`. cursor는 `<폴더 epoch 16hex>.<seq>` 문자열(epoch = DB `sync_state.epoch`+folder_id 해시, `restore`가 교체) — 다른 폴더·복원 전·앞선 cursor 409 `cursor_invalid`, 보존 범위 밖 409 `cursor_expired`(`folder_sequences.pruned_seq`, 현재 이벤트 삭제 없음). tombstone `asset_removed`(`DELETE /folders/{fid}/assets/{aid}`, OWNER만, `folder_assets.removed_at`, 원본 파일 유지), 스냅샷 `GET /folders/{fid}/assets`, 폴더 범위 `POST .../assets/check`(UPLOADER 403), 선택적 ack `PUT .../sync/cursor`. 업로드는 `Idempotency-Key` 필수, `upload_receipts`(user·device·folder·key PK, 마이그레이션 0007에서 재생성)를 매 커밋(already_present 포함) 같은 트랜잭션에 기록, 재시도는 저장된 결과 재응답(`Idempotency-Replayed: true`), 다른 바이트 422. HTTP 테스트(`sync_v2_test.go`: CLIENT_SYNC_STATES 시나리오 2·3·6·7·8)·로컬 바이너리 스모크로 검증.
 - 인증 후속(M16): refresh 30초 유예(앱만, 직전 교환 1회, `auth_refresh_used.used_at/grace`), 절대 만료 90일, 로그인 성공 시 `NeedsRehash` 재해시, `session.Prune`+영수증 30일 정리(`server/maintenance.go`, 6시간마다), `GET|DELETE /admin/users/{uid}/devices*`, 본인 비밀번호 변경 실패 감사, 권한 거부(403/404) 요약 감사(`internal/httpapi/denials.go`, 계정·라우트·상태당 10분에 1행).
+- 관리 웹 UI(M17): `internal/httpapi/web/index.html`(정적 HTML/JS 1개, 기존 API만 사용, DOM은 textContent만) + `internal/httpapi/admin.go`(`GET /admin/server/storage` 저장소·여유 공간·기동 재조정 개수, `GET /admin/users/{uid}/folders` 사용 중 개수+보관 앨범 ID, `POST /admin/folders/{fid}/owner` **보관 앨범만** 관리자 재배정 — 1 트랜잭션·재판정·감사 `folder.reassign_archived_owner`, 사용 중 앨범은 404, 보관 유지라 아무도 열람 불가) + `internal/meta/sqlitestore/admin_folders.go`. 대시보드 CSP는 인라인 script/style SHA-256 해시(`security.go` `dashboardCSP`, 페이지에서 계산, `'unsafe-inline'` 없음)+Trusted Types. httptest(`admin_test.go`)·로컬 바이너리 스모크로 검증, 브라우저 수동 점검은 `docs/DASHBOARD_CHECKLIST.md`(사람이 수행).
 - `internal/integrity`(`verify [-hash]`, 읽기 전용) + `internal/backup`(`backup -to`: `VACUUM INTO` 스냅샷·원본 증분·SHA-256 매니페스트, 서버 실행 중 가능 / `restore -from`: 전수 검증·스테이징·세션 전부 폐기·저널·원자적 교체·기존 데이터 보존, 서버 중지 필요) + `server/maint.go`: 테스트(업로드 중 백업, 복원 후 권한 동일성, 단계별 크래시 재실행, 손상 백업 거부)·로컬 바이너리 스모크로 검증. 실기기·대용량 미검증. 절차 `docs/BACKUP_RESTORE.md`.
 - Flutter/iOS/Android, OAuth Drive, 외부 통신, 실시간 푸시, GUI DMG, 원격/클라우드 백업·백업 스케줄러는 없음.
 - README v1.5는 **기획·인수인계 정리판**이고 새 기능 릴리스가 아님.
@@ -50,7 +51,7 @@
 ## 보안 불변식 (위반하는 변경 금지)
 
 - non-loopback listen은 `-allow-lan` + TLS + 로그인 가능한 SERVER_ADMIN이 모두 있을 때만(M15). 평문 HTTP는 loopback만. 이 게이트 완화·인터넷 공개 금지.
-- 기본 서버 USER는 폴더 생성 금지(`can_create_albums=false`). 서버 관리자라도 타인 앨범 데이터 API 자동 열람 금지.
+- 기본 서버 USER는 폴더 생성 금지(`can_create_albums=false`). 서버 관리자라도 타인 앨범 데이터 API 자동 열람 금지. 관리자의 소유자 재배정은 보관된 앨범에만(보관 유지, 열람권 없음, M17 사용자 승인) — 사용 중 앨범으로 넓히지 말 것.
 - 각 앨범 단일 OWNER 보장, 소유권 이전 트랜잭션 및 로그. 초대는 기존 등록 계정에 대상 지정/수락 필요.
 - UPLOADER: 업로드만, 목록·이벤트·미리보기·원본·전역 해시 존재 정보 금지. VIEWER는 읽기만. CONTRIBUTOR는 읽기+업로드, 타인 삭제·초대 불가.
 - API의 자산 다운로드는 소속 앨범과 실제 권한을 재검증. 권한 변경은 즉시 후속 요청에 반영. 업로드 commit 직전 재확인.

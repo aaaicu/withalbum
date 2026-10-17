@@ -131,6 +131,12 @@ paths:
       tags: [Server]
       security: []
       summary: Local dashboard page (static HTML, no data; everything it shows comes from API calls after login)
+      description: >-
+        Administration and album management through the operations of this
+        document only. Its Content-Security-Policy allows the page's one
+        inline script and one inline style by SHA-256 hash (no
+        'unsafe-inline'), connections to its own origin only, no images, no
+        form submission, and requires Trusted Types for script sinks.
       responses:
         '200': {description: HTML page with its own Content-Security-Policy}
   /api/v1/health:
@@ -449,6 +455,122 @@ paths:
         '401': {description: unauthorized}
         '403': {description: 'forbidden (not SERVER_ADMIN) or csrf_failed'}
         '404': {description: 'user_not_found, device_not_found (not a live device of this account)'}
+  /api/v1/admin/users/{user_id}/folders:
+    get:
+      tags: [Server Admin]
+      summary: Folders an account owns, as far as account administration needs (SERVER_ADMIN only)
+      description: >-
+        An account that owns folders cannot be disabled (409 owns_albums).
+        This tells how many folders in use it owns (only their owner can
+        transfer or archive those) and lists its archived folders by ID and
+        dates, which an administrator may reassign
+        (POST /api/v1/admin/folders/{folder_id}/owner). Never folder names,
+        members or contents.
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+      responses:
+        '200':
+          description: Owned folders
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user_id, active_owned, archived]
+                properties:
+                  user_id: {type: string}
+                  active_owned: {type: integer, minimum: 0, description: Folders in use (not archived) owned by the account}
+                  archived:
+                    type: array
+                    items:
+                      type: object
+                      required: [folder_id, created_at, archived_at]
+                      properties:
+                        folder_id: {type: string}
+                        created_at: {type: string}
+                        archived_at: {type: string}
+        '401': {description: unauthorized}
+        '403': {description: forbidden (not SERVER_ADMIN)}
+        '404': {description: user_not_found}
+  /api/v1/admin/folders/{folder_id}/owner:
+    post:
+      tags: [Server Admin]
+      summary: Reassign the owner of an ARCHIVED folder (SERVER_ADMIN only)
+      description: >-
+        For disabling the account of someone who left: the owner of an
+        archived folder becomes another active account that can log in, in
+        one audited transaction (folder.reassign_archived_owner) that
+        re-checks the caller as stored at that moment. The folder stays
+        archived, so neither the new owner nor the administrator gains any
+        access to it (every album route keeps answering 404). The previous
+        owner does not become a member; a membership of the new owner in
+        the folder is dropped (the owner is never a member) and pending
+        invitations are revoked. A folder in use is answered exactly like an
+        unknown one (404 folder_not_found): only its owner can transfer it
+        (POST /api/v1/folders/{folder_id}/owner). Cookie sessions need
+        X-CSRF-Token.
+      parameters:
+        - $ref: '#/components/parameters/FolderID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [new_owner_user_id]
+              properties:
+                new_owner_user_id: {type: string}
+      responses:
+        '200':
+          description: Reassigned
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [folder_id, previous_owner_user_id, owner_user_id, archived_at]
+                properties:
+                  folder_id: {type: string}
+                  previous_owner_user_id: {type: string}
+                  owner_user_id: {type: string}
+                  archived_at: {type: string}
+        '400': {description: 'invalid_request (no new_owner_user_id), invalid_json'}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (not SERVER_ADMIN, also when re-checked inside the transaction) or csrf_failed'}
+        '404': {description: 'folder_not_found (unknown or not archived), user_not_found (new owner)'}
+        '409': {description: 'target_is_owner, user_inactive (new owner disabled or cannot log in)'}
+        '415': {description: json_required}
+        '503': {description: 'storage_unavailable, busy'}
+  /api/v1/admin/server/storage:
+    get:
+      tags: [Server Admin]
+      summary: Storage volume state, free space and startup check (SERVER_ADMIN only)
+      description: >-
+        No path or volume identifier. integrity and startup_check come from
+        the reconciliation at server start (counts only). The full check
+        (withalbum-server verify [-hash]) runs at the console; the server
+        does not keep its result.
+      responses:
+        '200':
+          description: Storage state
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [storage, integrity, free_bytes, min_free_bytes]
+                properties:
+                  storage: {type: string, enum: [ok, unavailable]}
+                  integrity: {type: string, enum: [ok, warning]}
+                  free_bytes: {type: [integer, 'null'], description: 'Free bytes of the volume; null where the platform cannot tell'}
+                  min_free_bytes: {type: integer, description: Reserve every upload must leave free}
+                  startup_check:
+                    type: object
+                    properties:
+                      blobs: {type: integer, description: Originals recorded in the database}
+                      missing: {type: integer, description: Recorded originals missing from the pool}
+                      size_mismatch: {type: integer, description: Pool files of the wrong size (damaged)}
+                      orphans: {type: integer, description: Unreferenced pool files moved to quarantine}
+                      unexpected: {type: integer, description: Entries WithAlbum did not create}
+        '401': {description: unauthorized}
+        '403': {description: forbidden (not a SERVER_ADMIN)}
   /api/v1/admin/server/tls:
     get:
       tags: [Server Admin]

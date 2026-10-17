@@ -4,79 +4,159 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="robots" content="noindex, nofollow" />
-  <title>WithAlbum Server — 로컬 관리</title>
+  <title>WithAlbum Server — 관리</title>
   <style>
     :root { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color-scheme: light dark; }
     * { box-sizing: border-box; }
     body { margin: 0; background: #f6f8fb; color: #172234; }
-    main { max-width: 900px; margin: 0 auto; padding: 32px 20px 72px; }
-    .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+    main { max-width: 960px; margin: 0 auto; padding: 28px 16px 72px; }
+    .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
     .mark { background: #1d4ed8; border-radius: 12px; display: grid; place-items: center; color: white; font-size: 22px; width: 44px; height: 44px; }
-    h1 { font-size: 29px; margin: 0; letter-spacing: -.7px; }
-    .sub { color: #58667b; margin: 5px 0 28px; }
-    .warning { background: #fff8e8; border: 1px solid #f7d68c; color: #875a00; padding: 16px; border-radius: 12px; line-height: 1.6; margin-bottom: 26px; }
-    .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 13px; }
-    section { background: white; border: 1px solid #e1e7f0; padding: 21px; border-radius: 16px; box-shadow: 0 2px 7px #18233c08; }
-    section h2 { font-size: 15px; color: #657387; margin: 0 0 14px; font-weight: 600; }
-    .value { font-size: 23px; font-weight: 750; }
-    .wide { margin-top: 18px; }
-    .field { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 16px; }
-    input, select { min-width: 0; border-radius: 9px; border: 1px solid #ccd5e3; padding: 11px 12px; background: white; color: #172234; }
-    input[type="text"] { flex: 1 1 180px; }
-    button { background: #1d4ed8; color: white; padding: 11px 16px; border: 0; border-radius: 9px; cursor: pointer; font-weight: 650; }
+    h1 { font-size: 27px; margin: 0; letter-spacing: -.6px; }
+    h3 { font-size: 15px; margin: 18px 0 8px; }
+    .sub { color: #58667b; margin: 4px 0 20px; }
+    .warning { background: #fff8e8; border: 1px solid #f7d68c; color: #875a00; padding: 14px 16px; border-radius: 12px; line-height: 1.6; margin-bottom: 20px; }
+    .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    section { background: white; border: 1px solid #e1e7f0; padding: 20px; border-radius: 14px; margin-top: 14px; }
+    .cards section { margin-top: 0; }
+    section h2 { font-size: 15px; color: #657387; margin: 0 0 12px; font-weight: 600; }
+    .value { font-size: 22px; font-weight: 750; }
+    .field { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; align-items: center; }
+    input, select { min-width: 0; border-radius: 8px; border: 1px solid #ccd5e3; padding: 9px 11px; background: white; color: #172234; font: inherit; }
+    input[type="text"], input[type="password"] { flex: 1 1 160px; }
+    input[type="checkbox"] { padding: 0; }
+    button { background: #1d4ed8; color: white; padding: 9px 14px; border: 0; border-radius: 8px; cursor: pointer; font-weight: 650; font: inherit; }
     button:disabled { opacity: .5; cursor: not-allowed; }
-    ul { padding-left: 18px; line-height: 1.8; }
-    .muted, small { color: #6f7c90; }
-    .status { margin: 15px 0 0; min-height: 1.5rem; }
-    .bar { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 18px; }
     .ghost { background: transparent; color: inherit; border: 1px solid #ccd5e3; }
+    .danger { background: #b42318; }
+    .small { padding: 5px 10px; font-size: 13px; }
+    ul { padding-left: 18px; line-height: 1.8; margin: 8px 0; }
+    .muted, small { color: #6f7c90; }
+    .status { margin: 12px 0 0; min-height: 1.4rem; }
+    .error { color: #b42318; }
+    .bar { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+    nav { display: flex; gap: 6px; flex-wrap: wrap; margin: 16px 0 0; }
+    nav button { background: transparent; color: inherit; border: 1px solid #ccd5e3; }
+    nav button.active { background: #1d4ed8; color: white; border-color: #1d4ed8; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { text-align: left; padding: 7px 6px; border-bottom: 1px solid #e1e7f0; vertical-align: middle; }
+    th { color: #657387; font-weight: 600; }
+    .scroll { overflow-x: auto; }
+    details { border: 1px solid #e1e7f0; border-radius: 10px; padding: 10px 12px; margin: 8px 0; }
+    summary { cursor: pointer; font-weight: 650; }
+    .panel { border-top: 1px dashed #ccd5e3; margin-top: 12px; padding-top: 4px; }
     [hidden] { display: none !important; }
-    code { font-size: 13px; background: #edf1f7; border-radius: 5px; padding: 3px 6px; word-break: break-all; }
-    @media (max-width: 680px) { .cards { grid-template-columns: 1fr; } h1 { font-size: 25px; } }
+    code { font-size: 13px; background: #edf1f7; border-radius: 5px; padding: 2px 6px; word-break: break-all; }
+    @media (max-width: 680px) { .cards { grid-template-columns: 1fr; } h1 { font-size: 23px; } }
     @media (prefers-color-scheme: dark) {
       body { background: #0f1725; color: #e8edf5; }
-      .sub, .muted, section h2, small { color: #9daec5; }
-      section { background: #192438; border-color: #31435d; }
+      .sub, .muted, section h2, small, th { color: #9daec5; }
+      section, details { background: #192438; border-color: #31435d; }
+      th, td { border-color: #31435d; }
       .warning { background: #3c3219; color: #ffe6ab; border-color: #a4781e; }
       input, select { background: #101b2e; color: #e8edf5; border-color: #3c506a; }
       code { background: #2c3a50; }
+      .error { color: #ff8a80; }
     }
   </style>
 </head>
 <body>
   <main>
-    <div class="brand"><span class="mark" aria-hidden="true">▧</span><div><h1>WithAlbum Server</h1><div class="sub">내 컴퓨터에서 직접 운영하는 사진 서버</div></div></div>
+    <div class="brand"><span class="mark" aria-hidden="true">▧</span><div><h1>WithAlbum Server</h1><div class="sub">내 컴퓨터에서 직접 운영하는 사진 서버 · 관리 화면</div></div></div>
     <div class="warning"><strong>개발 중 · 실험용</strong><div>로그인·앨범 권한·백업이 동작합니다. 같은 집 LAN 공개는 TLS(자체 서명 인증서 + 지문 확인)일 때만 가능하며, 인터넷에 공개하거나 중요한 사진의 유일한 보관 장소로 사용하지 마세요. 이 관리 화면은 서버 컴퓨터에서(localhost) 여는 것을 권장합니다.</div></div>
-    <section id="loginBox" hidden><h2>로그인</h2><div class="muted">서버 콘솔에서 만든 계정으로 로그인하세요 (<code>withalbum-server admin init</code> / <code>admin create-user</code>).</div>
+
+    <section id="loginBox" hidden><h2>로그인 (Sign in)</h2><div class="muted">서버 콘솔에서 만든 계정으로 로그인하세요 (<code>withalbum-server admin init</code> / <code>admin create-user</code>).</div>
       <form id="login" class="field"><input id="loginName" type="text" autocomplete="username" placeholder="아이디" required><input id="password" type="password" autocomplete="current-password" placeholder="비밀번호" required><button>로그인</button></form>
       <div class="status" id="loginFeedback" role="status" aria-live="polite"></div>
     </section>
+
     <div id="app" hidden>
-      <div class="bar"><div class="muted">로그인: <strong id="who">-</strong></div><button id="logout" class="ghost" type="button">로그아웃</button></div>
-      <div class="cards">
-        <section><h2>서버 상태</h2><div class="value" id="health">확인 중</div></section>
-        <section><h2>서버 버전</h2><div class="value" id="version">-</div></section>
-        <section><h2>내 앨범</h2><div class="value" id="count">-</div></section>
+      <div class="bar"><div class="muted">로그인: <strong id="who">-</strong> <small id="whoRole"></small></div><button id="logout" class="ghost" type="button">로그아웃</button></div>
+      <nav id="tabs" aria-label="메뉴">
+        <button type="button" data-tab="overview" class="active">개요</button>
+        <button type="button" data-tab="albums">내 앨범</button>
+        <button type="button" data-tab="account">내 계정·기기</button>
+        <button type="button" data-tab="users" data-admin="1" hidden>사용자 관리</button>
+        <button type="button" data-tab="server" data-admin="1" hidden>서버·저장소</button>
+      </nav>
+      <div class="status" id="feedback" role="status" aria-live="polite"></div>
+
+      <div id="tab-overview" data-pane="1">
+        <div class="cards">
+          <section><h2>서버 상태</h2><div class="value" id="health">확인 중</div></section>
+          <section><h2>서버 버전</h2><div class="value" id="version">-</div></section>
+          <section><h2>내 앨범</h2><div class="value" id="count">-</div></section>
+        </div>
+        <section><h2>받은 초대 (Invitations)</h2><div class="muted">나에게 온 앨범 초대입니다. 수락하면 해당 역할로 앨범에 참여합니다.</div><ul id="myInvites"></ul></section>
       </div>
-      <section class="wide"><h2>앨범</h2><div class="muted">내가 소유하거나 초대된 앨범만 보입니다.</div>
-        <form id="create" class="field" hidden><input id="folderName" type="text" maxlength="80" placeholder="예: 가족여행" required><button>앨범 만들기</button></form>
-        <ul id="folders"><li>로딩 중...</li></ul>
-      </section>
-      <section class="wide" id="tlsBox" hidden><h2>기기 연결 (TLS 지문)</h2><div class="muted">앱에서 서버를 추가할 때 아래 연결 정보(QR 내용)를 사용합니다. 지문이 서버 콘솔의 <code>withalbum-server tls</code> 출력과 같은지 꼭 확인하세요.</div>
-        <div id="tlsInfo" class="status"></div><ul id="pairing"></ul>
-      </section>
-      <section class="wide"><h2>파일 업로드 테스트</h2><div class="field"><select id="folderSelect" aria-label="대상 앨범"><option value="">앨범 선택</option></select><input id="file" type="file" accept="image/*,video/*" aria-label="파일 선택"><button id="upload" type="button">업로드</button></div><div class="status" id="feedback" role="status" aria-live="polite"></div></section>
+
+      <div id="tab-albums" data-pane="1" hidden>
+        <section><h2>앨범 (Albums)</h2><div class="muted">내가 소유하거나 초대된 앨범만 보입니다. 소유자(OWNER)인 앨범에서는 멤버·초대·소유권 이전·보관을 관리할 수 있습니다.</div>
+          <form id="create" class="field" hidden><input id="folderName" type="text" maxlength="80" placeholder="새 앨범 이름 (예: 가족여행)" required><button>앨범 만들기</button></form>
+          <div id="folders"></div>
+        </section>
+        <section><h2>파일 업로드 테스트</h2><div class="field"><select id="folderSelect" aria-label="대상 앨범"><option value="">앨범 선택</option></select><input id="file" type="file" accept="image/*,video/*" aria-label="파일 선택"><button id="upload" type="button">업로드</button></div><div class="status" id="uploadFeedback" role="status" aria-live="polite"></div></section>
+      </div>
+
+      <div id="tab-account" data-pane="1" hidden>
+        <section><h2>비밀번호 변경</h2><div class="muted">변경하면 이 브라우저를 제외한 모든 기기가 로그아웃됩니다.</div>
+          <form id="pwForm" class="field"><input id="pwCurrent" type="password" autocomplete="current-password" placeholder="현재 비밀번호" required><input id="pwNew" type="password" autocomplete="new-password" placeholder="새 비밀번호" required><button>변경</button></form>
+        </section>
+        <section><h2>내 기기 (Devices)</h2><div class="muted">로그인된 기기 목록입니다. 잃어버린 기기는 해지하세요. 현재 브라우저를 해지하면 로그아웃됩니다.</div><div class="scroll"><table><thead><tr><th>기기</th><th>플랫폼</th><th>마지막 사용</th><th></th></tr></thead><tbody id="myDevices"></tbody></table></div></section>
+      </div>
+
+      <div id="tab-users" data-pane="1" hidden>
+        <section><h2>새 사용자 만들기</h2><div class="muted">초기 비밀번호는 직접 전달하세요. 관리자도 다른 사람의 앨범 내용은 볼 수 없습니다.</div>
+          <form id="newUser" class="field"><input id="nuLogin" type="text" autocomplete="off" placeholder="아이디" required><input id="nuName" type="text" autocomplete="off" placeholder="표시 이름 (선택)"><input id="nuPassword" type="password" autocomplete="new-password" placeholder="초기 비밀번호" required>
+            <select id="nuRole" aria-label="서버 역할"><option value="USER">일반 사용자</option><option value="SERVER_ADMIN">서버 관리자</option></select>
+            <label><input id="nuCreate" type="checkbox"> 앨범 생성 허용</label><button>만들기</button></form>
+        </section>
+        <section><h2>사용자 (Users)</h2><div class="scroll"><table><thead><tr><th>아이디</th><th>이름</th><th>역할</th><th>앨범 생성</th><th>상태</th><th></th></tr></thead><tbody id="userRows"></tbody></table></div>
+          <div id="userDetail" class="panel" hidden></div>
+        </section>
+      </div>
+
+      <div id="tab-server" data-pane="1" hidden>
+        <section><h2>저장소 상태 (Storage)</h2><ul id="storageInfo"></ul>
+          <div class="muted">원본 전체 검사는 서버 콘솔에서 <code>withalbum-server verify</code> (해시 포함: <code>verify -hash</code>)로 실행합니다. 이 화면은 서버 시작 시 점검 결과만 보여 줍니다.</div>
+        </section>
+        <section id="tlsBox"><h2>기기 연결 (TLS 지문)</h2><div class="muted">앱에서 서버를 추가할 때 아래 연결 정보(QR 내용)를 사용합니다. 지문이 서버 콘솔의 <code>withalbum-server tls</code> 출력과 같은지 꼭 확인하세요.</div>
+          <div id="tlsInfo" class="status"></div><ul id="pairing"></ul>
+        </section>
+      </div>
     </div>
     <p class="muted"><small>인터넷 공개 및 실제 서비스 용도가 아닌, 서버 기능과 배포 방식 검증을 위한 단계입니다.</small></p>
   </main>
   <script>
+    'use strict';
+    // Everything shown here comes from the API after login. The DOM is only
+    // written with textContent and created elements, never with HTML strings.
     const $ = id => document.getElementById(id);
     const ROLE = {OWNER: '소유자', CONTRIBUTOR: '참여자', VIEWER: '보기 전용', UPLOADER: '업로드 전용'};
+    const SERVER_ROLE = {SERVER_ADMIN: '서버 관리자', USER: '일반 사용자'};
+    const ERR = {
+      forbidden: '권한이 없습니다.', csrf_failed: '보안 토큰이 맞지 않습니다. 새로고침 후 다시 시도하세요.',
+      folder_not_found: '앨범을 찾을 수 없습니다.', user_not_found: '사용자를 찾을 수 없습니다.',
+      invitee_not_found: '초대할 수 있는 활성 계정이 아닙니다.', already_member: '이미 멤버입니다.',
+      invitation_pending: '이미 대기 중인 초대가 있습니다.', invitation_gone: '이미 처리되었거나 만료된 초대입니다.',
+      member_not_found: '멤버가 아닙니다.', target_is_owner: '이미 소유자입니다.', user_inactive: '활성 계정이 아닙니다.',
+      last_admin: '마지막 관리자는 비활성화·강등할 수 없습니다.', owns_albums: '이 사용자가 소유한 앨범이 있어 비활성화할 수 없습니다.',
+      login_taken: '이미 쓰는 아이디입니다.', invalid_login_name: '아이디 형식이 올바르지 않습니다.',
+      invalid_display_name: '표시 이름이 올바르지 않습니다.', invalid_password: '비밀번호 규칙에 맞지 않습니다.',
+      invalid_credentials: '현재 비밀번호가 올바르지 않습니다.', rate_limited: '시도가 너무 많습니다. 잠시 후 다시 시도하세요.',
+      busy: '서버가 바쁩니다. 잠시 후 다시 시도하세요.', storage_unavailable: '저장소를 사용할 수 없습니다.',
+      insufficient_storage: '저장 공간이 부족합니다.', device_not_found: '이미 해지된 기기입니다.',
+      not_initialized: '서버 초기화(admin init)가 필요합니다.', invalid_role: '역할이 올바르지 않습니다.'
+    };
+    let me = null;
+    let users = [];
+
     function csrf() {
       const m = document.cookie.match(/(?:^|; )withalbum_csrf=([^;]*)/);
       return m ? decodeURIComponent(m[1]) : '';
     }
     class Unauthorized extends Error {}
+    class ApiError extends Error { constructor(code, message) { super(message); this.code = code; } }
     // Session cookies (HttpOnly) go along automatically; unsafe methods also
     // send the CSRF token. An expired access token is refreshed once.
     async function api(url, opts = {}, retried = false) {
@@ -89,56 +169,316 @@
         if (r.ok) return api(url, opts, true);
       }
       if (response.status === 401) throw new Unauthorized('로그인이 필요합니다.');
-      const body = response.status === 204 ? {} : await response.json();
-      if (!response.ok) throw Error(body.error || '서버 오류');
+      let body = {};
+      if (response.status !== 204) { try { body = await response.json(); } catch (e) { body = {}; } }
+      if (!response.ok) {
+        const code = body.error || ('http_' + response.status);
+        throw new ApiError(code, (ERR[code] || '서버 오류') + ' (' + code + ')');
+      }
       return body;
     }
+    const json = (method, value) => ({method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(value)});
+    const enc = encodeURIComponent;
+
+    // el('tag', {text, className, ...properties, on: {event: fn}}, ...children)
+    function el(tag, props = {}, ...children) {
+      const node = document.createElement(tag);
+      for (const [k, v] of Object.entries(props)) {
+        if (k === 'text') node.textContent = v;
+        else if (k === 'on') for (const [ev, fn] of Object.entries(v)) node.addEventListener(ev, fn);
+        else node[k] = v;
+      }
+      node.append(...children.filter(c => c !== null && c !== undefined));
+      return node;
+    }
+    const button = (text, fn, className = 'ghost small') => el('button', {type: 'button', text, className, on: {click: fn}});
+    const fmtTime = s => s ? String(s).replace('T', ' ').slice(0, 16) : '-';
+    function fmtBytes(n) {
+      if (n === null || n === undefined) return '알 수 없음';
+      const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+      let i = 0, v = Number(n);
+      while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+      return v.toFixed(i ? 1 : 0) + ' ' + units[i];
+    }
+    function say(message, isError) {
+      $('feedback').textContent = message || '';
+      $('feedback').className = isError ? 'status error' : 'status';
+    }
+    // run wraps an action: shows success or the error, handles logout.
+    async function run(action, done) {
+      try { await action(); if (done) say(done); return true; }
+      catch (err) { if (err instanceof Unauthorized) showLogin(err.message); else say(err.message, true); return false; }
+    }
+    const isAdmin = () => me && me.user.server_role === 'SERVER_ADMIN';
+
     function showLogin(message) {
       $('app').hidden = true; $('loginBox').hidden = false;
       $('loginFeedback').textContent = message || '';
+      me = null;
     }
-    async function showTLS() {
+    function showTab(name) {
+      document.querySelectorAll('[data-pane]').forEach(p => { p.hidden = p.id !== 'tab-' + name; });
+      document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+      say('');
+      if (name === 'account') loadDevices();
+      if (name === 'users') loadUsers();
+      if (name === 'server') loadServer();
+    }
+    $('tabs').addEventListener('click', e => { const t = e.target.closest('button'); if (t && t.dataset.tab) showTab(t.dataset.tab); });
+
+    // ---- overview, albums ----
+    async function reload() {
+      try {
+        const [m, health, folders, invites] = await Promise.all([api('/api/v1/me'), api('/api/v1/health'), api('/api/v1/folders'), api('/api/v1/invitations')]);
+        me = m;
+        $('loginBox').hidden = true; $('app').hidden = false;
+        $('who').textContent = me.user.display_name + ' (' + me.user.login_name + ')';
+        $('whoRole').textContent = SERVER_ROLE[me.user.server_role] || me.user.server_role;
+        $('create').hidden = !(isAdmin() || me.user.can_create_albums);
+        document.querySelectorAll('[data-admin]').forEach(b => { b.hidden = !isAdmin(); });
+        $('health').textContent = health.status === 'ok' && health.storage === 'ok' ? (health.integrity === 'ok' ? '정상 실행' : '실행 중 · 무결성 경고') : '점검 필요';
+        $('version').textContent = health.version;
+        $('count').textContent = folders.folders.length + '개';
+        renderInvites(invites.invitations);
+        renderFolders(folders.folders);
+      } catch (err) {
+        if (err instanceof Unauthorized) showLogin(''); else { $('health').textContent = '연결 오류'; say(err.message, true); }
+      }
+    }
+    function renderInvites(list) {
+      $('myInvites').replaceChildren();
+      if (!list.length) { $('myInvites').append(el('li', {className: 'muted', text: '받은 초대가 없습니다.'})); return; }
+      list.forEach(inv => {
+        $('myInvites').append(el('li', {}, inv.folder_name + ' · ' + (ROLE[inv.role] || inv.role) + ' · 보낸 사람 ' + inv.inviter_display_name + ' · 만료 ' + fmtTime(inv.expires_at) + '  ',
+          button('수락', () => run(async () => { await api('/api/v1/invitations/' + enc(inv.id) + '/accept', json('POST', {})); await reload(); }, '초대를 수락했습니다.'), 'small')));
+      });
+    }
+    function renderFolders(list) {
+      $('folders').replaceChildren();
+      $('folderSelect').replaceChildren(new Option('앨범 선택', ''));
+      if (!list.length) $('folders').append(el('p', {className: 'muted', text: '아직 볼 수 있는 앨범이 없습니다.'}));
+      list.sort((a, b) => a.name.localeCompare(b.name, 'ko')).forEach(folder => {
+        const d = el('details', {}, el('summary', {}, folder.name + '  ', el('small', {text: (ROLE[folder.role] || folder.role) + ' · ' + folder.id.slice(0, 8)})));
+        const body = el('div');
+        d.append(body);
+        if (folder.role === 'OWNER') d.addEventListener('toggle', () => { if (d.open) loadOwnerPanel(folder, body); });
+        else body.append(el('p', {className: 'muted', text: '소유자만 멤버·초대를 관리할 수 있습니다. ' + (folder.can_read ? '보기 가능' : '보기 불가') + ' · ' + (folder.can_upload ? '업로드 가능' : '업로드 불가')}));
+        $('folders').append(d);
+        if (folder.can_upload) $('folderSelect').append(new Option(folder.name, folder.id));
+      });
+    }
+    async function loadOwnerPanel(folder, body) {
+      const base = '/api/v1/folders/' + enc(folder.id);
+      body.replaceChildren(el('p', {className: 'muted', text: '불러오는 중...'}));
+      let members, invites;
+      try {
+        [members, invites] = await Promise.all([api(base + '/members'), api(base + '/invitations')]);
+      } catch (err) { body.replaceChildren(el('p', {className: 'error', text: err.message})); if (err instanceof Unauthorized) showLogin(err.message); return; }
+      const refresh = () => loadOwnerPanel(folder, body);
+      const rows = el('tbody');
+      const transferSelect = el('select', {ariaLabel: '새 소유자'}, new Option('새 소유자 선택', ''));
+      members.members.forEach(m => {
+        const tr = el('tr', {}, el('td', {text: m.display_name + (m.active ? '' : ' (비활성)')}), el('td', {}, el('code', {text: m.user_id})));
+        if (m.role === 'OWNER') {
+          tr.append(el('td', {text: ROLE.OWNER}), el('td'));
+        } else {
+          const sel = el('select', {ariaLabel: '역할'}, ...['CONTRIBUTOR', 'VIEWER', 'UPLOADER'].map(r => new Option(ROLE[r], r, false, r === m.role)));
+          tr.append(el('td', {}, sel, ' ', button('변경', () => run(async () => { await api(base + '/members/' + enc(m.user_id), json('PATCH', {role: sel.value})); await refresh(); }, '역할을 바꿨습니다.'))),
+            el('td', {}, button('내보내기', () => { if (confirm(m.display_name + ' 님을 앨범에서 내보낼까요?')) run(async () => { await api(base + '/members/' + enc(m.user_id), {method: 'DELETE'}); await refresh(); }, '멤버를 내보냈습니다.'); }, 'danger small')));
+          if (m.active) transferSelect.append(new Option(m.display_name, m.user_id));
+        }
+        rows.append(tr);
+      });
+      const invList = el('ul');
+      if (!invites.invitations.length) invList.append(el('li', {className: 'muted', text: '대기 중인 초대가 없습니다.'}));
+      invites.invitations.forEach(inv => invList.append(el('li', {}, inv.invitee_display_name + ' · ' + (ROLE[inv.role] || inv.role) + ' · 만료 ' + fmtTime(inv.expires_at) + '  ',
+        button('취소', () => run(async () => { await api(base + '/invitations/' + enc(inv.id), {method: 'DELETE'}); await refresh(); }, '초대를 취소했습니다.')))));
+      const inviteID = el('input', {type: 'text', placeholder: '초대할 사용자 ID (user_id)', autocomplete: 'off'});
+      let dl = null;
+      if (isAdmin()) {
+        // Administrators may pick from the account list (other owners type the ID they were given).
+        dl = el('datalist', {id: 'users-' + folder.id});
+        users.filter(u => u.status === 'active').forEach(u => dl.append(new Option(u.login_name + ' · ' + u.display_name, u.user_id)));
+        inviteID.setAttribute('list', dl.id);
+      }
+      const inviteRole = el('select', {ariaLabel: '초대 역할'}, ...['VIEWER', 'CONTRIBUTOR', 'UPLOADER'].map(r => new Option(ROLE[r], r)));
+      body.replaceChildren(
+        el('h3', {text: '멤버'}), el('div', {className: 'scroll'}, el('table', {}, el('thead', {}, el('tr', {}, el('th', {text: '이름'}), el('th', {text: '사용자 ID'}), el('th', {text: '역할'}), el('th'))), rows)),
+        el('h3', {text: '초대'}), invList,
+        el('div', {className: 'field'}, inviteID, inviteRole, button('초대 보내기', () => {
+          const id = inviteID.value.trim();
+          if (!id) { say('초대할 사용자 ID를 입력하세요.', true); return; }
+          run(async () => { await api(base + '/invitations', json('POST', {invited_user_id: id, role: inviteRole.value})); await refresh(); }, '초대를 보냈습니다. 상대가 로그인해 수락해야 합니다.');
+        }, 'small')),
+        el('p', {className: 'muted', text: '초대는 등록된 활성 계정에만 보낼 수 있고, 7일 안에 본인이 수락해야 합니다. 사용자 ID는 상대의 관리자 화면 또는 서버 관리자에게 받으세요.'}),
+        el('h3', {text: '소유권 이전'}),
+        el('div', {className: 'field'}, transferSelect, button('이전', () => {
+          if (!transferSelect.value) { say('새 소유자를 고르세요 (현재 멤버만 가능).', true); return; }
+          if (confirm('소유권을 넘기면 나는 참여자(CONTRIBUTOR)가 되고 대기 중인 초대는 취소됩니다. 계속할까요?'))
+            run(async () => { await api(base + '/owner', json('POST', {new_owner_user_id: transferSelect.value})); await reload(); }, '소유권을 이전했습니다.');
+        }, 'small')),
+        el('h3', {text: '앨범 보관'}),
+        el('p', {className: 'muted', text: '보관하면 모든 사람(나 포함)에게서 앨범이 숨겨집니다. 파일은 삭제되지 않지만 지금은 화면에서 되돌릴 수 없습니다.'}),
+        button('앨범 보관', () => {
+          const typed = prompt('보관하려면 앨범 이름을 그대로 입력하세요: ' + folder.name);
+          if (typed === null) return;
+          if (typed !== folder.name) { say('이름이 일치하지 않아 보관하지 않았습니다.', true); return; }
+          run(async () => { await api(base, {method: 'DELETE'}); await reload(); }, '앨범을 보관했습니다.');
+        }, 'danger small'));
+      if (dl) body.append(dl);
+    }
+    $('create').addEventListener('submit', e => {
+      e.preventDefault();
+      const name = $('folderName').value.trim();
+      if (!name) return;
+      run(async () => { await api('/api/v1/folders', json('POST', {name})); $('folderName').value = ''; await reload(); }, '앨범을 만들었습니다.');
+    });
+    $('upload').addEventListener('click', async () => {
+      const file = $('file').files[0], folder = $('folderSelect').value;
+      if (!folder || !file) { $('uploadFeedback').textContent = '앨범과 파일을 선택해 주세요.'; return; }
+      const b = $('upload'); b.disabled = true;
+      $('uploadFeedback').textContent = '업로드 중 (최대 512MB)...';
+      try {
+        // One key per upload attempt; the retry after a token refresh reuses it.
+        const key = crypto.randomUUID ? crypto.randomUUID() : Array.from(crypto.getRandomValues(new Uint8Array(16)), x => x.toString(16).padStart(2, '0')).join('');
+        const result = await api('/api/v1/folders/' + enc(folder) + '/assets', {method: 'POST', headers: {'Content-Type': 'application/octet-stream', 'X-Filename': enc(file.name), 'Idempotency-Key': key}, body: file});
+        const msg = {already_present: '이미 이 앨범에 있는 파일입니다.', accepted: '전송했습니다 (업로드 전용 앨범).'}[result.result] || '업로드 완료.';
+        $('uploadFeedback').textContent = msg + ' 해시: ' + result.sha256.slice(0, 16) + '…';
+        $('file').value = '';
+      } catch (err) { if (err instanceof Unauthorized) showLogin(err.message); else $('uploadFeedback').textContent = '업로드 실패: ' + err.message; }
+      finally { b.disabled = false; }
+    });
+
+    // ---- own account ----
+    $('pwForm').addEventListener('submit', e => {
+      e.preventDefault();
+      run(async () => {
+        await api('/api/v1/me/password', json('POST', {current_password: $('pwCurrent').value, new_password: $('pwNew').value}));
+        $('pwCurrent').value = ''; $('pwNew').value = '';
+      }, '비밀번호를 바꿨습니다. 다른 기기는 로그아웃되었습니다.');
+    });
+    function deviceRows(tbody, list, revoke) {
+      tbody.replaceChildren();
+      if (!list.length) tbody.append(el('tr', {}, el('td', {className: 'muted', text: '로그인된 기기가 없습니다.', colSpan: 4})));
+      list.forEach(d => tbody.append(el('tr', {}, el('td', {text: d.device_name + (d.current ? ' (현재 브라우저)' : '')}), el('td', {text: d.platform}), el('td', {text: fmtTime(d.last_used_at)}),
+        el('td', {}, button('해지', () => { if (confirm(d.device_name + ' 기기를 로그아웃시킬까요?')) revoke(d); }, 'danger small')))));
+    }
+    async function loadDevices() {
+      await run(async () => {
+        const r = await api('/api/v1/me/devices');
+        deviceRows($('myDevices'), r.devices, d => run(async () => {
+          await api('/api/v1/me/devices/' + enc(d.device_id), {method: 'DELETE'});
+          if (d.current) { showLogin('이 브라우저를 해지해 로그아웃되었습니다.'); return; }
+          await loadDevices();
+        }, '기기를 해지했습니다.'));
+      });
+    }
+
+    // ---- user administration (SERVER_ADMIN) ----
+    async function loadUsers() {
+      await run(async () => {
+        users = (await api('/api/v1/admin/users')).users;
+        $('userRows').replaceChildren();
+        users.forEach(u => $('userRows').append(el('tr', {},
+          el('td', {text: u.login_name}), el('td', {text: u.display_name}), el('td', {text: SERVER_ROLE[u.server_role] || u.server_role}),
+          el('td', {text: u.server_role === 'SERVER_ADMIN' ? '항상' : (u.can_create_albums ? '허용' : '-')}),
+          el('td', {text: u.status === 'active' ? (u.password_locked ? '활성 (로그인 불가)' : '활성') : '비활성'}),
+          el('td', {}, button('관리', () => openUser(u.user_id))))));
+      });
+    }
+    $('newUser').addEventListener('submit', e => {
+      e.preventDefault();
+      run(async () => {
+        await api('/api/v1/admin/users', json('POST', {login_name: $('nuLogin').value.trim(), display_name: $('nuName').value.trim(),
+          password: $('nuPassword').value, server_role: $('nuRole').value, can_create_albums: $('nuCreate').checked}));
+        $('newUser').reset();
+        await loadUsers();
+      }, '사용자를 만들었습니다.');
+    });
+    async function openUser(userID) {
+      const box = $('userDetail');
+      box.hidden = false;
+      box.replaceChildren(el('p', {className: 'muted', text: '불러오는 중...'}));
+      let u, devices, owned;
+      try {
+        [u, devices, owned] = await Promise.all([api('/api/v1/admin/users/' + enc(userID)), api('/api/v1/admin/users/' + enc(userID) + '/devices'), api('/api/v1/admin/users/' + enc(userID) + '/folders')]);
+      } catch (err) { box.replaceChildren(el('p', {className: 'error', text: err.message})); if (err instanceof Unauthorized) showLogin(err.message); return; }
+      const reopen = async () => { await loadUsers(); await openUser(userID); };
+      const self = me && u.user_id === me.user.user_id;
+      const role = el('select', {ariaLabel: '서버 역할'}, ...['USER', 'SERVER_ADMIN'].map(r => new Option(SERVER_ROLE[r], r, false, r === u.server_role)));
+      const canCreate = el('input', {type: 'checkbox', checked: u.can_create_albums});
+      const devBody = el('tbody');
+      deviceRows(devBody, devices.devices, d => run(async () => {
+        await api('/api/v1/admin/users/' + enc(userID) + '/devices/' + enc(d.device_id), {method: 'DELETE'});
+        if (d.current) { showLogin('이 브라우저를 해지해 로그아웃되었습니다.'); return; }
+        await openUser(userID);
+      }, '기기를 해지했습니다.'));
+      const archivedN = owned.archived.length;
+      const ownedInfo = el('p', {text: '소유 앨범: 사용 중 ' + owned.active_owned + '개 · 보관됨 ' + archivedN + '개 (이름·내용은 관리자에게 표시되지 않습니다)'});
+      const statusArea = el('div', {className: 'field'});
+      if (u.status === 'active') {
+        statusArea.append(button('비활성화', () => {
+          if (!confirm(u.login_name + ' 계정을 비활성화할까요? 모든 기기가 즉시 로그아웃됩니다.')) return;
+          run(async () => { await api('/api/v1/admin/users/' + enc(userID), json('PATCH', {status: 'disabled'})); if (self) { showLogin('계정이 비활성화되었습니다.'); return; } await reopen(); }, '비활성화했습니다.');
+        }, 'danger small'));
+      } else {
+        statusArea.append(button('다시 활성화', () => run(async () => { await api('/api/v1/admin/users/' + enc(userID), json('PATCH', {status: 'active'})); await reopen(); }, '활성화했습니다.'), 'small'));
+      }
+      const reassign = el('div');
+      if (u.status === 'active' && (owned.active_owned > 0 || archivedN > 0)) {
+        if (owned.active_owned > 0) {
+          reassign.append(el('p', {className: 'muted', text: '사용 중인 앨범이 있으면 비활성화할 수 없습니다. 소유자가 직접 다른 멤버에게 소유권을 이전하거나 앨범을 보관해야 합니다 (관리자는 사용 중인 앨범을 옮길 수 없습니다).'}));
+        } else {
+          const target = el('select', {ariaLabel: '새 소유자'}, new Option('보관 앨범을 넘겨받을 계정', ''));
+          users.filter(x => x.user_id !== userID && x.status === 'active' && !x.password_locked).forEach(x => target.append(new Option(x.login_name + ' · ' + x.display_name, x.user_id)));
+          reassign.append(el('p', {className: 'muted', text: '보관된 앨범은 계속 보관 상태로 남으며, 넘겨받는 계정도 내용을 볼 수 없습니다. 재배정은 감사 로그에 남습니다.'}),
+            el('div', {className: 'field'}, target, button('보관 앨범 ' + archivedN + '개 재배정 후 비활성화', () => {
+              if (!target.value) { say('넘겨받을 계정을 고르세요.', true); return; }
+              if (!confirm('보관 앨범 ' + archivedN + '개의 소유자를 바꾸고 ' + u.login_name + ' 계정을 비활성화할까요?')) return;
+              run(async () => {
+                for (const f of owned.archived) await api('/api/v1/admin/folders/' + enc(f.folder_id) + '/owner', json('POST', {new_owner_user_id: target.value}));
+                await api('/api/v1/admin/users/' + enc(userID), json('PATCH', {status: 'disabled'}));
+                await reopen();
+              }, '보관 앨범을 재배정하고 계정을 비활성화했습니다.');
+            }, 'danger small')));
+        }
+      }
+      box.replaceChildren(
+        el('div', {className: 'bar'}, el('strong', {text: u.display_name + ' (' + u.login_name + ')' + (self ? ' · 나' : '')}), button('닫기', () => { box.hidden = true; })),
+        el('p', {}, '사용자 ID: ', el('code', {text: u.user_id}), ' · 생성 ' + fmtTime(u.created_at)),
+        el('h3', {text: '권한'}),
+        el('div', {className: 'field'}, role, el('label', {}, canCreate, ' 앨범 생성 허용'), button('저장', () => run(async () => {
+          await api('/api/v1/admin/users/' + enc(userID) + '/permissions', json('PATCH', {server_role: role.value, can_create_albums: canCreate.checked}));
+          if (self) { await reload(); } await reopen();
+        }, '권한을 저장했습니다.'), 'small')),
+        el('h3', {text: '계정 상태 · 소유 앨범'}), ownedInfo, statusArea, reassign,
+        el('h3', {text: '기기'}), el('div', {className: 'scroll'}, el('table', {}, el('thead', {}, el('tr', {}, el('th', {text: '기기'}), el('th', {text: '플랫폼'}), el('th', {text: '마지막 사용'}), el('th'))), devBody)));
+    }
+
+    // ---- server (SERVER_ADMIN) ----
+    async function loadServer() {
+      await run(async () => {
+        const s = await api('/api/v1/admin/server/storage');
+        const li = (k, v) => el('li', {}, el('strong', {text: k + ': '}), v);
+        const items = [li('저장소', s.storage === 'ok' ? '연결됨' : '사용 불가 (외장 디스크 연결·마운트를 확인하세요)'),
+          li('여유 공간', fmtBytes(s.free_bytes) + ' (업로드 예약 ' + fmtBytes(s.min_free_bytes) + ')'),
+          li('무결성', s.integrity === 'ok' ? '정상' : '경고 — 서버 로그와 verify 결과를 확인하세요')];
+        if (s.startup_check) {
+          const c = s.startup_check;
+          items.push(li('시작 시 점검', '원본 ' + c.blobs + '개 · 없음 ' + c.missing + ' · 크기 불일치 ' + c.size_mismatch + ' · 격리(고아) ' + c.orphans + ' · 예상 밖 항목 ' + c.unexpected));
+        }
+        $('storageInfo').replaceChildren(...items);
+      });
       try {
         const t = await api('/api/v1/admin/server/tls');
         $('pairing').replaceChildren();
         if (!t.enabled) { $('tlsInfo').textContent = 'TLS 꺼짐: 루프백 전용 평문 HTTP로 실행 중입니다. LAN 기기를 연결하려면 -tls -allow-lan 으로 다시 시작하세요.'; return; }
         $('tlsInfo').textContent = '공개키 지문(SPKI SHA-256): ' + t.spki_sha256.match(/../g).join(':').toUpperCase() + ' · 인증서 만료: ' + t.not_after;
-        t.pairing.forEach(p => {
-          const li = document.createElement('li');
-          const code = document.createElement('code');
-          code.textContent = p.payload;
-          li.append(p.url + '  ', code);
-          $('pairing').appendChild(li);
-        });
+        t.pairing.forEach(p => $('pairing').append(el('li', {}, p.url + '  ', el('code', {text: p.payload}))));
       } catch (err) { $('tlsInfo').textContent = 'TLS 정보를 불러오지 못했습니다: ' + err.message; }
     }
-    async function reload() {
-      try {
-        const [me, health, folders] = await Promise.all([api('/api/v1/me'), api('/api/v1/health'), api('/api/v1/folders')]);
-        $('loginBox').hidden = true; $('app').hidden = false;
-        $('who').textContent = me.user.display_name + ' (' + me.user.login_name + ')';
-        $('create').hidden = !(me.user.server_role === 'SERVER_ADMIN' || me.user.can_create_albums);
-        $('tlsBox').hidden = me.user.server_role !== 'SERVER_ADMIN';
-        if (me.user.server_role === 'SERVER_ADMIN') showTLS();
-        $('health').textContent = health.status === 'ok' && health.storage === 'ok' ? '정상 실행' : '점검 필요';
-        $('version').textContent = health.version;
-        $('count').textContent = folders.folders.length + '개';
-        $('folders').replaceChildren();
-        $('folderSelect').replaceChildren(new Option('앨범 선택', ''));
-        if (!folders.folders.length) $('folders').appendChild(Object.assign(document.createElement('li'), {textContent: '아직 볼 수 있는 앨범이 없습니다.'}));
-        folders.folders.sort((a,b) => a.name.localeCompare(b.name, 'ko')).forEach(folder => {
-          const li = document.createElement('li');
-          li.textContent = folder.name + '  ';
-          const small = document.createElement('small');
-          small.textContent = `${ROLE[folder.role] || folder.role} · ${folder.id.slice(0,8)}`;
-          li.appendChild(small);
-          $('folders').appendChild(li);
-          if (folder.can_upload) $('folderSelect').appendChild(new Option(folder.name, folder.id));
-        });
-      } catch (err) {
-        if (err instanceof Unauthorized) showLogin(''); else { $('health').textContent = '연결 오류'; $('feedback').textContent = err.message; }
-      }
-    }
+
+    // ---- login / logout ----
     $('login').addEventListener('submit', async e => {
       e.preventDefault();
       try {
@@ -148,39 +488,15 @@
         if (r.status === 429) { showLogin('시도가 너무 많습니다. 잠시 후 다시 시도하세요.'); return; }
         if (!r.ok) { showLogin('아이디 또는 비밀번호가 올바르지 않습니다.'); return; }
         await reload();
+        showTab('overview');
+        if (isAdmin()) loadUsers();
       } catch (err) { showLogin(err.message); }
     });
     $('logout').addEventListener('click', async () => {
       try { await api('/api/v1/auth/logout', {method: 'POST'}); } catch (err) {}
       showLogin('로그아웃했습니다.');
     });
-    $('create').addEventListener('submit', async e => {
-      e.preventDefault();
-      const name = $('folderName').value.trim();
-      if (!name) return;
-      try {
-        await api('/api/v1/folders', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name})});
-        $('folderName').value = '';
-        $('feedback').textContent = '앨범을 만들었습니다.';
-        await reload();
-      } catch(err) { if (err instanceof Unauthorized) showLogin(err.message); else $('feedback').textContent = err.message; }
-    });
-    $('upload').addEventListener('click', async () => {
-      const file = $('file').files[0], folder = $('folderSelect').value;
-      if (!folder || !file) { $('feedback').textContent = '앨범과 파일을 선택해 주세요.'; return; }
-      const button = $('upload'); button.disabled = true;
-      $('feedback').textContent = '업로드 중 (최대 512MB)...';
-      try {
-        // One key per upload attempt; the retry after a token refresh reuses it.
-        const key = crypto.randomUUID ? crypto.randomUUID() : Array.from(crypto.getRandomValues(new Uint8Array(16)), x => x.toString(16).padStart(2, '0')).join('');
-        const result = await api(`/api/v1/folders/${encodeURIComponent(folder)}/assets`, {method:'POST', headers:{'Content-Type':'application/octet-stream','X-Filename': encodeURIComponent(file.name),'Idempotency-Key': key}, body: file});
-        const msg = {already_present: '이미 이 앨범에 있는 파일입니다.', accepted: '전송했습니다 (업로드 전용 앨범).'}[result.result] || '업로드 완료.';
-        $('feedback').textContent = `${msg} 해시: ${result.sha256.slice(0,16)}…`;
-        $('file').value = '';
-      } catch(err) { if (err instanceof Unauthorized) showLogin(err.message); else $('feedback').textContent = '업로드 실패: ' + err.message; }
-      finally { button.disabled = false; }
-    });
-    reload();
+    reload().then(() => { if (isAdmin()) loadUsers(); });
   </script>
 </body>
 </html>

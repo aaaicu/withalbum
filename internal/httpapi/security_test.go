@@ -32,7 +32,7 @@ func TestSecurityHeaders(t *testing.T) {
 			t.Errorf("HSTS on plain HTTP")
 		}
 	}
-	if csp := do(t, e.Raw, "GET", "/", nil, nil).Header.Get("Content-Security-Policy"); !strings.Contains(csp, "script-src 'unsafe-inline'") {
+	if csp := do(t, e.Raw, "GET", "/", nil, nil).Header.Get("Content-Security-Policy"); !strings.Contains(csp, "script-src 'sha256-") {
 		t.Errorf("dashboard CSP replaced: %q", csp)
 	}
 }

@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added (M17, admin / owner web UI)
+- 내장 웹 관리 화면(`internal/httpapi/web/index.html`, 의존성 없는 정적 HTML/JS): 개요(서버 상태·받은 초대 수락), 내 앨범(생성·업로드 테스트, OWNER는 멤버 역할 변경·내보내기·초대·초대 취소·소유권 이전·보관), 내 계정(비밀번호 변경·기기 해지), 사용자 관리(SERVER_ADMIN: 생성·역할·앨범 생성 권한·비활성/재활성·기기 해지·보관 앨범 재배정 후 비활성화), 서버·저장소(SERVER_ADMIN: 저장소 상태·여유 공간·시작 시 점검·TLS 지문). 모든 동작은 `docs/API_v2.yaml`의 기존 API만 사용하고, 관리자에게도 타인 앨범 이름·내용은 보이지 않음.
+- `GET /api/v1/admin/server/storage`(SERVER_ADMIN): 저장소 ok/unavailable, 여유 공간·업로드 예약, integrity, 기동 재조정 결과 개수(경로·볼륨 ID·해시 없음). 전체 `verify` 결과는 저장하지 않음(콘솔 명령).
+- `GET /api/v1/admin/users/{uid}/folders`(SERVER_ADMIN): 계정이 소유한 사용 중 앨범 개수, 보관 앨범 ID·날짜(이름·멤버·내용 없음).
+- `POST /api/v1/admin/folders/{fid}/owner`(SERVER_ADMIN, 사용자 승인): **보관된 앨범만** 소유자를 다른 활성 계정으로 재배정. 1 트랜잭션(호출자 재판정, 새 오너의 멤버십 제거, 대기 초대 취소, 감사 `folder.reassign_archived_owner`). 보관 상태 유지라 새 오너·관리자 모두 접근 불가(404). 사용 중 앨범은 없는 앨범과 같은 404. 탈퇴 가족 계정 비활성화용.
+
+### Changed (M17)
+- 대시보드 CSP에서 `'unsafe-inline'` 제거: 인라인 `<script>`·`<style>` 각 1개를 임베드된 페이지에서 계산한 SHA-256 해시로만 허용, `img-src 'none'`, `form-action 'none'`, Trusted Types 요구(`require-trusted-types-for 'script'`).
+
 ### Added (M16, sync API v2 / idempotent uploads / unified OpenAPI)
 - 공식 규격 `docs/API_v2.yaml`(2.0.0-draft) 하나로 통합. `API_AUTH_v1.4.yaml`·`API_v1.2.yaml`은 역사 기록. `internal/httpapi/openapi_test.go`가 라우트 정책 표와 경로·메서드·공개 여부·401/403/404 문서화를 대조.
 - 업로드 `Idempotency-Key` 필수(없음 400 `idempotency_key_required`, 형식 오류 400 `invalid_idempotency_key`). 계정·세션 기기·폴더·키 범위의 `upload_receipts`를 커밋과 같은 트랜잭션에 기록(already_present 포함). 같은 키 재시도는 첫 결과 그대로(`Idempotency-Replayed: true`), 같은 키·다른 바이트 422 `idempotency_key_reused`. 영수증 30일 보존 후 정리.

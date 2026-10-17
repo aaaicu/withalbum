@@ -5,7 +5,7 @@
 | 기능 | 현 상태 | 소스 / 근거 | 완료 판정시 요구 증거 |
 |---|---|---|---|
 | Go 로컬 HTTP 서버 | 개발 PoC 구현 | `server/main.go`(기동), `internal/httpapi` | 개발용 로컬 실행·테스트 |
-| 로컬 관리 UI | 개발 PoC 구현 — 로그인(웹 쿠키+CSRF) 후 내 앨범·생성·업로드 | `internal/httpapi/web/index.html` | 관리자/오너 UI는 M17 |
+| 로컬 관리 UI (M17) | **부분 구현(httptest 검증, 브라우저 수동 점검 전)** — 로그인(웹 쿠키+CSRF), 받은 초대 수락, 내 앨범·생성·업로드, OWNER 멤버·초대·소유권 이전·보관, 비밀번호 변경·기기 해지, 관리자 사용자 관리(생성·권한·비활성·기기 해지·보관 앨범 재배정 후 비활성화)·저장소 상태·TLS 지문. 해시 기반 CSP(`'unsafe-inline'` 없음) | `internal/httpapi/web/index.html`, `internal/httpapi/admin.go`, `internal/httpapi/admin_test.go`, `docs/DASHBOARD_CHECKLIST.md` | Mac 브라우저(Safari·Chrome) 관리자/일반 사용자 시나리오 수동 점검 |
 | 전체 파일 업로드 (512MiB 이하) | 개발 PoC 구현 | `internal/httpapi`, `internal/blobstore` | 영상 대용량 재개/정합성은 추가 구현 |
 | SHA-256 content-addressed 원본 | 개발 PoC 구현 | `internal/blobstore` | 동시성/복구/블롭 접근 권한 시험 |
 | 폴더별 해시 중복 인식 | 개발 PoC 구현 | `internal/meta/sqlitestore` (`CommitUpload`) | 업로드·복제·재시도·동시성 통합 시험 |
