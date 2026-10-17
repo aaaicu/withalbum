@@ -15,6 +15,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -167,6 +169,14 @@ func runMigrateLegacy(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "migrate-legacy: STORAGE: %s (%v)\n", openStorageHint(root, err), err)
 		return 1
 	}
+	if *apply {
+		lock, err := vol.Lock()
+		if err != nil {
+			fmt.Fprintf(stderr, "migrate-legacy: %s (%v)\n", lockHint(root, err), err)
+			return 1
+		}
+		defer lock.Release()
+	}
 	report, err := legacyimport.Run(context.Background(), vol, legacyimport.Options{Apply: *apply, Progress: stderr})
 	if *asJSON {
 		enc := json.NewEncoder(stdout)
@@ -186,6 +196,122 @@ func runMigrateLegacy(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+// lockHint explains a storage.Volume.Lock failure.
+func lockHint(root string, err error) string {
+	if errors.Is(err, storage.ErrLocked) {
+		return fmt.Sprintf("LOCKED: another WithAlbum server or migrate-legacy -apply is using %q (its process id is in .system/%s). Stop it first.", root, storage.LockName)
+	}
+	return fmt.Sprintf("cannot take the instance lock in %q.", root)
+}
+
+// minFreeBytes parses WITHALBUM_MIN_FREE_BYTES (bytes, default 1 GiB).
+func minFreeBytes(value string) (int64, error) {
+	if value == "" {
+		return httpapi.DefaultMinFreeBytes, nil
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("WITHALBUM_MIN_FREE_BYTES must be a non-negative number of bytes, got %q", value)
+	}
+	return n, nil
+}
+
+// appOptions configures openApp.
+type appOptions struct {
+	VolumeID     string // WITHALBUM_VOLUME_ID; empty: any registered volume
+	MinFreeBytes int64
+	Faults       httpapi.FaultInjector // tests only
+}
+
+// app is a started server: a verified volume, its instance lock, the
+// metadata store, the reconciled blob store and the HTTP API.
+type app struct {
+	vol    *storage.Volume
+	lock   *storage.InstanceLock
+	meta   meta.MetadataStore
+	blobs  *blobstore.Store
+	report *blobstore.ReconcileReport
+	api    *httpapi.Server
+}
+
+// Close releases the metadata store and then the instance lock.
+func (a *app) Close() error {
+	return errors.Join(a.meta.Close(), a.lock.Release())
+}
+
+// openApp runs the startup sequence. Every step fails closed with an error
+// meant for the operator:
+//
+//  1. verify the volume (marker, device),
+//  2. take the instance lock, so no other server or import runs on it,
+//  3. open the metadata (refusing unmigrated legacy data),
+//  4. reconcile .system with the metadata after a possible crash: remove
+//     unfinished uploads, quarantine unreferenced pool files to
+//     .system/orphans, report missing or damaged originals,
+//  5. build the HTTP API.
+func openApp(ctx context.Context, root string, opt appOptions) (*app, error) {
+	vol, err := storage.Open(root, storage.OpenOptions{ExpectedVolumeID: opt.VolumeID})
+	if err != nil {
+		return nil, fmt.Errorf("STORAGE: %s (%w)", openStorageHint(root, err), err)
+	}
+	lock, err := vol.Lock()
+	if err != nil {
+		return nil, fmt.Errorf("%s (%w)", lockHint(root, err), err)
+	}
+	a := &app{vol: vol, lock: lock}
+	fail := func(err error) (*app, error) {
+		if a.meta != nil {
+			a.meta.Close()
+		}
+		lock.Release()
+		return nil, err
+	}
+	// Decide on the metadata store before creating anything else in .system.
+	if a.meta, err = openMetadata(ctx, vol); err != nil {
+		if errors.Is(err, errUnmigratedState) {
+			return fail(fmt.Errorf("METADATA: %q holds metadata from an earlier version (.system/state.json) that has not been migrated to SQLite. "+
+				"This version does not read it and refuses to start; nothing was changed. "+
+				"Stop the previous version, then run: withalbum-server migrate-legacy (check only) and withalbum-server migrate-legacy -apply. "+
+				"See docs/MIGRATION_legacy_state.md. (%w)", root, err))
+		}
+		return fail(fmt.Errorf("METADATA: cannot open %s: %w", sqlitestore.DBPath(root), err))
+	}
+	if a.blobs, err = blobstore.New(vol); err != nil {
+		return fail(err)
+	}
+	index, ok := a.meta.(blobstore.BlobIndex)
+	if !ok {
+		return fail(fmt.Errorf("metadata store %T cannot list blobs", a.meta))
+	}
+	if a.report, err = a.blobs.Reconcile(ctx, index); err != nil {
+		return fail(fmt.Errorf("RECOVERY: startup reconciliation failed; refusing to start: %w", err))
+	}
+	logReconcile(a.report)
+	a.api = httpapi.New(httpapi.Config{Volume: vol, Meta: a.meta, Blobs: a.blobs, Version: version,
+		MinFreeBytes: opt.MinFreeBytes, IntegrityWarning: !a.report.Healthy(), Faults: opt.Faults})
+	return a, nil
+}
+
+// logReconcile writes the startup reconciliation result. Missing or damaged
+// originals are errors an operator must look at; the server still starts so
+// that the remaining library stays available.
+func logReconcile(r *blobstore.ReconcileReport) {
+	log.Printf("recovery: %s", r.Summary())
+	if r.Orphans > 0 {
+		log.Printf("recovery: moved %d unreferenced original(s) to %s (left by an interrupted upload; nothing was deleted), e.g. %v",
+			r.Orphans, blobstore.OrphansRelDir, r.OrphanSample)
+	}
+	if r.Missing > 0 {
+		log.Printf("INTEGRITY ERROR: %d original(s) recorded in the database are missing from the pool, e.g. %v. Uploading the same file again restores it.", r.Missing, r.MissingSample)
+	}
+	if r.SizeMismatch > 0 {
+		log.Printf("INTEGRITY ERROR: %d original(s) in the pool have the wrong size (damaged), e.g. %v. They were left untouched.", r.SizeMismatch, r.SizeMismatchSample)
+	}
+	if r.Unexpected > 0 {
+		log.Printf("INTEGRITY WARNING: %d unexpected entries in .system/pool or .system/incoming were left untouched, e.g. %v", r.Unexpected, r.UnexpectedSample)
+	}
 }
 
 func main() {
@@ -217,27 +343,7 @@ func main() {
 		fmt.Printf("Initialized storage root %s\nvolume_id=%s\nOptional: set WITHALBUM_VOLUME_ID=%s to refuse any other volume.\n", root, m.VolumeID, m.VolumeID)
 		return
 	}
-	vol, err := storage.Open(root, storage.OpenOptions{ExpectedVolumeID: os.Getenv("WITHALBUM_VOLUME_ID")})
-	if err != nil {
-		log.Fatalf("STORAGE: %s (%v)", openStorageHint(root, err), err)
-	}
-	// Decide on the metadata store before creating anything else in .system.
-	metadata, err := openMetadata(context.Background(), vol)
-	if errors.Is(err, errUnmigratedState) {
-		log.Fatalf("METADATA: %q holds metadata from an earlier version (.system/state.json) that has not been migrated to SQLite. "+
-			"This version does not read it and refuses to start; nothing was changed. "+
-			"Stop the previous version, then run: withalbum-server migrate-legacy (check only) and withalbum-server migrate-legacy -apply. "+
-			"See docs/MIGRATION_legacy_state.md.", root)
-	}
-	if err != nil {
-		log.Fatalf("METADATA: cannot open %s: %v", sqlitestore.DBPath(root), err)
-	}
-	defer metadata.Close()
-	blobs, err := blobstore.New(vol)
-	if err != nil {
-		log.Fatal(err)
-	}
-	api := httpapi.New(httpapi.Config{Volume: vol, Meta: metadata, Blobs: blobs, Version: version})
+	// Validate the configuration before touching the storage.
 	addr := os.Getenv("WITHALBUM_LISTEN")
 	if addr == "" {
 		addr = "127.0.0.1:8787"
@@ -245,7 +351,23 @@ func main() {
 	if !loopbackOnly(addr) {
 		log.Fatalf("SECURITY: refusing non-loopback address %q (authentication has not been implemented)", addr)
 	}
-	server := &http.Server{Addr: addr, Handler: api.Handler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 20}
+	minFree, err := minFreeBytes(os.Getenv("WITHALBUM_MIN_FREE_BYTES"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	a, err := openApp(context.Background(), root, appOptions{VolumeID: os.Getenv("WITHALBUM_VOLUME_ID"), MinFreeBytes: minFree})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer a.Close()
+	if free, err := a.vol.FreeBytes(); err != nil {
+		log.Printf("free space: unknown (%v); uploads are not pre-checked, a full disk still answers 507", err)
+	} else if free <= uint64(minFree) {
+		log.Printf("WARNING: only %d bytes free, at or below the reserve WITHALBUM_MIN_FREE_BYTES=%d: uploads are refused with 507", free, minFree)
+	} else {
+		log.Printf("free space: %d bytes, reserve %d", free, minFree)
+	}
+	server := &http.Server{Addr: addr, Handler: a.api.Handler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 20}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go func() {
@@ -256,7 +378,7 @@ func main() {
 			log.Printf("shutdown: %v", err)
 		}
 	}()
-	log.Printf("EXPERIMENTAL / NO AUTH: listen=%s root=%s volume_id=%s", addr, vol.Root(), vol.ID())
+	log.Printf("EXPERIMENTAL / NO AUTH: listen=%s root=%s volume_id=%s", addr, a.vol.Root(), a.vol.ID())
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}

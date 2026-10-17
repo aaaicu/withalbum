@@ -29,6 +29,39 @@ func Run(t *testing.T, open func(t *testing.T) meta.MetadataStore) {
 	t.Run("CommitUpload", func(t *testing.T) { testCommitUpload(t, newStore(t)) })
 	t.Run("ListEvents", func(t *testing.T) { testListEvents(t, newStore(t)) })
 	t.Run("ConcurrentCommits", func(t *testing.T) { testConcurrentCommits(t, newStore(t)) })
+	t.Run("BeforeCommit", func(t *testing.T) { testBeforeCommit(t, newStore(t)) })
+}
+
+// testBeforeCommit: a failing BeforeCommit hook leaves no trace, its error
+// is returned wrapped, and it is not called for ResultAlreadyPresent.
+func testBeforeCommit(t *testing.T, s meta.MetadataStore) {
+	ctx := context.Background()
+	f := mustFolder(t, s, "hooked")
+	refuse := errors.New("volume lost")
+	calls := 0
+	req := meta.CommitRequest{FolderID: f.ID, Asset: asset(0, "a.jpg"), BeforeCommit: func() error {
+		calls++
+		return refuse
+	}}
+	if _, err := s.CommitUpload(ctx, req); !errors.Is(err, refuse) {
+		t.Fatalf("CommitUpload = %v, want the BeforeCommit error", err)
+	}
+	if calls != 1 {
+		t.Fatalf("BeforeCommit called %d times", calls)
+	}
+	if _, err := s.GetAssetBySHA(ctx, sha(0)); !errors.Is(err, meta.ErrAssetNotFound) {
+		t.Fatalf("asset stored after refused commit: %v", err)
+	}
+	if p := mustEvents(t, s, f.ID, 0, 10); len(p.Events) != 0 {
+		t.Fatalf("events after refused commit: %+v", p.Events)
+	}
+	req.BeforeCommit = func() error { calls++; return nil }
+	mustCommit(t, s, req, meta.ResultCreated)
+	if p := mustEvents(t, s, f.ID, 0, 10); len(p.Events) != 1 || p.Events[0].Seq != 1 {
+		t.Fatalf("events after commit: %+v", p.Events)
+	}
+	req.BeforeCommit = func() error { t.Error("BeforeCommit called for an already present asset"); return nil }
+	mustCommit(t, s, req, meta.ResultAlreadyPresent)
 }
 
 func sha(n int) string { return fmt.Sprintf("%064x", n+1) }

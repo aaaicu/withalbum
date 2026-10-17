@@ -33,6 +33,7 @@
 - `server/main.go`(기동) + `internal/httpapi`(핸들러) + `internal/meta/sqlitestore` + `internal/blobstore`: 인증 없는 localhost 전용 Go PoC. 메타데이터는 SQLite `.system/withalbum.db`(`meta.MetadataStore` 인터페이스 뒤). 512MiB 단일 요청 원본 업로드/초보적 프리뷰. DB 내부 asset_id는 랜덤이지만 **API의 자산 식별자는 아직 SHA-256**이고 실제 ACL은 없음. 폴더 소유자는 로그인 불가한 bootstrap `admin` 계정.
 - `internal/meta/jsonstore`: 서버 기동에 쓰이지 않음(테스트에서 이전 버전 데이터 생성용). state.json만 있는 저장소는 기동 거부.
 - `internal/legacyimport` + `withalbum-server migrate-legacy [-apply]`: state.json → SQLite 무손실 이관(dry-run 기본, 백업·임시 DB 단일 트랜잭션·전 행 검증·원자적 rename·state.json 보존). 테스트와 로컬 스모크(이전 버전 바이너리로 만든 데이터)로 검증, 대용량·외장 디스크 실기기 이관은 미검증.
+- 업로드 커밋 순서·기동 재조정(`blobstore.Reconcile`, `server/main.go` `openApp`)·여유 공간 507·단일 인스턴스 잠금: 장애 주입·SIGKILL 테스트로 검증, 전원 차단·실기기 미검증.
 - `internal/authz`: 권한 함수와 테스트만 있으며 HTTP handler 미연결.
 - `internal/db`: SQLite 열기·PRAGMA·마이그레이션(0001 schema v1.4, 0002 이관 보조, 0003 `assets.preview_ready`). `docs/schema_v1.4.sql`은 마이그레이션 0001과 동일(정본은 `internal/db/migrations/`). 계정·세션·멤버·초대·감사 로그 테이블은 아직 미사용.
 - `docs/API_AUTH_v1.4.yaml`: **미구현 목표 설계**.

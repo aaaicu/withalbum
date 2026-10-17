@@ -124,14 +124,23 @@ func TestPromoteAndPreview(t *testing.T) {
 	if n := incomingCount(t, s); n != 0 {
 		t.Fatalf("incoming %d after Promote", n)
 	}
-	// Promoting identical bytes again replaces the read-only pool file.
+	// Promoting identical bytes again reuses the verified pool file.
 	g, err := s.Stage(bytes.NewReader(buf.Bytes()), 1<<20)
 	if err != nil {
 		t.Fatal(err)
 	}
+	before, _ := os.Stat(s.PoolPath(f.SHA256))
 	if err := s.Promote(g, g.SHA256); err != nil {
 		t.Fatalf("second Promote: %v", err)
 	}
+	after, _ := os.Stat(s.PoolPath(f.SHA256))
+	if !os.SameFile(before, after) {
+		t.Fatal("second Promote replaced the existing pool file")
+	}
+	if _, err := os.Stat(g.Path); err != nil {
+		t.Fatalf("reused Promote consumed the staged file: %v", err)
+	}
+	g.Remove()
 	if err := s.MakePreview(f.SHA256); err != nil {
 		t.Fatal(err)
 	}
@@ -162,3 +171,48 @@ func TestMakePreviewRejectsNonImage(t *testing.T) {
 		t.Fatalf("preview written for text: %v", err)
 	}
 }
+
+// TestPromoteQuarantinesDamagedPoolFile: a pool file whose bytes do not hash
+// to its name is moved to orphans (not deleted) and replaced.
+func TestPromoteQuarantinesDamagedPoolFile(t *testing.T) {
+	s, _ := newTestStore(t)
+	body := []byte("the real original")
+	f, err := s.Stage(bytes.NewReader(body), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Remove()
+	dest := s.PoolPath(f.SHA256)
+	if err := os.Mkdir(filepath.Dir(dest), 0700); err != nil {
+		t.Fatal(err)
+	}
+	damaged := []byte("the real originaX") // same size, other bytes
+	if err := os.WriteFile(dest, damaged, 0400); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Promote(f, f.SHA256); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(dest); err != nil || !bytes.Equal(got, body) {
+		t.Fatalf("pool file %q %v", got, err)
+	}
+	entries, err := os.ReadDir(filepath.Join(s.root, filepath.FromSlash(OrphansRelDir)))
+	if err != nil || len(entries) != 1 || !strings.HasPrefix(entries[0].Name(), f.SHA256+".mismatch.") {
+		t.Fatalf("orphans %v %v", entries, err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(s.root, filepath.FromSlash(OrphansRelDir), entries[0].Name())); !bytes.Equal(got, damaged) {
+		t.Fatal("quarantined file changed")
+	}
+}
+
+func TestErrWriterKeepsFirstError(t *testing.T) {
+	first := errors.New("disk full")
+	w := &errWriter{w: failingWriter{first}}
+	if _, err := w.Write([]byte("x")); err != first || w.err != first {
+		t.Fatalf("err %v, kept %v", err, w.err)
+	}
+}
+
+type failingWriter struct{ err error }
+
+func (f failingWriter) Write([]byte) (int, error) { return 0, f.err }

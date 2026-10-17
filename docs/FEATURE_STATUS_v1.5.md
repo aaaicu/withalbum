@@ -14,7 +14,7 @@
 | state.json → SQLite 이관 | **부분 구현(테스트 검증)** — `migrate-legacy` dry-run/`-apply`, 백업·단일 트랜잭션·전 행 검증·원자적 rename, 단계별 크래시 재실행 복구 | `internal/legacyimport`, `server/main.go`, `docs/MIGRATION_legacy_state.md` | 대용량·실기기(외장 디스크) 이관 검증 |
 | 폴더별 event/cursor | 개발 PoC 구현 | `internal/meta/sqlitestore` (`folder_sequences`, `folder_changes`) | 장기간 offline 클라이언트/영속 cursor 검증 |
 | 정식 SQLite schema v1.4 | **부분 구현(서버 연결)** — 폴더·자산·blob·링크·시퀀스·이벤트 사용, 계정/ACL 테이블 미사용 | `internal/db/` (마이그레이션 0001~0003), `internal/meta/sqlitestore`, `docs/schema_v1.4.sql` | 장애 시험 |
-| 파일·DB atomic commit | **미구현** | `docs/ROADMAP.md` | crash/partial failure 재현 자동 테스트 |
+| 파일·DB atomic commit | **부분 구현(테스트 검증, 실기기 미검증)** — staging fsync → pool rename → 디렉터리 fsync → DB tx(COMMIT 직전 볼륨·파일 재확인), 기동 재조정(incoming 정리·고아 orphans/ 격리·누락 보고), 여유 공간 507, 단일 인스턴스 잠금 | `internal/httpapi` (`upload`), `internal/blobstore` (`Promote`, `Reconcile`), `server/main.go` (`openApp`), `server/crash_test.go` | 단계별 장애 주입·SIGKILL 테스트 통과. 남은 증거: 실제 전원 차단·외장 디스크 분리 E2E |
 | 외장하드 분리·마운트 식별 | **부분 구현, 실기기 미검증** (볼륨 마커 + st_dev, 쓰기 직전 재확인, 503 `storage_unavailable`) | `internal/storage`, `internal/httpapi` (`storageReady`) | 디스크 unplug 시 fail-closed (Mac mini 실기기 E2E), 디스크 UUID 대조 |
 | 사용자 계정/Argon2id/세션 | **설계만** | `docs/ACCESS_CONTROL_v1.4.md` | 로그인/로그아웃/토큰 회수 테스트 |
 | 서버의 계정별 앨범 생성 제한 | **정책 함수만** | `internal/authz` | HTTP E2E 403 및 생성/소유자 test |

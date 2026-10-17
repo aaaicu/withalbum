@@ -30,6 +30,12 @@ var connPragmas = []string{
 	"foreign_keys(1)",    // enforce REFERENCES; off by default in SQLite
 	"journal_mode(WAL)",  // readers do not block the writer; persistent in the file
 	"synchronous(FULL)",  // fsync the WAL on every commit: durability over speed
+	// macOS: sync with F_FULLFSYNC so a commit reaches the disk, not only its
+	// write cache (plain fsync does not flush it there). Without it a power
+	// loss could drop a commit that was already acknowledged to a client,
+	// while the original file (Go's File.Sync uses F_FULLFSYNC) survived.
+	// No effect on other platforms.
+	"fullfsync(1)",
 }
 
 // maxOpenConns bounds the pool. Write serialization does not depend on it:
@@ -98,7 +104,7 @@ func Open(path string) (*sql.DB, error) {
 
 // CheckConn verifies that conn has the PRAGMA values Open requires.
 func CheckConn(ctx context.Context, conn *sql.Conn) error {
-	var fk, sync, busy int
+	var fk, sync, busy, fullfsync int
 	var mode string
 	if err := conn.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&fk); err != nil {
 		return err
@@ -112,10 +118,13 @@ func CheckConn(ctx context.Context, conn *sql.Conn) error {
 	if err := conn.QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&busy); err != nil {
 		return err
 	}
+	if err := conn.QueryRowContext(ctx, "PRAGMA fullfsync").Scan(&fullfsync); err != nil {
+		return err
+	}
 	// synchronous: 2 = FULL.
-	if fk != 1 || !strings.EqualFold(mode, "wal") || sync != 2 || busy != 5000 {
-		return fmt.Errorf("%w: foreign_keys=%d journal_mode=%s synchronous=%d busy_timeout=%d",
-			ErrUnsafeConnection, fk, mode, sync, busy)
+	if fk != 1 || !strings.EqualFold(mode, "wal") || sync != 2 || busy != 5000 || fullfsync != 1 {
+		return fmt.Errorf("%w: foreign_keys=%d journal_mode=%s synchronous=%d busy_timeout=%d fullfsync=%d",
+			ErrUnsafeConnection, fk, mode, sync, busy, fullfsync)
 	}
 	return nil
 }
