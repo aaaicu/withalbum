@@ -49,7 +49,7 @@ WITHALBUM_ROOT=/Volumes/ExternalSSD/WithAlbum ./withalbum-server
 
 | state.json | SQLite |
 |---|---|
-| 폴더 `id`·`name`·`created_at` | `folders` (ID 그대로). 소유자는 로그인 불가한 로컬 bootstrap 관리자 `admin` |
+| 폴더 `id`·`name`·`created_at` | `folders` (ID 그대로). 소유자는 로그인 불가한 로컬 bootstrap 관리자 `admin` (이관 후 `withalbum-server admin init`으로 인수하면 같은 계정이 소유를 유지) |
 | `next_seq[폴더]` | `folder_sequences.last_seq` (이후 업로드는 그다음 seq부터) |
 | 자산(키 = SHA-256) | `blobs`(크기·MIME·pool 경로) + `assets`(**새 랜덤 `asset_id`**, 파일명, `preview_ready`, `created_at` = `uploaded_at`) + `legacy_asset_map`(SHA-256 → asset_id) |
 | `links[폴더][sha]` | `folder_assets` (`added_at`, `uploader_device_id` → `uploader_device_label`) |

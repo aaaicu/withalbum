@@ -19,7 +19,9 @@
 | `modernc.org/memory` | v1.12.1 | BSD-3-Clause (mmap-go 유래 BSD-3) | 간접 |
 | `github.com/google/uuid` | v1.6.0 | BSD-3-Clause | 간접 |
 | `github.com/remyoudompheng/bigfft` | v0.0.0-20230129092748-24d4a6f8daec | BSD-3-Clause | 간접 |
-| `golang.org/x/sys` | v0.48.0 | BSD-3-Clause | 간접 |
+| `golang.org/x/crypto` | v0.58.0 | BSD-3-Clause | Argon2id 비밀번호 해시 (`argon2` 패키지) |
+| `golang.org/x/term` | v0.47.0 | BSD-3-Clause | 콘솔 비밀번호 입력 시 에코 끄기 |
+| `golang.org/x/sys` | v0.49.0 | BSD-3-Clause | 간접 |
 | `github.com/dustin/go-humanize` | v1.0.1 | MIT | 간접 |
 | `github.com/mattn/go-isatty` | v0.0.24 | MIT | 간접 |
 | `github.com/ncruces/go-strftime` | v1.0.0 | MIT | 간접 |

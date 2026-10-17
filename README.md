@@ -17,10 +17,11 @@
 
 - **기능이 동작하는 코드:** Go 기반 localhost 전용 서버, 간단한 웹 페이지, 폴더 생성, 파일 업로드, SHA-256 중복 확인, 제한적인 이미지 프리뷰, 변경 이벤트 조회.
 - **부분 구현(실기기 미검증):** `internal/storage/` 저장소 볼륨 가드. 명시적으로 `-init-storage`한 디렉터리만 사용하고, 기동 시와 쓰기 직전에 볼륨 마커·장치 번호(st_dev)를 재확인해 외장 디스크가 빠지면 쓰기를 거부(503)합니다. 디스크 UUID 대조는 아직 없음.
-- **부분 구현:** 메타데이터는 SQLite(`.system/withalbum.db`, `internal/meta/sqlitestore`)에 저장합니다. 업로드 1건(blob·자산·폴더 연결·시퀀스·이벤트)은 트랜잭션 하나로 커밋되고, 내부 자산 ID는 랜덤입니다(HTTP 응답의 `asset_id`는 호환을 위해 아직 SHA-256). 계정이 없으므로 모든 폴더의 소유자는 로그인할 수 없는 로컬 `admin` 계정입니다. **이전 버전의 `.system/state.json`만 있는 저장소는 기동을 거부합니다(파일은 변경하지 않음). `withalbum-server migrate-legacy`(점검) → `migrate-legacy -apply`로 무손실 이관한 뒤 기동하세요. 절차·롤백: [`docs/MIGRATION_legacy_state.md`](docs/MIGRATION_legacy_state.md).**
+- **부분 구현:** 메타데이터는 SQLite(`.system/withalbum.db`, `internal/meta/sqlitestore`)에 저장합니다. 업로드 1건(blob·자산·폴더 연결·시퀀스·이벤트)은 트랜잭션 하나로 커밋되고, 내부 자산 ID는 랜덤입니다(HTTP 응답의 `asset_id`는 호환을 위해 아직 SHA-256). HTTP 로그인이 아직 없으므로 모든 폴더의 소유자는 bootstrap 관리자 계정입니다(처음에는 로그인할 수 없는 잠금 상태의 `admin`, 콘솔 `withalbum-server admin init`으로 인수). **이전 버전의 `.system/state.json`만 있는 저장소는 기동을 거부합니다(파일은 변경하지 않음). `withalbum-server migrate-legacy`(점검) → `migrate-legacy -apply`로 무손실 이관한 뒤 기동하세요. 절차·롤백: [`docs/MIGRATION_legacy_state.md`](docs/MIGRATION_legacy_state.md).**
 - **부분 구현(테스트 검증, 실기기 미검증):** 업로드 원자적 커밋·크래시 복구. 성공 응답(200/201)은 원본 파일(임시 파일 fsync → pool rename → 디렉터리 fsync)과 DB 트랜잭션이 모두 디스크에 기록된 뒤에만 보냅니다. 기동 시 재조정이 미완료 업로드 임시 파일을 지우고, DB에 없는 pool 파일은 `.system/orphans/`로 옮기며(삭제 안 함), DB에 있는데 파일이 없거나 크기가 다른 원본은 로그와 `/api/v1/health`의 `integrity: warning`으로 알립니다. 여유 공간이 예약분(`WITHALBUM_MIN_FREE_BYTES`, 기본 1GiB) 아래로 내려갈 업로드는 기록 전에 `507 insufficient_storage`로 거부합니다. 같은 저장소에 서버/이관 명령이 두 개 뜨지 않도록 `.system/withalbum.lock`을 잠급니다. 단계별 장애 주입과 실제 SIGKILL 테스트로 검증했고, 실제 전원 차단·외장 디스크 분리는 미검증입니다.
+- **부분 구현(콘솔 전용):** 계정 코어. Argon2id 비밀번호 해시(`internal/auth/password`), 사용자 저장소(`internal/users`, 마지막 활성 관리자 보호·감사 로그), 콘솔 명령 `withalbum-server admin init | create-user | reset-password`. **HTTP 로그인·세션은 아직 없음**(계정을 만들어도 HTTP API는 여전히 인증 없이 localhost 전용).
 - **코드·테스트만 있는 기능:** `internal/authz/`의 서버/앨범 권한 판정 함수와 단위 테스트. **실제 HTTP 요청에는 적용되지 않음.**
-- **설계만 완료:** 관리자 생성·로그인·세션·초대·폴더 ACL, Mac 설치 마법사, iOS/Android 앱, 역방향 모바일 동기화, Google Drive 어댑터, 장애 복구.
+- **설계만 완료:** 로그인·세션·초대·폴더 ACL, Mac 설치 마법사, iOS/Android 앱, 역방향 모바일 동기화, Google Drive 어댑터, 장애 복구.
 - **아직 없음:** 서명·공증된 DMG, 정식 Google Drive OAuth 연결, 모바일 앱, 프로덕션 안정성 보장.
 - **보안 경고:** HTTP 서버는 인증이 없으므로 의도적으로 `127.0.0.1`에만 바인딩됩니다. **LAN/인터넷에 공개하거나 대체할 수 없는 원본 사진의 단일 보관소로 사용하지 마세요.**
 
@@ -79,6 +80,16 @@ WITHALBUM_ROOT="$HOME/WithAlbumTest" ./withalbum-server migrate-legacy -apply  #
 ```
 
 자세한 절차·실패 시 상태·롤백: [`docs/MIGRATION_legacy_state.md`](docs/MIGRATION_legacy_state.md)
+
+**관리자 계정(콘솔 전용):** 최초 관리자는 서버 콘솔에서만 만들 수 있습니다(HTTP로는 불가). **서버를 중지한 뒤** 실행하세요. 서버 실행 중에는 저장소 잠금 때문에 `LOCKED`로 거부됩니다. 비밀번호는 터미널에서 에코 없이 두 번 입력하며(최소 12자, 최대 1024바이트), 터미널이 아니면 stdin의 한 줄을 읽습니다. 명령행 인자로는 받지 않습니다.
+
+```bash
+WITHALBUM_ROOT="$HOME/WithAlbumTest" ./withalbum-server admin init -login alice            # 최초 1회
+WITHALBUM_ROOT="$HOME/WithAlbumTest" ./withalbum-server admin create-user -login bob       # USER, 앨범 생성 불가가 기본
+WITHALBUM_ROOT="$HOME/WithAlbumTest" ./withalbum-server admin reset-password -login alice  # 콘솔 복구
+```
+
+`admin init`은 새 계정을 만들지 않고, 기존 폴더를 소유한 잠금 bootstrap 계정(`admin`)을 **인수**합니다. 로그인 이름·표시 이름·비밀번호만 바뀌고 `user_id`가 그대로라 이전 버전에서 만든 폴더(이관한 폴더 포함)의 소유자가 유지됩니다. `-login admin`으로 이름을 그대로 둘 수도 있으며, 다른 이름으로 바꾸면 `admin` 이름은 일반 계정에 쓸 수 있게 됩니다. 두 번째 `admin init`은 아무것도 바꾸지 않고 거부됩니다. `create-user`는 `admin init` 이후에만 동작합니다. 옵션: `-display-name`, `create-user`의 `-role USER|SERVER_ADMIN`, `-can-create-albums`. 계정 변경은 `audit_log`에 기록됩니다(비밀번호·해시 제외).
 
 <!-- 운영 시 제약:
 WITHALBUM_LISTEN=127.0.0.1:8787 기본. 주의: 바인딩 가드는 운영 인증을 대신하지 않는다.
@@ -250,7 +261,7 @@ Google Drive 전체 제약과 공개 사용자 안내 문구는 [GOOGLE_DRIVE_MO
 WithAlbumRoot/
 ├── .system/
 │   ├── withalbum.db                # SQLite 메타데이터 DB (WAL, 0600). 새로 초기화한 저장소에서 자동 생성
-│   ├── withalbum.lock              # 단일 인스턴스 잠금 (서버·migrate-legacy -apply)
+│   ├── withalbum.lock              # 단일 인스턴스 잠금 (서버·migrate-legacy -apply·admin 명령)
 │   ├── incoming/                   # 불완전 업로드 격리 영역 (기동 시 정리)
 │   ├── pool/<hash-prefix>/<sha256> # 보호된 원본 blob (현재 PoC 존재)
 │   ├── previews/                   # 경량 이미지·영상 프리뷰
@@ -259,7 +270,7 @@ WithAlbumRoot/
 └── Imports/                        # Finder에서 직접 놓는 안전한 가져오기 영역 (미구현)
 ```
 
-현재 서버는 `.system/withalbum.db`에 폴더·자산·blob·폴더 연결·시퀀스·이벤트를 저장하고, 원본 풀·기본 프리뷰 디렉터리를 만듭니다. 사용자/기기/세션/멤버/초대/감사 로그 테이블은 스키마만 있습니다. 이전 버전의 `.system/state.json`이 있는 저장소에서는 기동을 거부하며, 그 데이터를 읽거나 바꾸지 않습니다. `migrate-legacy -apply`가 이관 후 state.json을 `state.json.migrated-<UTC>`로 보존합니다([`docs/MIGRATION_legacy_state.md`](docs/MIGRATION_legacy_state.md)). 목표 DB는 사용자/기기/세션/앨범/멤버/초대/blobs/assets/폴더 연결/이벤트/감사 로그를 다룹니다.
+현재 서버는 `.system/withalbum.db`에 폴더·자산·blob·폴더 연결·시퀀스·이벤트를 저장하고, 원본 풀·기본 프리뷰 디렉터리를 만듭니다. 사용자 테이블과 감사 로그는 콘솔 `admin` 명령이 사용하고(계정 생성·비밀번호·관리자 인수), 기기/세션/멤버/초대 테이블은 스키마만 있습니다. 이전 버전의 `.system/state.json`이 있는 저장소에서는 기동을 거부하며, 그 데이터를 읽거나 바꾸지 않습니다. `migrate-legacy -apply`가 이관 후 state.json을 `state.json.migrated-<UTC>`로 보존합니다([`docs/MIGRATION_legacy_state.md`](docs/MIGRATION_legacy_state.md)). 목표 DB는 사용자/기기/세션/앨범/멤버/초대/blobs/assets/폴더 연결/이벤트/감사 로그를 다룹니다.
 
 **DB는 로컬로 연결된 디스크(내장 또는 USB/Thunderbolt 외장)에만 두세요.** SQLite WAL 모드는 SMB/NFS 같은 네트워크 파일시스템(NAS 공유 폴더 마운트)에서 잠금이 보장되지 않아 DB가 손상될 수 있습니다.
 
@@ -359,10 +370,13 @@ GitHub에 곧바로 public push, Release 발행, 실제 원본 정리/삭제 등
 | 경로 | 역할 / 구현 상태 |
 |---|---|
 | `server/main.go` | **실행됨:** 설정·기동만 (환경변수, `-init-storage`, `migrate-legacy` 서브커맨드, 볼륨 검증, loopback 가드, 저장소 조립) |
+| `server/admin.go` | **실행됨(콘솔):** `admin init`(bootstrap 관리자 인수) / `create-user` / `reset-password`. 저장소 잠금 필요(서버 중지 상태), 비밀번호는 에코 없는 TTY 2회 입력 또는 stdin 한 줄 |
+| `internal/auth/password/` | **실행됨(콘솔):** Argon2id PHC 해시(기본 m=64MiB,t=3,p=2), 상수시간 검증, 정규형·파라미터 상한 검사, 잠금 값(`!` 접두) 항상 거부, 재해시 필요 판정, 비밀번호 정책 |
+| `internal/users/` | **실행됨(콘솔):** 사용자 저장소(생성·조회·비활성·역할·앨범 생성 권한·비밀번호), bootstrap 인수 1회, 마지막 활성 관리자 보호, 감사 로그(`internal/audit`). HTTP 미연결 |
 | `internal/httpapi/` | **실행됨:** localhost HTTP PoC 핸들러(health, folders, upload, sync, original/preview), 현재 인증 없음. `contract_test.go`는 메타데이터 저장소 구현과 무관한 HTTP 계약 테스트(상태코드·JSON 키·에러 코드) |
 | `internal/httpapi/web/index.html` | **실행됨:** 내장 로컬 관리 UI; 관리자 인증 화면 아님 |
 | `internal/meta/` | **실행됨:** 메타데이터 저장소 인터페이스 `MetadataStore`와 도메인 타입. `metatest/`는 구현 공용 적합성 테스트 |
-| `internal/meta/sqlitestore/` | **실행됨(부분 구현):** SQLite `MetadataStore`. 쓰기는 `BEGIN IMMEDIATE` 트랜잭션 하나(전역 mutex 없음), 읽기는 트랜잭션 없이 조회. 랜덤 내부 asset_id, 잠금된 로컬 bootstrap 관리자(`admin`)가 모든 폴더 소유 |
+| `internal/meta/sqlitestore/` | **실행됨(부분 구현):** SQLite `MetadataStore`. 쓰기는 `BEGIN IMMEDIATE` 트랜잭션 하나(전역 mutex 없음), 읽기는 트랜잭션 없이 조회. 랜덤 내부 asset_id, bootstrap 관리자(`account_bootstrap.user_id`로 식별, 처음엔 잠금된 `admin`)가 모든 폴더 소유 |
 | `internal/meta/jsonstore/` | **서버 미사용:** 이전 버전의 `.system/state.json` 구현. 테스트에서 이전 버전 데이터를 만드는 용도로 유지 |
 | `internal/legacyimport/` | **실행됨(`migrate-legacy`):** state.json → SQLite 무손실 이관. dry-run 기본, `-apply` 시 백업 → 임시 DB에 단일 트랜잭션 → 전 행 대조 검증 → 원자적 rename → state.json 보존 rename. 단계별 크래시·결함 입력 테스트 |
 | `internal/blobstore/` | **실행됨:** 업로드 임시 저장(해시·크기·MIME), pool 승격(원자적 rename, 0400), JPEG 프리뷰 |

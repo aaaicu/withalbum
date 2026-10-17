@@ -1,7 +1,7 @@
 # 위드앨범(WithAlbum) 계정·오너·초대·권한 설계 v1.4
 
 - 기준: 2026-10-17
-- 상태: **P0 확정 설계 / 정책 함수와 단위 테스트만 구현**. HTTP 서버에 로그인·실제 ACL 적용 전.
+- 상태: **P0 확정 설계 / 정책 함수·계정 코어(콘솔 전용) 구현**. HTTP 서버에 로그인·실제 ACL 적용 전.
 - 적용 대상: `SELF_HOSTED` Mac mini 우선 (동일 Go 서버 코어를 Linux/Raspberry Pi에도 적용).
 - Google Drive 지원: 아래 **[Drive 별도 제한]**을 반드시 확인. 네이티브 ACL과 동일하지 않다.
 
@@ -139,7 +139,13 @@ Drive의 개인 My Drive ACL 역할은 `owner`, `writer`, `commenter`, `reader` 
 ## 8. 구현 상태와 일정
 
 - **정책 규칙 구현:** `internal/authz/policy.go` + `policy_test.go` (순수 판정 함수 및 단위 테스트)
-- **미구현:** 사용자 등록/암호 해시/세션/SQLite 영속화, 초대 워크플로우, 기존 HTTP 핸들러에 미들웨어 접목, TLS, 앱 UX, Drive 계정 연동.
+- **계정 코어 구현(콘솔 전용, HTTP 미연결):**
+  - `internal/auth/password`: Argon2id, PHC 문자열 `$argon2id$v=19$m=65536,t=3,p=2$<salt>$<key>`(16바이트 랜덤 salt, 32바이트 키). 파라미터가 해시마다 기록되어 기본값을 바꿔도 기존 해시가 검증되며, `NeedsRehash`로 재해시 필요 여부를 판정한다. 검증은 상수시간 비교, 정규형이 아니거나 파라미터 상한(메모리 1GiB, t≤16, p≤16)을 넘는 값은 거부, `!`로 시작하는 잠금 값은 어떤 입력으로도 검증되지 않는다. 정책: 최소 12자(문자 수), 최대 1024바이트, 유효한 UTF-8, NUL·줄바꿈 금지. 측정(Apple M1 Pro, 기본 파라미터): 해시·검증 각 약 67ms, 1회 64MiB 할당 → 로그인 API에서 동시 해시 계산 수를 제한해야 한다.
+  - `internal/users`: 사용자 생성·조회·비활성/재활성·역할·앨범 생성 권한·비밀번호 재설정. 마지막 "사용 가능한 활성 SERVER_ADMIN"(잠금 비밀번호 제외)은 비활성·강등 거부. 앨범 소유자는 비활성 거부(트리거 `cannot_disable_owner`). 모든 변경은 같은 트랜잭션에서 `audit_log`에 기록(`internal/audit`, 비밀번호·해시·토큰 키는 기록 거부).
+  - 최초 관리자(**서버 콘솔 전용**): `withalbum-server admin init -login <이름>`. 기존 폴더를 소유한 잠금 bootstrap 계정(`account_bootstrap`, 처음 이름 `admin`)을 **인수**한다. user_id를 유지하므로 레거시 폴더 소유가 그대로이며, 한 번만 가능하다. 인수 전에는 bootstrap 계정을 다른 방법으로 바꿀 수 없고 다른 계정도 만들 수 없다. 이름 `admin`은 인수 전에는 bootstrap 계정이 점유하고, 인수 때 그대로 둘 수도 있으며, 다른 이름으로 바꾸면 일반 계정에 쓸 수 있다(bootstrap 식별은 이름이 아니라 user_id).
+  - 일반 사용자: 관리자가 콘솔 `admin create-user`로 생성(기본 USER, `can_create_albums=false`). 가입 신청은 후속.
+  - 복구: `admin reset-password` (콘솔 전용, `SECURITY.md` 참조).
+- **미구현:** 로그인/세션/기기 토큰(재설정·비활성 시 세션 회수 포함), 로그인 실패 감사·속도 제한, 초대 워크플로우, 기존 HTTP 핸들러에 미들웨어 접목, TLS, 앱 UX, Drive 계정 연동.
 - 구현 순서: SQLite 트랜잭션 및 마이그레이션 → 최초 관리자 생성/로그인 → 권한 미들웨어 → 폴더 오너/멤버 권한 → 초대/수락/회수 → 전체 통합 테스트 → Mac LAN 테스트.
 - **중요:** 현재 PoC는 인증이 없어서 `127.0.0.1`만 바인딩되며 사용자 데이터나 외부 접근에 사용하면 안 된다.
 

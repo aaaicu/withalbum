@@ -5,6 +5,10 @@
 - 최소 Go 버전 1.23 → 1.26 (지원 종료 버전 탈피), modernc.org/sqlite v1.39.0 → v1.60.1 (SQLite 3.53.4).
 
 ### Added
+- 계정 코어(**콘솔 전용, HTTP 로그인 없음**): `internal/auth/password` Argon2id(PHC, 기본 m=64MiB·t=3·p=2, 상수시간 검증, 잠금 값 `!` 거부, 재해시 판정, 비밀번호 최소 12자·최대 1024바이트), `internal/users` 사용자 저장소(마지막 활성 관리자 비활성·강등 거부, 소유 앨범 있는 계정 비활성 거부), `internal/audit` 감사 로그 기록(같은 트랜잭션, 비밀 키 거부).
+- `withalbum-server admin init | create-user | reset-password`: 최초 관리자는 콘솔에서 잠금 bootstrap 계정을 인수(user_id 유지 → 기존·이관 폴더 소유 유지, 1회만). 비밀번호는 에코 없는 TTY 2회 입력 또는 stdin 한 줄, 명령행 인자 불가. 저장소 잠금이 필요해 서버 실행 중에는 `LOCKED`로 거부.
+- 마이그레이션 0004 `account_bootstrap`: bootstrap 관리자를 로그인 이름 대신 user_id로 식별(기존 DB의 잠금 `admin`을 자동 기록).
+- 의존성 `golang.org/x/crypto` v0.58.0, `golang.org/x/term` v0.47.0 (BSD-3-Clause), `golang.org/x/sys` v0.48.0 → v0.49.0.
 - 저장소 볼륨 가드 `internal/storage`: 루트 직하 볼륨 마커 `.withalbum-volume.json`(format 1, 랜덤 volume_id)을 기동 시 검증하고, 업로드·폴더 생성 직전에 마커와 루트 장치 번호(st_dev)를 재확인한다. **부분 구현, 실기기 미검증.**
 - `-init-storage` 플래그: 이미 존재하는 디렉터리에 마커만 원자적으로 기록(기존 `.system/` 데이터 불변).
 - 선택 환경변수 `WITHALBUM_VOLUME_ID`: 지정한 볼륨이 아니면 기동 거부.

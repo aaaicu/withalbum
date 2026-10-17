@@ -399,3 +399,34 @@ func TestWriteContentionIsErrBusy(t *testing.T) {
 		t.Fatalf("retry after contention: %v", err)
 	}
 }
+
+// After `admin init` renames the bootstrap administrator, the store must keep
+// using the same account as folder owner instead of creating a new locked
+// "admin".
+func TestBootstrapOwnerFoundByIDAfterRename(t *testing.T) {
+	vol := newVolume(t)
+	s := open(t, vol)
+	owner := s.ownerID
+	if n := count(t, s, "SELECT count(*) FROM account_bootstrap WHERE user_id = ? AND claimed_at IS NULL", owner); n != 1 {
+		t.Fatal("bootstrap account not recorded in account_bootstrap")
+	}
+	if s.DB() == nil {
+		t.Fatal("DB() is nil")
+	}
+	if _, err := s.db.Exec("UPDATE users SET login_name = 'renamed' WHERE user_id = ?", owner); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	r := open(t, vol)
+	defer r.Close()
+	if r.ownerID != owner || count(t, r, "SELECT count(*) FROM users") != 1 {
+		t.Fatal("a second bootstrap account was created after the rename")
+	}
+	f, err := r.CreateFolder(t.Context(), "after")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := count(t, r, "SELECT count(*) FROM folders WHERE folder_id = ? AND owner_user_id = ?", f.ID, owner); n != 1 {
+		t.Fatal("new folder not owned by the renamed bootstrap account")
+	}
+}
