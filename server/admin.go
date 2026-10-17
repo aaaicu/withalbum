@@ -56,7 +56,8 @@ Commands (run at the server console, with the server stopped):
   init            set up the first administrator; takes over the locked bootstrap
                   account "admin" that owns the existing folders (once only)
   create-user     create an account (USER by default)
-  reset-password  set a new password for an account (console recovery)
+  reset-password  set a new password for an account (console recovery);
+                  signs out every device of the account
 
 The password is typed twice without echo, or read as one line from stdin when
 stdin is not a terminal (for example: withalbum-server admin init -login alice < file).
@@ -298,5 +299,6 @@ func adminResetPassword(ctx context.Context, store *users.Store, aio adminIO, lo
 		status = " (the account stays disabled)"
 	}
 	fmt.Fprintf(aio.stdout, "Password reset: login=%s user_id=%s%s\n", u.LoginName, u.ID, status)
+	fmt.Fprintln(aio.stdout, "Every device signed in to this account has been signed out.")
 	return 0
 }

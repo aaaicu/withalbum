@@ -1,7 +1,9 @@
 // Package httpapi serves the PoC HTTP API and the local dashboard.
 //
-// This is a LAN/localhost demonstration API, NOT a production service. In
-// particular, it intentionally has NO AUTHENTICATION. Never publish its port.
+// This is a LAN/localhost demonstration API, NOT a production service. Login,
+// sessions and account administration exist (auth.go, middleware_auth.go),
+// but the folder, upload, sync and download routes are NOT protected yet
+// (M10). Never publish its port.
 package httpapi
 
 import (
@@ -75,6 +77,9 @@ type Config struct {
 	IntegrityWarning bool
 	// Faults is for tests only (see FaultInjector); nil in production.
 	Faults FaultInjector
+	// Auth enables the login, session and account routes (NewAuth). nil:
+	// they are not registered (stores without an account database).
+	Auth *Auth
 }
 
 // Server holds the HTTP handlers.
@@ -87,12 +92,13 @@ type Server struct {
 	freeBytes        func() (uint64, error)
 	integrityWarning bool
 	faults           FaultInjector
+	auth             *Auth
 }
 
 // New returns a Server for cfg.
 func New(cfg Config) *Server {
 	s := &Server{vol: cfg.Volume, meta: cfg.Meta, blobs: cfg.Blobs, version: cfg.Version,
-		minFree: max(cfg.MinFreeBytes, 0), freeBytes: cfg.FreeBytes, integrityWarning: cfg.IntegrityWarning, faults: cfg.Faults}
+		minFree: max(cfg.MinFreeBytes, 0), freeBytes: cfg.FreeBytes, integrityWarning: cfg.IntegrityWarning, faults: cfg.Faults, auth: cfg.Auth}
 	if s.freeBytes == nil {
 		s.freeBytes = cfg.Volume.FreeBytes
 	}
@@ -147,6 +153,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/folders/{folderID}/sync", s.syncEvents)
 	mux.HandleFunc("GET /api/v1/assets/{assetID}/original", s.download(false))
 	mux.HandleFunc("GET /api/v1/assets/{assetID}/preview", s.download(true))
+	if s.auth != nil {
+		s.authRoutes(mux)
+	}
 	return mux
 }
 

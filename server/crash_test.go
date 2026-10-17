@@ -27,10 +27,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aaaicu/withalbum/internal/auth/password"
 	"github.com/aaaicu/withalbum/internal/blobstore"
 	"github.com/aaaicu/withalbum/internal/httpapi"
 	"github.com/aaaicu/withalbum/internal/storage"
 )
+
+// fastAuth keeps the dummy password hash computed at startup cheap in tests.
+var fastAuth = httpapi.AuthOptions{PasswordParams: password.Params{Memory: 64, Time: 1, Threads: 1, SaltLen: 16, KeyLen: 32}}
 
 // crashChildEnv makes the test binary act as a server child process for
 // TestSIGKILLDuringUpload. Its value is the fault point to stop at.
@@ -63,7 +67,7 @@ func crashChild(point string) {
 	if point != "mid_body" {
 		faults = blockAt(point)
 	}
-	a, err := openApp(context.Background(), os.Getenv("WITHALBUM_ROOT"), appOptions{MinFreeBytes: 0, Faults: faults})
+	a, err := openApp(context.Background(), os.Getenv("WITHALBUM_ROOT"), appOptions{MinFreeBytes: 0, Faults: faults, Auth: fastAuth})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "child:", err)
 		os.Exit(3)
@@ -95,7 +99,7 @@ func newRoot(t *testing.T) string {
 
 func mustOpenApp(t *testing.T, root string, faults httpapi.FaultInjector) *app {
 	t.Helper()
-	a, err := openApp(t.Context(), root, appOptions{Faults: faults})
+	a, err := openApp(t.Context(), root, appOptions{Faults: faults, Auth: fastAuth})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -359,7 +363,7 @@ func (f failAt) Fault(point string) error {
 func TestStartupRefusesSecondInstance(t *testing.T) {
 	root := newRoot(t)
 	a := mustOpenApp(t, root, nil)
-	if _, err := openApp(t.Context(), root, appOptions{}); !errors.Is(err, storage.ErrLocked) {
+	if _, err := openApp(t.Context(), root, appOptions{Auth: fastAuth}); !errors.Is(err, storage.ErrLocked) {
 		t.Fatalf("second openApp = %v, want ErrLocked", err)
 	}
 	t.Setenv("WITHALBUM_ROOT", root)

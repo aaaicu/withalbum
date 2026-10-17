@@ -1,16 +1,59 @@
 openapi: 3.1.0
 info:
   title: WithAlbum Self-Hosted Identity and Authorization API
-  version: 1.4.0-draft
+  version: 1.4.1-draft
   description: >-
-    Draft target endpoints and access-control contract. NOT implemented in the
-    current Go proof-of-concept. All resource access is denied by default.
+    Access-control contract. IMPLEMENTED in the Go server: /api/v1/auth/*,
+    /api/v1/me*, /api/v1/admin/users* (login, device sessions, account
+    administration). Everything under /api/v1/folders, /invitations and the
+    asset routes is still TARGET DESIGN: the current server serves its older,
+    unauthenticated PoC folder/asset API (API_v1.2.yaml) on loopback only
+    until album ACLs (M10) and TLS (M15) exist. All resource access is denied
+    by default.
+
+
+    Tokens. Login creates one device and one session. The access token
+    (opaque, 256-bit random, base64url, 43 characters) is valid 15 minutes;
+    the refresh token 30 days, the window restarting at every refresh.
+    Refresh rotates BOTH tokens: the previous access and refresh tokens stop
+    working immediately. Presenting an already exchanged refresh token again
+    revokes the whole session (reuse detection), so clients must never send
+    two refreshes with the same token concurrently: serialize refreshes, and
+    if a refresh response is lost, log in again. The server stores only
+    SHA-256 hashes of tokens.
+
+
+    Transports. Apps (ios, android, macos) receive the tokens in the JSON
+    body and send "Authorization: Bearer <access_token>"; store them in the
+    iOS Keychain / Android Keystore-backed storage. Browsers (platform web)
+    receive no token in the body: the server sets the HttpOnly cookies
+    withalbum_access (Path=/api/) and withalbum_refresh (Path=/api/v1/auth/),
+    plus the readable cookie withalbum_csrf, all SameSite=Strict and Secure
+    over TLS. A cookie-authenticated request with any method other than
+    GET/HEAD/OPTIONS must send the CSRF token in X-CSRF-Token (403
+    csrf_failed otherwise). When an Authorization header is present, cookies
+    are ignored. Request bodies must be application/json (415 otherwise).
+
+
+    Every authenticated request re-reads the account: disabling it, revoking
+    the device, a password reset or change (other sessions) take effect on
+    the next request (401); role and album-creation changes too.
+
+
+    Errors are {"error": "<code>"}. 401 responses carry
+    WWW-Authenticate: Bearer. Responses of these routes are Cache-Control:
+    no-store.
 servers:
+  - url: http://127.0.0.1:8787
+    description: Current development server (loopback only)
   - url: https://withalbum-server.local.example
+    description: Target (TLS, M15)
 security:
   - bearerAuth: []
+  - cookieAuth: []
 tags:
   - name: Auth
+  - name: Me
   - name: Server Admin
   - name: Albums
   - name: Invitations
@@ -20,7 +63,17 @@ paths:
     post:
       tags: [Auth]
       security: []
-      summary: Authenticate against one self-hosted server (rate-limited)
+      summary: Authenticate and create a device session (rate-limited)
+      description: >-
+        Every credential failure (unknown account, wrong password, disabled
+        account, account without a usable password) returns the same 401
+        body after the same Argon2id work, and is recorded in the audit log
+        (never the password). Rate limits (in memory, per server process):
+        10 attempts per client IP then 1 every 6 s; 5 failures per account
+        and IP and 20 per account from any IP within 15 minutes block that
+        account (also accounts that do not exist) until the window ends. At
+        most 2 password hashes are computed at once; a request that waits
+        longer than 5 s for one gets 503 busy.
       requestBody:
         required: true
         content:
@@ -29,49 +82,243 @@ paths:
               type: object
               required: [login_name, password, device_name, platform]
               properties:
-                login_name: {type: string}
+                login_name: {type: string, description: case-insensitive}
                 password: {type: string, format: password}
-                device_name: {type: string}
+                device_name: {type: string, minLength: 1, maxLength: 64, description: 'shown in the device list; no control characters or surrounding spaces'}
                 platform: {type: string, enum: [ios, android, macos, web]}
       responses:
-        '200': {description: Access token and revocable device session}
-        '401': {description: Invalid credentials or disabled account}
-        '429': {description: Rate limited}
+        '200':
+          description: Session created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TokenResponse'}
+        '400': {description: 'invalid_json, invalid_request (empty login or password), invalid_device'}
+        '401': {description: invalid_credentials}
+        '415': {description: json_required}
+        '429':
+          description: rate_limited
+          headers:
+            Retry-After: {schema: {type: integer}, description: seconds}
+        '503':
+          description: busy (no password hashing slot free), retry after Retry-After seconds
+          headers:
+            Retry-After: {schema: {type: integer}}
   /api/v1/auth/refresh:
     post:
       tags: [Auth]
       security: []
-      summary: Rotate a device refresh token and issue a fresh access token
+      summary: Rotate the refresh token and issue a new access token
+      description: >-
+        Apps send the refresh token in the body. Browsers send {} with the
+        withalbum_refresh cookie and the X-CSRF-Token header; the CSRF token
+        is rotated as well. An already used refresh token revokes the
+        session (401).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refresh_token: {type: string, description: 'required unless sent as the cookie'}
       responses:
-        '200': {description: Rotated credentials}
-        '401': {description: Expired or revoked refresh token}
+        '200':
+          description: Rotated credentials (same device_id)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TokenResponse'}
+        '401': {description: 'unauthorized: expired, revoked, unknown or reused refresh token, or account disabled'}
+        '403': {description: 'csrf_failed (cookie refresh without a valid X-CSRF-Token; nothing changed)'}
+        '415': {description: json_required}
   /api/v1/auth/logout:
     post:
       tags: [Auth]
-      summary: Revoke current device session
+      summary: Revoke the current device and its session
       responses:
-        '204': {description: Session revoked}
+        '204': {description: Revoked (browser cookies cleared)}
+        '401': {description: unauthorized}
+        '403': {description: csrf_failed}
+  /api/v1/me:
+    get:
+      tags: [Me]
+      summary: Current account and device
+      responses:
+        '200':
+          description: The account as stored now
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user, device_id, platform]
+                properties:
+                  user: {$ref: '#/components/schemas/User'}
+                  device_id: {type: string}
+                  platform: {type: string, enum: [ios, android, macos, web]}
+        '401': {description: unauthorized}
+  /api/v1/me/password:
+    post:
+      tags: [Me]
+      summary: Change own password; signs out every other device
+      description: Rate-limited like login. The current session stays valid.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password, new_password]
+              properties:
+                current_password: {type: string, format: password}
+                new_password: {type: string, format: password, description: '12+ characters, at most 1024 bytes, no NUL or line breaks'}
+      responses:
+        '204': {description: Changed}
+        '400': {description: 'invalid_password (policy; body has a "message")'}
+        '401': {description: unauthorized}
+        '403': {description: 'invalid_credentials (wrong current password) or csrf_failed'}
+        '429': {description: rate_limited}
+        '503': {description: busy}
+  /api/v1/me/devices:
+    get:
+      tags: [Me]
+      summary: Own devices with a live session, newest first
+      responses:
+        '200':
+          description: Device list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [devices]
+                properties:
+                  devices:
+                    type: array
+                    items: {$ref: '#/components/schemas/Device'}
+        '401': {description: unauthorized}
+  /api/v1/me/devices/{device_id}:
+    delete:
+      tags: [Me]
+      summary: Revoke one of the own devices (may be the current one)
+      parameters:
+        - in: path
+          name: device_id
+          required: true
+          schema: {type: string}
+      responses:
+        '204': {description: Revoked; its tokens are refused from now on}
+        '401': {description: unauthorized}
+        '403': {description: csrf_failed}
+        '404': {description: 'device_not_found (not own, or already revoked)'}
   /api/v1/admin/users:
     post:
       tags: [Server Admin]
-      summary: Create or approve a user account (SERVER_ADMIN only)
+      summary: Create an active account (SERVER_ADMIN only)
+      description: >-
+        The administrator sets the initial password and hands it over out of
+        band. The first administrator can only be set up at the server
+        console (withalbum-server admin init), never over HTTP.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [login_name, password]
+              properties:
+                login_name: {type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{2,31}$'}
+                display_name: {type: string, description: 'default: login_name'}
+                password: {type: string, format: password}
+                server_role: {type: string, enum: [USER, SERVER_ADMIN], default: USER}
+                can_create_albums: {type: boolean, default: false}
       responses:
-        '201': {description: User provisioned}
-        '403': {description: Not server admin}
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminUser'}
+        '400': {description: 'invalid_login_name, invalid_display_name, invalid_role, invalid_password'}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (not SERVER_ADMIN) or csrf_failed'}
+        '409': {description: login_taken}
     get:
       tags: [Server Admin]
       summary: List server accounts (SERVER_ADMIN only)
       responses:
-        '200': {description: Account list}
+        '200':
+          description: Account list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  users:
+                    type: array
+                    items: {$ref: '#/components/schemas/AdminUser'}
+        '401': {description: unauthorized}
+        '403': {description: forbidden}
+  /api/v1/admin/users/{user_id}:
+    parameters:
+      - $ref: '#/components/parameters/UserID'
+    get:
+      tags: [Server Admin]
+      summary: Get one account (SERVER_ADMIN only)
+      responses:
+        '200':
+          description: Account
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminUser'}
+        '403': {description: forbidden}
+        '404': {description: user_not_found}
+    patch:
+      tags: [Server Admin]
+      summary: Enable or disable an account (SERVER_ADMIN only)
+      description: Disabling revokes every session of the account at once; enabling does not restore them.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: {type: string, enum: [active, disabled]}
+      responses:
+        '200':
+          description: Updated account
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminUser'}
+        '400': {description: invalid_status}
+        '403': {description: 'forbidden or csrf_failed'}
+        '404': {description: user_not_found}
+        '409': {description: 'last_admin (last usable SERVER_ADMIN), owns_albums (transfer albums first), not_initialized'}
   /api/v1/admin/users/{user_id}/permissions:
     patch:
       tags: [Server Admin]
-      summary: Grant or revoke album creation and other server role permissions
+      summary: Change server role and/or album creation permission (SERVER_ADMIN only)
+      description: Both given fields change in one transaction, or neither. Applies to the account's next request.
       parameters:
         - $ref: '#/components/parameters/UserID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                server_role: {type: string, enum: [USER, SERVER_ADMIN]}
+                can_create_albums: {type: boolean}
       responses:
-        '200': {description: Updated server permissions}
-        '403': {description: Not server admin}
+        '200':
+          description: Updated account
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminUser'}
+        '400': {description: 'invalid_request (no field), invalid_role'}
+        '403': {description: 'forbidden or csrf_failed'}
+        '404': {description: user_not_found}
+        '409': {description: 'last_admin, not_initialized'}
   /api/v1/folders:
     post:
       tags: [Albums]
@@ -238,8 +485,55 @@ components:
       name: invitation_id
       required: true
       schema: {type: string}
+  schemas:
+    User:
+      type: object
+      required: [user_id, login_name, display_name, server_role, can_create_albums]
+      properties:
+        user_id: {type: string}
+        login_name: {type: string}
+        display_name: {type: string}
+        server_role: {type: string, enum: [SERVER_ADMIN, USER]}
+        can_create_albums: {type: boolean}
+    AdminUser:
+      allOf:
+        - $ref: '#/components/schemas/User'
+        - type: object
+          required: [status, created_at, password_locked]
+          properties:
+            status: {type: string, enum: [active, disabled]}
+            created_at: {type: string}
+            password_locked: {type: boolean, description: 'true: cannot log in (bootstrap account before admin init)'}
+    TokenResponse:
+      type: object
+      required: [token_type, device_id, access_expires_at, refresh_expires_at, user]
+      properties:
+        token_type: {type: string, enum: [Bearer, cookie], description: 'cookie for platform web'}
+        access_token: {type: string, description: 'apps only'}
+        refresh_token: {type: string, description: 'apps only'}
+        csrf_token: {type: string, description: 'web only; also in the withalbum_csrf cookie'}
+        access_expires_at: {type: string, format: date-time}
+        refresh_expires_at: {type: string, format: date-time}
+        device_id: {type: string}
+        user: {$ref: '#/components/schemas/User'}
+    Device:
+      type: object
+      required: [device_id, device_name, platform, created_at, last_used_at, expires_at, current]
+      properties:
+        device_id: {type: string}
+        device_name: {type: string}
+        platform: {type: string, enum: [ios, android, macos, web]}
+        created_at: {type: string, format: date-time}
+        last_used_at: {type: string, format: date-time, description: last login or refresh}
+        expires_at: {type: string, format: date-time, description: end of the refresh window}
+        current: {type: boolean, description: the device of this request}
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
-      bearerFormat: opaque short-lived access token
+      bearerFormat: opaque access token (15 minutes)
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: withalbum_access
+      description: Browsers only; unsafe methods also need the X-CSRF-Token header.

@@ -17,11 +17,12 @@
 
 - **기능이 동작하는 코드:** Go 기반 localhost 전용 서버, 간단한 웹 페이지, 폴더 생성, 파일 업로드, SHA-256 중복 확인, 제한적인 이미지 프리뷰, 변경 이벤트 조회.
 - **부분 구현(실기기 미검증):** `internal/storage/` 저장소 볼륨 가드. 명시적으로 `-init-storage`한 디렉터리만 사용하고, 기동 시와 쓰기 직전에 볼륨 마커·장치 번호(st_dev)를 재확인해 외장 디스크가 빠지면 쓰기를 거부(503)합니다. 디스크 UUID 대조는 아직 없음.
-- **부분 구현:** 메타데이터는 SQLite(`.system/withalbum.db`, `internal/meta/sqlitestore`)에 저장합니다. 업로드 1건(blob·자산·폴더 연결·시퀀스·이벤트)은 트랜잭션 하나로 커밋되고, 내부 자산 ID는 랜덤입니다(HTTP 응답의 `asset_id`는 호환을 위해 아직 SHA-256). HTTP 로그인이 아직 없으므로 모든 폴더의 소유자는 bootstrap 관리자 계정입니다(처음에는 로그인할 수 없는 잠금 상태의 `admin`, 콘솔 `withalbum-server admin init`으로 인수). **이전 버전의 `.system/state.json`만 있는 저장소는 기동을 거부합니다(파일은 변경하지 않음). `withalbum-server migrate-legacy`(점검) → `migrate-legacy -apply`로 무손실 이관한 뒤 기동하세요. 절차·롤백: [`docs/MIGRATION_legacy_state.md`](docs/MIGRATION_legacy_state.md).**
+- **부분 구현:** 메타데이터는 SQLite(`.system/withalbum.db`, `internal/meta/sqlitestore`)에 저장합니다. 업로드 1건(blob·자산·폴더 연결·시퀀스·이벤트)은 트랜잭션 하나로 커밋되고, 내부 자산 ID는 랜덤입니다(HTTP 응답의 `asset_id`는 호환을 위해 아직 SHA-256). 폴더 API가 아직 로그인과 연결되지 않았으므로(M10) 모든 폴더의 소유자는 bootstrap 관리자 계정입니다(처음에는 로그인할 수 없는 잠금 상태의 `admin`, 콘솔 `withalbum-server admin init`으로 인수). **이전 버전의 `.system/state.json`만 있는 저장소는 기동을 거부합니다(파일은 변경하지 않음). `withalbum-server migrate-legacy`(점검) → `migrate-legacy -apply`로 무손실 이관한 뒤 기동하세요. 절차·롤백: [`docs/MIGRATION_legacy_state.md`](docs/MIGRATION_legacy_state.md).**
 - **부분 구현(테스트 검증, 실기기 미검증):** 업로드 원자적 커밋·크래시 복구. 성공 응답(200/201)은 원본 파일(임시 파일 fsync → pool rename → 디렉터리 fsync)과 DB 트랜잭션이 모두 디스크에 기록된 뒤에만 보냅니다. 기동 시 재조정이 미완료 업로드 임시 파일을 지우고, DB에 없는 pool 파일은 `.system/orphans/`로 옮기며(삭제 안 함), DB에 있는데 파일이 없거나 크기가 다른 원본은 로그와 `/api/v1/health`의 `integrity: warning`으로 알립니다. 여유 공간이 예약분(`WITHALBUM_MIN_FREE_BYTES`, 기본 1GiB) 아래로 내려갈 업로드는 기록 전에 `507 insufficient_storage`로 거부합니다. 같은 저장소에 서버/이관 명령이 두 개 뜨지 않도록 `.system/withalbum.lock`을 잠급니다. 단계별 장애 주입과 실제 SIGKILL 테스트로 검증했고, 실제 전원 차단·외장 디스크 분리는 미검증입니다.
-- **부분 구현(콘솔 전용):** 계정 코어. Argon2id 비밀번호 해시(`internal/auth/password`), 사용자 저장소(`internal/users`, 마지막 활성 관리자 보호·감사 로그), 콘솔 명령 `withalbum-server admin init | create-user | reset-password`. **HTTP 로그인·세션은 아직 없음**(계정을 만들어도 HTTP API는 여전히 인증 없이 localhost 전용).
+- **부분 구현:** 계정 코어. Argon2id 비밀번호 해시(`internal/auth/password`), 사용자 저장소(`internal/users`, 마지막 활성 관리자 보호·감사 로그), 콘솔 명령 `withalbum-server admin init | create-user | reset-password`.
+- **부분 구현(loopback 전용):** HTTP 로그인·기기 세션·계정 관리 API(`/api/v1/auth/login|refresh|logout`, `/api/v1/me`, `/api/v1/me/password`, `/api/v1/me/devices`, `/api/v1/admin/users*`, 규격 [`docs/API_AUTH_v1.4.yaml`](docs/API_AUTH_v1.4.yaml)). access 15분/refresh 30일 회전·재사용 감지, Bearer(앱)·HttpOnly 쿠키+CSRF(웹), 로그인 속도 제한·실패 감사, 비밀번호 재설정·계정 비활성화 시 세션 회수. **기존 폴더·업로드·동기화·다운로드 API는 아직 로그인 없이 동작합니다(M10에서 연결). 그래서 서버는 여전히 `127.0.0.1`에서만 listen합니다.**
 - **코드·테스트만 있는 기능:** `internal/authz/`의 서버/앨범 권한 판정 함수와 단위 테스트. **실제 HTTP 요청에는 적용되지 않음.**
-- **설계만 완료:** 로그인·세션·초대·폴더 ACL, Mac 설치 마법사, iOS/Android 앱, 역방향 모바일 동기화, Google Drive 어댑터, 장애 복구.
+- **설계만 완료:** 초대·폴더 ACL, Mac 설치 마법사, iOS/Android 앱, 역방향 모바일 동기화, Google Drive 어댑터, 장애 복구.
 - **아직 없음:** 서명·공증된 DMG, 정식 Google Drive OAuth 연결, 모바일 앱, 프로덕션 안정성 보장.
 - **보안 경고:** HTTP 서버는 인증이 없으므로 의도적으로 `127.0.0.1`에만 바인딩됩니다. **LAN/인터넷에 공개하거나 대체할 수 없는 원본 사진의 단일 보관소로 사용하지 마세요.**
 
@@ -270,7 +271,7 @@ WithAlbumRoot/
 └── Imports/                        # Finder에서 직접 놓는 안전한 가져오기 영역 (미구현)
 ```
 
-현재 서버는 `.system/withalbum.db`에 폴더·자산·blob·폴더 연결·시퀀스·이벤트를 저장하고, 원본 풀·기본 프리뷰 디렉터리를 만듭니다. 사용자 테이블과 감사 로그는 콘솔 `admin` 명령이 사용하고(계정 생성·비밀번호·관리자 인수), 기기/세션/멤버/초대 테이블은 스키마만 있습니다. 이전 버전의 `.system/state.json`이 있는 저장소에서는 기동을 거부하며, 그 데이터를 읽거나 바꾸지 않습니다. `migrate-legacy -apply`가 이관 후 state.json을 `state.json.migrated-<UTC>`로 보존합니다([`docs/MIGRATION_legacy_state.md`](docs/MIGRATION_legacy_state.md)). 목표 DB는 사용자/기기/세션/앨범/멤버/초대/blobs/assets/폴더 연결/이벤트/감사 로그를 다룹니다.
+현재 서버는 `.system/withalbum.db`에 폴더·자산·blob·폴더 연결·시퀀스·이벤트를 저장하고, 원본 풀·기본 프리뷰 디렉터리를 만듭니다. 사용자 테이블과 감사 로그는 콘솔 `admin` 명령과 로그인·계정 API가, 기기/세션 테이블은 로그인 API가 사용하며, 멤버/초대 테이블은 스키마만 있습니다. 이전 버전의 `.system/state.json`이 있는 저장소에서는 기동을 거부하며, 그 데이터를 읽거나 바꾸지 않습니다. `migrate-legacy -apply`가 이관 후 state.json을 `state.json.migrated-<UTC>`로 보존합니다([`docs/MIGRATION_legacy_state.md`](docs/MIGRATION_legacy_state.md)). 목표 DB는 사용자/기기/세션/앨범/멤버/초대/blobs/assets/폴더 연결/이벤트/감사 로그를 다룹니다.
 
 **DB는 로컬로 연결된 디스크(내장 또는 USB/Thunderbolt 외장)에만 두세요.** SQLite WAL 모드는 SMB/NFS 같은 네트워크 파일시스템(NAS 공유 폴더 마운트)에서 잠금이 보장되지 않아 DB가 손상될 수 있습니다.
 
