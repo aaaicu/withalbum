@@ -20,7 +20,7 @@
 - **부분 구현:** 메타데이터는 SQLite(`.system/withalbum.db`, `internal/meta/sqlitestore`)에 저장합니다. 업로드 1건(blob·자산·폴더 연결·시퀀스·이벤트)은 트랜잭션 하나로 커밋되고, 자산 ID는 랜덤이며 폴더마다 따로 발급됩니다(같은 바이트라도 다른 폴더에서는 다른 자산). 새 폴더의 소유자는 만든 사람이고, 이전 버전·이관 데이터의 폴더는 bootstrap 관리자 계정이 소유합니다(처음에는 로그인할 수 없는 잠금 상태의 `admin`, 콘솔 `withalbum-server admin init`으로 인수하면 user_id가 유지되어 그 폴더를 그대로 소유). **이전 버전의 `.system/state.json`만 있는 저장소는 기동을 거부합니다(파일은 변경하지 않음). `withalbum-server migrate-legacy`(점검) → `migrate-legacy -apply`로 무손실 이관한 뒤 기동하세요. 절차·롤백: [`docs/MIGRATION_legacy_state.md`](docs/MIGRATION_legacy_state.md).**
 - **부분 구현(테스트 검증, 실기기 미검증):** 업로드 원자적 커밋·크래시 복구. 성공 응답(200/201)은 원본 파일(임시 파일 fsync → pool rename → 디렉터리 fsync)과 DB 트랜잭션이 모두 디스크에 기록된 뒤에만 보냅니다. 기동 시 재조정이 미완료 업로드 임시 파일을 지우고, DB에 없는 pool 파일은 `.system/orphans/`로 옮기며(삭제 안 함), DB에 있는데 파일이 없거나 크기가 다른 원본은 로그와 `/api/v1/health`의 `integrity: warning`으로 알립니다. 여유 공간이 예약분(`WITHALBUM_MIN_FREE_BYTES`, 기본 1GiB) 아래로 내려갈 업로드는 기록 전에 `507 insufficient_storage`로 거부합니다. 같은 저장소에 서버/이관 명령이 두 개 뜨지 않도록 `.system/withalbum.lock`을 잠급니다. 단계별 장애 주입과 실제 SIGKILL 테스트로 검증했고, 실제 전원 차단·외장 디스크 분리는 미검증입니다.
 - **부분 구현:** 계정 코어. Argon2id 비밀번호 해시(`internal/auth/password`), 사용자 저장소(`internal/users`, 마지막 활성 관리자 보호·감사 로그), 콘솔 명령 `withalbum-server admin init | create-user | reset-password`.
-- **부분 구현:** HTTP 로그인·기기 세션·계정 관리 API(`/api/v1/auth/login|refresh|logout`, `/api/v1/me`, `/api/v1/me/password`, `/api/v1/me/devices`, `/api/v1/admin/users*`, 규격 [`docs/API_AUTH_v1.4.yaml`](docs/API_AUTH_v1.4.yaml)). access 15분/refresh 30일 회전·재사용 감지, Bearer(앱)·HttpOnly 쿠키+CSRF(웹), 로그인 속도 제한·실패 감사, 비밀번호 재설정·계정 비활성화 시 세션 회수.
+- **부분 구현:** HTTP 로그인·기기 세션·계정 관리 API(`/api/v1/auth/login|refresh|logout`, `/api/v1/me`, `/api/v1/me/password`, `/api/v1/me/devices`, `/api/v1/admin/users*`, 규격 [`docs/API_v2.yaml`](docs/API_v2.yaml)). access 15분/refresh 30일 회전(로그인 후 최대 90일)·재사용 감지(앱 응답 유실 30초 유예 1회), Bearer(앱)·HttpOnly 쿠키+CSRF(웹), 로그인 속도 제한·실패 감사, 비밀번호 재설정·계정 비활성화 시 세션 회수.
 - **부분 구현(테스트·로컬 바이너리 스모크 검증):** 앨범 ACL. 대시보드 페이지·health·login·refresh를 뺀 모든 API는 세션 필요(없으면 401). 폴더·업로드·동기화·원본/프리뷰는 요청마다 DB의 소유자·멤버십으로 `internal/authz` 판정(`internal/httpapi/middleware_authz.go`, 라우트별 정책 표, 미선언 라우트는 기동 시 panic). 관리자라도 소유·멤버가 아닌 앨범은 404, 역할 부족은 403, 다른 폴더의 자산 ID는 404. UPLOADER는 업로드만 가능하고 응답은 항상 같은 202 영수증. 업로드는 커밋 직전 DB 트랜잭션 안에서 권한을 재확인. 기본 USER는 앨범 생성 불가(`can_create_albums`). 무인증 `/api/v1/assets/{sha}/*`는 제거. 앨범 공유(OWNER만): 등록 계정 초대(7일, 대상 본인만 수락), 초대 취소, 역할 변경·추방(다음 요청부터 반영), 소유권 이전(이전 오너는 CONTRIBUTOR, 1 트랜잭션, 실패 시 롤백), 앨범 보관. 모든 변경은 같은 트랜잭션에서 감사 로그.
 - **설계만 완료:** Mac 설치 마법사, iOS/Android 앱, 역방향 모바일 동기화, Google Drive 어댑터, 장애 복구.
 - **아직 없음:** 서명·공증된 DMG, 정식 Google Drive OAuth 연결, 모바일 앱, 프로덕션 안정성 보장.
@@ -252,7 +252,7 @@ Google Drive 전체 제약과 공개 사용자 안내 문구는 [GOOGLE_DRIVE_MO
 
 - 상세 정책: [ACCESS_CONTROL_v1.4.md](docs/ACCESS_CONTROL_v1.4.md)
 - 순수 정책 함수(구현됨, **미연동**): [`internal/authz/policy.go`](internal/authz/policy.go)
-- 계정·초대 API: [`docs/API_AUTH_v1.4.yaml`](docs/API_AUTH_v1.4.yaml)
+- 공식 API 규격(통합): [`docs/API_v2.yaml`](docs/API_v2.yaml) — 라우트 표와 일치하는지 `internal/httpapi/openapi_test.go`가 검사
 - SQLite 스키마: [`docs/schema_v1.4.sql`](docs/schema_v1.4.sql) (정본: `internal/db/migrations/`, 0003에서 `assets.preview_ready` 추가)
 
 ## 5. 저장 엔진 · CAS · 원본 보호
@@ -301,20 +301,24 @@ CAS pool 원본에 대해 해시가 같더라도 멀티파일 Live Photo, 메타
 | `GET` | `/api/v1/folders` | 내가 소유하거나 멤버인 폴더만, 내 역할 포함 | 세션 |
 | `POST` | `/api/v1/folders` | 폴더 생성, 만든 사람이 OWNER | 세션 + SERVER_ADMIN 또는 `can_create_albums` |
 | `GET` | `/api/v1/folders/{folderID}` | 이름·내 역할·가능 작업 | OWNER·모든 멤버 |
-| `POST` | `/api/v1/folders/{folderID}/assets` | 원본 업로드. 201/200은 파일+DB 커밋 후에만, UPLOADER는 항상 202 영수증. 커밋 직전 권한 재확인 | OWNER·CONTRIBUTOR·UPLOADER |
-| `GET` | `/api/v1/folders/{folderID}/sync?cursor=N` | 변경 이벤트 | OWNER·CONTRIBUTOR·VIEWER |
+| `POST` | `/api/v1/folders/{folderID}/assets` | 원본 업로드. `Idempotency-Key` 필수(계정·기기·폴더 범위, 같은 키 재시도는 같은 결과·중복 없음). 201/200은 파일+DB+영수증 커밋 후에만, UPLOADER는 항상 202 영수증. 커밋 직전 권한 재확인 | OWNER·CONTRIBUTOR·UPLOADER |
+| `GET` | `/api/v1/folders/{folderID}/assets?after=&limit=` | 현재 자산 스냅샷(첫 페이지에 피드 cursor) | OWNER·CONTRIBUTOR·VIEWER |
+| `POST` | `/api/v1/folders/{folderID}/assets/check` | 이 폴더에 이미 있는 SHA-256(폴더 범위만) | OWNER·CONTRIBUTOR·VIEWER |
+| `DELETE` | `/api/v1/folders/{folderID}/assets/{assetID}` | 앨범에서 사진 제거(tombstone 이벤트, 원본 파일은 유지) | OWNER |
+| `GET` | `/api/v1/folders/{folderID}/sync?cursor=&limit=` | 변경 이벤트(`asset_added`/`asset_removed`), 문자열 cursor, 다른 폴더·복원 전·만료 cursor는 409 | OWNER·CONTRIBUTOR·VIEWER |
+| `PUT` | `/api/v1/folders/{folderID}/sync/cursor` | 기기별 적용 위치 기록(선택) | OWNER·CONTRIBUTOR·VIEWER |
 | `GET` | `/api/v1/folders/{folderID}/assets/{assetID}/original` | 원본(그 폴더에 연결된 자산만) | OWNER·CONTRIBUTOR·VIEWER |
 | `GET` | `/api/v1/folders/{folderID}/assets/{assetID}/preview` | 기초 프리뷰 | OWNER·CONTRIBUTOR·VIEWER |
 
-나머지 `/api/v1/me*`, `/api/v1/admin/users*`는 [`docs/API_AUTH_v1.4.yaml`](docs/API_AUTH_v1.4.yaml) 참조. 소유·멤버가 아닌 폴더(관리자 포함)는 존재하지 않는 폴더와 똑같이 404, 멤버인데 역할이 부족하면 403. 이 표는 실제 `internal/httpapi`(라우트 정책 표 `middleware_authz.go`)를 기준으로 합니다. 초대·멤버·소유권 이전·보관 라우트(`/api/v1/folders/{id}/invitations*`, `/members*`, `/owner`, `DELETE /api/v1/folders/{id}`, `/api/v1/invitations*`)도 같은 규격 파일에 있습니다.
+나머지 `/api/v1/me*`, `/api/v1/admin/users*`(관리자의 타인 기기 목록·해지 포함)는 [`docs/API_v2.yaml`](docs/API_v2.yaml) 참조. 소유·멤버가 아닌 폴더(관리자 포함)는 존재하지 않는 폴더와 똑같이 404, 멤버인데 역할이 부족하면 403. 이 표는 실제 `internal/httpapi`(라우트 정책 표 `middleware_authz.go`)를 기준으로 합니다. 초대·멤버·소유권 이전·보관 라우트(`/api/v1/folders/{id}/invitations*`, `/members*`, `/owner`, `DELETE /api/v1/folders/{id}`, `/api/v1/invitations*`)도 같은 규격 파일에 있습니다.
 
 **미디어 목표:** HEIC/HEIF, JPG, PNG, RAW, Live Photo(HEIC+MOV 묶음), MP4/MOV, 4K/HDR, EXIF 및 촬영 날짜 유지. 원본 바이트는 변환하지 않고 보존, 프리뷰만 별도 생성. 현재 JPEG/PNG/GIF 기초 이미지 디코딩/간이 JPEG 미리보기 외에는 구현돼 있지 않습니다. 영상 프리뷰·변환은 미구현입니다.
 
 <!-- API 개발 지시:
-internal/httpapi는 512MiB 일괄 업로드만 지원. 대용량 영상 업로드 재개, idempotency receipt, hash preflight 정합성 등은 미구현.
+internal/httpapi는 512MiB 일괄 업로드만 지원. 대용량 영상 업로드 재개는 미구현(M22). idempotency receipt·폴더 범위 hash preflight는 M16에서 구현.
 원본 다운로드는 /folders/{folderID}/assets/{assetID}로만, 인증된 앨범 연결(folder_assets, removed_at NULL)·역할을 매 요청 검증한다(M10 구현).
 초대/관리/원본/프리뷰/이벤트 모든 핸들러가 인증 미들웨어를 통과해야 한다.
-새 OpenAPI 명세를 작성할 때 기존 API_v1.2+API_AUTH_v1.4의 차이를 조정하고 계약 테스트 작성.
+공식 규격은 docs/API_v2.yaml 하나(M16). 라우트를 바꾸면 이 파일도 바꾼다(openapi_test.go가 강제).
 LAN은 TLS(자체 서명 + SPKI 핀닝) + 관리자 + -allow-lan일 때만(M15). 인터넷 공개·리버스 프록시 모드는 미지원.
 -->
 
@@ -411,8 +415,8 @@ GitHub에 곧바로 public push, Release 발행, 실제 원본 정리/삭제 등
 | **`docs/PRODUCT_ARCHITECTURE_v1.4.md`** | 최신 통합 제품 정의·우선순위 |
 | **`docs/ACCESS_CONTROL_v1.4.md`** | 계정, OWNER, 초대, 읽기/쓰기, 정보누출 예외까지 상세 |
 | **`docs/schema_v1.4.sql`** | SQLite DDL v1.4. 마이그레이션 0001로 적용되며 정본은 `internal/db/migrations/`(0002 이관 보조, 0003 `assets.preview_ready`) |
-| **`docs/API_AUTH_v1.4.yaml`** | 인증/초대/권한 API 규격(구현됨, 자산 목록만 목표) |
-| **`docs/API_v1.2.yaml`** | 초기 **목표** 업로드/동기화 API 초안, PhotoHub 표기 일부 잔존 |
+| **`docs/API_v2.yaml`** | **공식 API 규격**(2.0.0-draft, 전 라우트 구현, 라우트 표와 테스트로 고정) |
+| **`docs/API_AUTH_v1.4.yaml`**, **`docs/API_v1.2.yaml`** | 폐기(역사 기록용) |
 | **`docs/GOOGLE_DRIVE_MODE_v1.3.md`** | OAuth·공유 폴더·Drive 제약/PoC 실험 계획 |
 | **`docs/STORAGE_ARCHITECTURE_v1.3.md`** | 모바일 공통 저장 어댑터·provider capability 구조 |
 | **`docs/CLIENT_SYNC_STATES.md`** | 송수신 큐·커서·실패·복구 상태 머신 |

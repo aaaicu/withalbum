@@ -1,0 +1,1195 @@
+openapi: 3.1.0
+info:
+  title: WithAlbum Self-Hosted Server API
+  version: 2.0.0-draft
+  description: >-
+    The one official contract between the WithAlbum server and its clients
+    (apps, dashboard). It replaces API_AUTH_v1.4.yaml and API_v1.2.yaml,
+    which are kept for history only. Every path below is implemented by the
+    Go server; a test (internal/httpapi/openapi_test.go) fails when the
+    server's route table and this list of paths and methods differ, or when
+    an operation does not document the authentication and authorization
+    statuses its route policy can return. Paths keep the /api/v1 prefix;
+    "v2" is the version of this document.
+
+
+    Transport. Plain HTTP is served on loopback only. A LAN listener
+    (-allow-lan) requires TLS 1.3 with the server's self-signed certificate
+    and at least one administrator who can log in. Clients do not validate
+    the certificate against a CA or the host name; they pin the SHA-256 of
+    its SubjectPublicKeyInfo (64 hex digits), obtained out of band from the
+    pairing payload withalbum://pair?v=1&url=<https URL>&spki_sha256=<hex>
+    (server console "withalbum-server tls", or the dashboard for a
+    SERVER_ADMIN), and refuse any other key. The key survives certificate
+    renewal, so the pin only changes if the identity is deleted. Every
+    response carries X-Content-Type-Options: nosniff, X-Frame-Options: DENY,
+    Referrer-Policy: no-referrer, Cross-Origin-Resource-Policy: same-origin
+    and a Content-Security-Policy without any source (the dashboard page has
+    its own); HSTS is sent over TLS for DNS host names other than localhost.
+
+
+    Access. Only the dashboard page (GET /), GET /api/v1/health,
+    /api/v1/auth/login and /api/v1/auth/refresh work without a session;
+    every other path under /api/v1/, including unknown ones, answers 401
+    without a valid session. Album routes are authorized on every request
+    from the owner and memberships stored at that moment, with
+    deny-by-default: a folder the caller neither owns nor is a member of is
+    404 folder_not_found, exactly like a folder that does not exist (a
+    SERVER_ADMIN is no exception: administrators do not see other people's
+    albums); a folder the caller belongs to but whose role does not allow the
+    operation is 403 forbidden. Roles: OWNER (everything), CONTRIBUTOR (read
+    and upload), VIEWER (read), UPLOADER (upload only: metadata of the
+    folder, never its contents, events or hashes). Asset IDs are random and
+    belong to one folder: an asset ID used under another folder is 404
+    asset_not_found. Writes re-check the permission inside the database
+    transaction right before the commit. Denials (403/404 of these checks)
+    are summarized in the server's audit log.
+
+
+    Tokens. Login creates one device and one session. The access token
+    (opaque, 256-bit random, base64url, 43 characters) is valid 15 minutes;
+    the refresh token 30 days, the window restarting at every refresh but
+    never extending past 90 days after the login (then log in again).
+    Refresh rotates BOTH tokens: the previous access and refresh tokens stop
+    working immediately. Presenting an already exchanged refresh token again
+    revokes the whole session (reuse detection), with one exception for a
+    lost response: an app (Bearer) refresh token presented again within 30
+    seconds of its exchange, with no other exchange since, rotates the
+    session once more; the tokens of the lost response are dropped. Clients
+    must still serialize refreshes. The server stores only SHA-256 hashes
+    of tokens.
+
+
+    Transports. Apps (ios, android, macos) receive the tokens in the JSON
+    body and send "Authorization: Bearer <access_token>"; store them in the
+    iOS Keychain / Android Keystore-backed storage. Browsers (platform web)
+    receive no token in the body: the server sets the HttpOnly cookies
+    withalbum_access (Path=/api/) and withalbum_refresh (Path=/api/v1/auth/),
+    plus the readable cookie withalbum_csrf, all SameSite=Strict and Secure
+    over TLS. A cookie-authenticated request with any method other than
+    GET/HEAD/OPTIONS must send the CSRF token in X-CSRF-Token (403
+    csrf_failed otherwise). When an Authorization header is present, cookies
+    are ignored. JSON request bodies must be application/json (415
+    otherwise).
+
+
+    Every authenticated request re-reads the account: disabling it, revoking
+    the device, a password reset or change (other sessions) take effect on
+    the next request (401); role and album-creation changes too.
+
+
+    Sync model (client state machine: docs/CLIENT_SYNC_STATES.md). Each
+    folder has a change feed of events numbered 1, 2, ... (seq):
+    asset_added and asset_removed (a tombstone). A client keeps a cursor per
+    folder, an opaque string returned as next_cursor, and asks for the
+    events after it (GET .../sync). It advances its stored cursor only after
+    the page is persisted locally. A cursor belongs to one folder of one
+    server database: a cursor of another folder, from before a server
+    restore, or ahead of the feed is 409 cursor_invalid; a cursor older than
+    the retained events is 409 cursor_expired (events are currently kept
+    forever, so this only follows a future retention setting). On either
+    409 the client discards its local index of the folder, reloads the
+    snapshot (GET .../assets, paged by "after") and continues the feed from
+    the snapshot's cursor. Applying events is idempotent by asset_id.
+
+
+    Uploads are idempotent per request. Every upload carries an
+    Idempotency-Key chosen by the client for that queue item (a UUID is
+    recommended) and kept for every retry of the item. The key is scoped to
+    the account, the session's device and the folder: the same string used
+    by another account, device or folder is another request. A retry with
+    the same key and the same bytes, for example after a lost response,
+    returns the result of the first commit (same status and asset_id,
+    header Idempotency-Replayed: true) and stores nothing; the same key with
+    other bytes is 422 idempotency_key_reused. Keys are remembered 30 days;
+    after that a retry is a new request, which content deduplication still
+    answers as already present.
+
+
+    Errors are {"error": "<code>"}. 401 responses carry
+    WWW-Authenticate: Bearer. API responses are Cache-Control: no-store.
+servers:
+  - url: http://127.0.0.1:8787
+    description: Development server, plain HTTP (loopback only)
+  - url: https://192.0.2.10:8787
+    description: LAN server (-tls -allow-lan), self-signed certificate pinned by its SPKI SHA-256
+security:
+  - bearerAuth: []
+  - cookieAuth: []
+tags:
+  - name: Server
+  - name: Auth
+  - name: Me
+  - name: Server Admin
+  - name: Albums
+  - name: Invitations
+  - name: Assets
+  - name: Sync
+paths:
+  /:
+    get:
+      tags: [Server]
+      security: []
+      summary: Local dashboard page (static HTML, no data; everything it shows comes from API calls after login)
+      responses:
+        '200': {description: HTML page with its own Content-Security-Policy}
+  /api/v1/health:
+    get:
+      tags: [Server]
+      security: []
+      summary: Liveness and storage state, without paths or volume identifiers
+      responses:
+        '200':
+          description: Server state
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, version, storage, integrity]
+                properties:
+                  status: {type: string, enum: [ok]}
+                  version: {type: string}
+                  storage: {type: string, enum: [ok, unavailable]}
+                  integrity: {type: string, enum: [ok, warning], description: 'warning: startup found missing or damaged originals'}
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      security: []
+      summary: Authenticate and create a device session (rate-limited)
+      description: >-
+        Every credential failure (unknown account, wrong password, disabled
+        account, account without a usable password) returns the same 401
+        body after the same Argon2id work, and is recorded in the audit log
+        (never the password). Rate limits (in memory, per server process):
+        10 attempts per client IP then 1 every 6 s; 5 failures per account
+        and IP and 20 per account from any IP within 15 minutes block that
+        account (also accounts that do not exist) until the window ends. At
+        most 2 password hashes are computed at once; a request that waits
+        longer than 5 s for one gets 503 busy.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [login_name, password, device_name, platform]
+              properties:
+                login_name: {type: string, description: case-insensitive}
+                password: {type: string, format: password}
+                device_name: {type: string, minLength: 1, maxLength: 64, description: 'shown in the device list; no control characters or surrounding spaces'}
+                platform: {type: string, enum: [ios, android, macos, web]}
+      responses:
+        '200':
+          description: Session created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TokenResponse'}
+        '400': {description: 'invalid_json, invalid_request (empty login or password), invalid_device'}
+        '401': {description: invalid_credentials}
+        '415': {description: json_required}
+        '429':
+          description: rate_limited
+          headers:
+            Retry-After: {schema: {type: integer}, description: seconds}
+        '503':
+          description: busy (no password hashing slot free), retry after Retry-After seconds
+          headers:
+            Retry-After: {schema: {type: integer}}
+  /api/v1/auth/refresh:
+    post:
+      tags: [Auth]
+      security: []
+      summary: Rotate the refresh token and issue a new access token
+      description: >-
+        Apps send the refresh token in the body. Browsers send {} with the
+        withalbum_refresh cookie and the X-CSRF-Token header; the CSRF token
+        is rotated as well. An already used refresh token revokes the
+        session (401).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refresh_token: {type: string, description: 'required unless sent as the cookie'}
+      responses:
+        '200':
+          description: Rotated credentials (same device_id)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TokenResponse'}
+        '401': {description: 'unauthorized: expired, revoked, unknown or reused refresh token, or account disabled'}
+        '403': {description: 'csrf_failed (cookie refresh without a valid X-CSRF-Token; nothing changed)'}
+        '415': {description: json_required}
+  /api/v1/auth/logout:
+    post:
+      tags: [Auth]
+      summary: Revoke the current device and its session
+      responses:
+        '204': {description: Revoked (browser cookies cleared)}
+        '401': {description: unauthorized}
+        '403': {description: csrf_failed}
+  /api/v1/me:
+    get:
+      tags: [Me]
+      summary: Current account and device
+      responses:
+        '200':
+          description: The account as stored now
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user, device_id, platform]
+                properties:
+                  user: {$ref: '#/components/schemas/User'}
+                  device_id: {type: string}
+                  platform: {type: string, enum: [ios, android, macos, web]}
+        '401': {description: unauthorized}
+  /api/v1/me/password:
+    post:
+      tags: [Me]
+      summary: Change own password; signs out every other device
+      description: Rate-limited like login. The current session stays valid.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password, new_password]
+              properties:
+                current_password: {type: string, format: password}
+                new_password: {type: string, format: password, description: '12+ characters, at most 1024 bytes, no NUL or line breaks'}
+      responses:
+        '204': {description: Changed}
+        '400': {description: 'invalid_password (policy; body has a "message")'}
+        '401': {description: unauthorized}
+        '403': {description: 'invalid_credentials (wrong current password) or csrf_failed'}
+        '429': {description: rate_limited}
+        '503': {description: busy}
+  /api/v1/me/devices:
+    get:
+      tags: [Me]
+      summary: Own devices with a live session, newest first
+      responses:
+        '200':
+          description: Device list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [devices]
+                properties:
+                  devices:
+                    type: array
+                    items: {$ref: '#/components/schemas/Device'}
+        '401': {description: unauthorized}
+  /api/v1/me/devices/{device_id}:
+    delete:
+      tags: [Me]
+      summary: Revoke one of the own devices (may be the current one)
+      parameters:
+        - in: path
+          name: device_id
+          required: true
+          schema: {type: string}
+      responses:
+        '204': {description: Revoked; its tokens are refused from now on}
+        '401': {description: unauthorized}
+        '403': {description: csrf_failed}
+        '404': {description: 'device_not_found (not own, or already revoked)'}
+  /api/v1/admin/users:
+    post:
+      tags: [Server Admin]
+      summary: Create an active account (SERVER_ADMIN only)
+      description: >-
+        The administrator sets the initial password and hands it over out of
+        band. The first administrator can only be set up at the server
+        console (withalbum-server admin init), never over HTTP.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [login_name, password]
+              properties:
+                login_name: {type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{2,31}$'}
+                display_name: {type: string, description: 'default: login_name'}
+                password: {type: string, format: password}
+                server_role: {type: string, enum: [USER, SERVER_ADMIN], default: USER}
+                can_create_albums: {type: boolean, default: false}
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminUser'}
+        '400': {description: 'invalid_login_name, invalid_display_name, invalid_role, invalid_password'}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (not SERVER_ADMIN) or csrf_failed'}
+        '409': {description: login_taken}
+    get:
+      tags: [Server Admin]
+      summary: List server accounts (SERVER_ADMIN only)
+      responses:
+        '200':
+          description: Account list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  users:
+                    type: array
+                    items: {$ref: '#/components/schemas/AdminUser'}
+        '401': {description: unauthorized}
+        '403': {description: forbidden}
+  /api/v1/admin/users/{user_id}:
+    parameters:
+      - $ref: '#/components/parameters/UserID'
+    get:
+      tags: [Server Admin]
+      summary: Get one account (SERVER_ADMIN only)
+      responses:
+        '200':
+          description: Account
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminUser'}
+        '401': {description: unauthorized}
+        '403': {description: forbidden}
+        '404': {description: user_not_found}
+    patch:
+      tags: [Server Admin]
+      summary: Enable or disable an account (SERVER_ADMIN only)
+      description: Disabling revokes every session of the account at once; enabling does not restore them.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: {type: string, enum: [active, disabled]}
+      responses:
+        '200':
+          description: Updated account
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminUser'}
+        '400': {description: invalid_status}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden or csrf_failed'}
+        '404': {description: user_not_found}
+        '409': {description: 'last_admin (last usable SERVER_ADMIN), owns_albums (transfer albums first), not_initialized'}
+  /api/v1/admin/users/{user_id}/permissions:
+    patch:
+      tags: [Server Admin]
+      summary: Change server role and/or album creation permission (SERVER_ADMIN only)
+      description: Both given fields change in one transaction, or neither. Applies to the account's next request.
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                server_role: {type: string, enum: [USER, SERVER_ADMIN]}
+                can_create_albums: {type: boolean}
+      responses:
+        '200':
+          description: Updated account
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminUser'}
+        '400': {description: 'invalid_request (no field), invalid_role'}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden or csrf_failed'}
+        '404': {description: user_not_found}
+        '409': {description: 'last_admin, not_initialized'}
+  /api/v1/admin/users/{user_id}/devices:
+    get:
+      tags: [Server Admin]
+      summary: Devices of an account with a live session (SERVER_ADMIN only)
+      description: Device names, platforms and times only; never tokens. For signing out a lost device.
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+      responses:
+        '200':
+          description: Device list, newest first; current is true only for the administrator's own request device
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [devices]
+                properties:
+                  devices:
+                    type: array
+                    items: {$ref: '#/components/schemas/Device'}
+        '401': {description: unauthorized}
+        '403': {description: forbidden (not SERVER_ADMIN)}
+        '404': {description: user_not_found}
+  /api/v1/admin/users/{user_id}/devices/{device_id}:
+    delete:
+      tags: [Server Admin]
+      summary: Revoke a device of an account (SERVER_ADMIN only)
+      description: The device and its session are revoked in one audited transaction (device.admin_revoke); its tokens are refused from the next request on.
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+        - $ref: '#/components/parameters/DeviceID'
+      responses:
+        '204': {description: Revoked}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (not SERVER_ADMIN) or csrf_failed'}
+        '404': {description: 'user_not_found, device_not_found (not a live device of this account)'}
+  /api/v1/admin/server/tls:
+    get:
+      tags: [Server Admin]
+      summary: TLS identity and pairing payloads (SERVER_ADMIN only)
+      description: >-
+        Fingerprints and pairing payloads only, never key material. A device
+        should be paired from the payload after comparing the fingerprint
+        with the server console output (withalbum-server tls), since a page
+        reached through an intercepted connection could show a forged one.
+      responses:
+        '200':
+          description: TLS state
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [enabled]
+                properties:
+                  enabled: {type: boolean, description: 'false: plain HTTP on loopback; no other field'}
+                  spki_sha256: {type: string, pattern: '^[0-9a-f]{64}$', description: The pin}
+                  cert_sha256: {type: string, pattern: '^[0-9a-f]{64}$'}
+                  not_after: {type: string, format: date-time}
+                  pairing:
+                    type: array
+                    items:
+                      type: object
+                      required: [url, payload]
+                      properties:
+                        url: {type: string, example: 'https://192.0.2.10:8787'}
+                        payload: {type: string, example: 'withalbum://pair?spki_sha256=...&url=https%3A%2F%2F192.0.2.10%3A8787&v=1'}
+        '401': {description: unauthorized}
+        '403': {description: forbidden (not a SERVER_ADMIN)}
+  /api/v1/folders:
+    post:
+      tags: [Albums]
+      summary: Create a folder; the authenticated creator becomes its only owner
+      description: >-
+        Requires SERVER_ADMIN or can_create_albums=true (checked on the
+        request and again inside the transaction); membership never
+        authorizes creation. Cookie sessions need X-CSRF-Token.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: {type: string, minLength: 1, maxLength: 80, description: 'trimmed; 1-80 characters'}
+      responses:
+        '201':
+          description: Created; role OWNER
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Folder'}
+        '400': {description: 'invalid_json, invalid_folder_name'}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (no album-creation permission) or csrf_failed'}
+        '503': {description: 'storage_unavailable, busy'}
+        '507': {description: insufficient_storage}
+    get:
+      tags: [Albums]
+      summary: List only the folders the caller owns or is a member of
+      responses:
+        '200':
+          description: Own and shared folders with the caller's role, oldest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [folders]
+                properties:
+                  folders:
+                    type: array
+                    items: {$ref: '#/components/schemas/Folder'}
+        '401': {description: unauthorized}
+  /api/v1/folders/{folder_id}:
+    parameters:
+      - $ref: '#/components/parameters/FolderID'
+    get:
+      tags: [Albums]
+      summary: Minimal metadata for the owner and any member, UPLOADER included
+      responses:
+        '200':
+          description: Folder name, own role and what it allows
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Folder'}
+        '401': {description: unauthorized}
+        '404': {description: 'folder_not_found (unknown, or not owner/member)'}
+    delete:
+      tags: [Albums]
+      summary: Archive the album (OWNER only)
+      description: >-
+        Sets archived_at and revokes pending invitations in one audited
+        transaction. Files, assets and memberships are kept, but every route
+        answers 404 folder_not_found for the folder from then on, for the
+        owner too (there is no restore API yet). Cookie sessions need
+        X-CSRF-Token.
+      responses:
+        '204': {description: Archived}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (member, not owner) or csrf_failed'}
+        '404': {description: folder_not_found}
+        '503': {description: 'storage_unavailable, storage_io_error, busy'}
+  /api/v1/folders/{folder_id}/members:
+    get:
+      tags: [Albums]
+      summary: Owner and members of the album (OWNER only)
+      parameters:
+        - $ref: '#/components/parameters/FolderID'
+      responses:
+        '200':
+          description: The owner first (role OWNER), then members by join time
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [folder_id, members]
+                properties:
+                  folder_id: {type: string}
+                  members:
+                    type: array
+                    items: {$ref: '#/components/schemas/Member'}
+        '401': {description: unauthorized}
+        '403': {description: forbidden (member, not owner)}
+        '404': {description: folder_not_found}
+  /api/v1/folders/{folder_id}/invitations:
+    parameters:
+      - $ref: '#/components/parameters/FolderID'
+    get:
+      tags: [Invitations]
+      summary: Pending, unexpired invitations of the album (OWNER only)
+      responses:
+        '200':
+          description: Oldest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [invitations]
+                properties:
+                  invitations:
+                    type: array
+                    items: {$ref: '#/components/schemas/Invitation'}
+        '401': {description: unauthorized}
+        '403': {description: forbidden (member, not owner)}
+        '404': {description: folder_not_found}
+    post:
+      tags: [Invitations]
+      summary: Invite a registered, active account (OWNER only)
+      description: >-
+        The invitation names one account by user_id (the invitee can read
+        its own user_id from GET /api/v1/me), is valid for 7 days and can be
+        accepted once, only by that account with its own session. It carries
+        no secret token. Unknown, disabled and locked accounts are the same
+        404 invitee_not_found. One pending invitation per album and account;
+        an expired one is replaced. Never creates an account. Audited.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [invited_user_id, role]
+              properties:
+                invited_user_id: {type: string}
+                role: {type: string, enum: [VIEWER, UPLOADER, CONTRIBUTOR]}
+      responses:
+        '201':
+          description: Pending invitation created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Invitation'}
+        '400': {description: 'invalid_json, invalid_request (no invited_user_id), invalid_role'}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (member, not owner) or csrf_failed'}
+        '404': {description: 'folder_not_found, invitee_not_found'}
+        '409': {description: 'already_member (the owner or a member), invitation_pending'}
+        '415': {description: json_required}
+        '503': {description: 'storage_unavailable, storage_io_error, busy'}
+  /api/v1/folders/{folder_id}/invitations/{invitation_id}:
+    delete:
+      tags: [Invitations]
+      summary: Revoke a pending invitation (OWNER only)
+      parameters:
+        - $ref: '#/components/parameters/FolderID'
+        - $ref: '#/components/parameters/InvitationID'
+      responses:
+        '204': {description: Revoked (audited)}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (member, not owner) or csrf_failed'}
+        '404': {description: 'folder_not_found, invitation_not_found (unknown or of another album)'}
+        '410': {description: 'invitation_gone (already accepted, revoked or expired)'}
+  /api/v1/invitations:
+    get:
+      tags: [Invitations]
+      summary: Pending invitations addressed to the current account
+      description: >-
+        Only the caller's own invitations that can still be accepted:
+        pending, unexpired, for an album that is not archived and written by
+        its current owner.
+      responses:
+        '200':
+          description: Own invitations only, oldest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [invitations]
+                properties:
+                  invitations:
+                    type: array
+                    items: {$ref: '#/components/schemas/Invitation'}
+        '401': {description: unauthorized}
+  /api/v1/invitations/{invitation_id}/accept:
+    post:
+      tags: [Invitations]
+      summary: Accept an invitation as its named recipient
+      description: >-
+        One transaction: membership with the invited role, invitation marked
+        accepted, audit row. Ownership transfer and archiving revoke pending
+        invitations; an invitation whose author is no longer the owner is
+        refused as well. No request body. Cookie sessions need X-CSRF-Token.
+      parameters:
+        - $ref: '#/components/parameters/InvitationID'
+      responses:
+        '200':
+          description: Membership created; the album as the caller now sees it
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Folder'}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (the invitation names another account; administrators included) or csrf_failed'}
+        '404': {description: invitation_not_found}
+        '409': {description: already_member}
+        '410': {description: 'invitation_gone (accepted, revoked, expired, album archived or owner changed)'}
+  /api/v1/folders/{folder_id}/members/{user_id}:
+    parameters:
+      - $ref: '#/components/parameters/FolderID'
+      - $ref: '#/components/parameters/UserID'
+    patch:
+      tags: [Albums]
+      summary: Change a member's role (OWNER only)
+      description: The member's next request is decided with the new role. Setting the current role changes nothing.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role: {type: string, enum: [VIEWER, UPLOADER, CONTRIBUTOR]}
+      responses:
+        '200':
+          description: Role changed (audited)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Member'}
+        '400': {description: 'invalid_json, invalid_role'}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (member, not owner) or csrf_failed'}
+        '404': {description: 'folder_not_found, member_not_found'}
+        '409': {description: target_is_owner}
+    delete:
+      tags: [Albums]
+      summary: Remove a member (OWNER only)
+      description: >-
+        The removed member's next request on the album is 404, an upload in
+        progress is refused at its commit. Files already downloaded cannot be
+        recalled.
+      responses:
+        '204': {description: Member removed (audited)}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (member, not owner) or csrf_failed'}
+        '404': {description: 'folder_not_found, member_not_found'}
+        '409': {description: target_is_owner}
+  /api/v1/folders/{folder_id}/owner:
+    post:
+      tags: [Albums]
+      summary: Transfer the unique ownership to a member (OWNER only)
+      description: >-
+        One transaction: the new owner's membership row is deleted, the
+        owner changes, the previous owner becomes a CONTRIBUTOR member,
+        pending invitations are revoked, audit row. The new owner must
+        already be a member with an active account. A failure rolls
+        everything back; the album always has exactly one owner.
+      parameters:
+        - $ref: '#/components/parameters/FolderID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [new_owner_user_id]
+              properties:
+                new_owner_user_id: {type: string}
+      responses:
+        '200':
+          description: Transferred; the album as the caller (now CONTRIBUTOR) sees it
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Folder'}
+        '400': {description: 'invalid_json, invalid_request'}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (member, not owner) or csrf_failed'}
+        '404': {description: 'folder_not_found, member_not_found (not a member)'}
+        '409': {description: 'target_is_owner (the caller), user_inactive (disabled or locked account)'}
+  /api/v1/folders/{folder_id}/assets:
+    parameters:
+      - $ref: '#/components/parameters/FolderID'
+    get:
+      tags: [Sync]
+      summary: Snapshot of the assets currently in the folder (OWNER, CONTRIBUTOR, VIEWER)
+      description: >-
+        Pages in asset id order. The first page (without "after") also
+        returns "cursor", the feed position read before the snapshot. After
+        the last page, continue with GET .../sync?cursor=<that cursor>: it
+        replays every change made while paging (an asset may then arrive
+        both in the snapshot and as an event; apply by asset id). Use it for
+        the first load and after a 409 from /sync.
+      parameters:
+        - in: query
+          name: after
+          schema: {type: string, pattern: '^[0-9a-f]{32}$'}
+          description: next_after of the previous page
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: One page of the snapshot
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [folder_id, assets, has_more, next_after]
+                properties:
+                  folder_id: {type: string}
+                  assets:
+                    type: array
+                    items: {$ref: '#/components/schemas/Asset'}
+                  has_more: {type: boolean}
+                  next_after: {type: string, description: 'pass as "after" for the next page; "" on the last page'}
+                  cursor: {type: string, description: 'first page only: continue the feed from here after the snapshot'}
+        '400': {description: 'invalid_after, invalid_limit'}
+        '401': {description: unauthorized}
+        '403': {description: forbidden (UPLOADER)}
+        '404': {description: folder_not_found}
+    post:
+      tags: [Assets]
+      summary: Upload one original as the request body (OWNER, CONTRIBUTOR, UPLOADER)
+      description: >-
+        Whole file in one request, at most 512 MiB. Headers: Idempotency-Key
+        (required, see the top of this document), X-Filename
+        (percent-encoded allowed), X-Device-ID (free-form label shown as
+        uploader_device_id, at most 100 bytes), X-Content-SHA256 (optional;
+        422 hash_mismatch on mismatch). Cookie sessions need X-CSRF-Token.
+        Success is sent only after the original file, its metadata and the
+        request's receipt are durably committed; any other status means
+        nothing was committed and the same request can be retried with the
+        same key. The permission is checked again right before the commit;
+        if it was revoked meanwhile the upload is refused (403/404) and
+        nothing is recorded.
+
+
+        Callers who can read the folder (OWNER, CONTRIBUTOR) get 201
+        created or 200 already_present (the folder already holds these
+        bytes) with the folder's asset ID. Whether the bytes are stored for
+        another folder is never revealed (both are 201 created, and the
+        folder gets an asset of its own). An UPLOADER always gets the same
+        202 receipt, which only repeats what the client sent; it never says
+        whether the bytes were new or already there. A replayed request
+        answers with the stored result under the caller's current role.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: {type: string, format: binary}
+      responses:
+        '200':
+          description: already_present (readers only)
+          headers:
+            Idempotency-Replayed: {$ref: '#/components/headers/IdempotencyReplayed'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UploadResult'}
+        '201':
+          description: created (readers only)
+          headers:
+            Idempotency-Replayed: {$ref: '#/components/headers/IdempotencyReplayed'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UploadResult'}
+        '202':
+          description: Generic receipt for upload-only callers
+          headers:
+            Idempotency-Replayed: {$ref: '#/components/headers/IdempotencyReplayed'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UploadReceipt'}
+        '400': {description: 'idempotency_key_required, invalid_idempotency_key, empty_file, upload_failed (body cut short), invalid_device_id'}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (VIEWER, or role lowered during the upload) or csrf_failed'}
+        '404': {description: 'folder_not_found (not owner/member, or membership removed during the upload)'}
+        '413': {description: file_too_large}
+        '422': {description: 'hash_mismatch, idempotency_key_reused (this key was committed with other bytes)'}
+        '500': {description: 'temp_failed, temp_close_failed, temp_write_failed, file_sync_failed, storage_failed, metadata_write_failed'}
+        '503':
+          description: 'storage_unavailable, storage_io_error, busy (Retry-After: 1)'
+        '507': {description: insufficient_storage (do not retry automatically)}
+  /api/v1/folders/{folder_id}/assets/check:
+    post:
+      tags: [Assets]
+      summary: Which of these originals this folder already holds (OWNER, CONTRIBUTOR, VIEWER)
+      description: >-
+        Advisory pre-check before uploading; the upload itself decides.
+        Looks at this folder only, never at other folders or the server as a
+        whole, and is refused to an UPLOADER (403), so it reveals nothing a
+        reader could not already see in the feed. Hashes are compared
+        case-insensitively; duplicates in the request are ignored.
+      parameters:
+        - $ref: '#/components/parameters/FolderID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sha256]
+              properties:
+                sha256:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  items: {type: string, pattern: '^[0-9a-fA-F]{64}$'}
+      responses:
+        '200':
+          description: The hashes the folder holds, in request order, with the folder's asset id
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [folder_id, present]
+                properties:
+                  folder_id: {type: string}
+                  present:
+                    type: array
+                    items:
+                      type: object
+                      required: [sha256, asset_id]
+                      properties:
+                        sha256: {type: string}
+                        asset_id: {type: string}
+        '400': {description: 'invalid_json, invalid_request (0 or more than 100 hashes), invalid_sha256'}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (UPLOADER) or csrf_failed'}
+        '404': {description: folder_not_found}
+        '415': {description: json_required}
+  /api/v1/folders/{folder_id}/assets/{asset_id}:
+    delete:
+      tags: [Assets]
+      summary: Remove a photo from the album (OWNER only)
+      description: >-
+        One audited transaction (asset.remove) that re-checks the caller:
+        the asset leaves the folder and an asset_removed event is appended.
+        CONTRIBUTOR, VIEWER and UPLOADER get 403, also for photos they
+        uploaded themselves. The original file is not deleted (other folders
+        may hold the same bytes; there is no garbage collection yet), and
+        copies already downloaded by members cannot be recalled. Removing
+        again is 404 asset_not_found; uploading the same bytes again creates
+        a new asset with a new id. Cookie sessions need X-CSRF-Token.
+      parameters:
+        - $ref: '#/components/parameters/FolderID'
+        - $ref: '#/components/parameters/AssetID'
+      responses:
+        '204': {description: Removed}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (not the owner) or csrf_failed'}
+        '404': {description: 'folder_not_found, asset_not_found (unknown, already removed, or an asset of another folder)'}
+        '503': {description: 'storage_unavailable, storage_io_error, busy'}
+        '507': {description: insufficient_storage}
+  /api/v1/folders/{folder_id}/sync:
+    get:
+      tags: [Sync]
+      summary: Read the change feed after a cursor (OWNER, CONTRIBUTOR, VIEWER)
+      description: >-
+        Events after the cursor in seq order, at most "limit". "assets"
+        holds the assets of the asset_added events of this page that are
+        still in the folder; an asset_added whose asset is missing from
+        "assets" was removed later, and its asset_removed event follows.
+        Without a cursor the feed starts at the beginning. The latest cursor
+        returns an empty page with the same next_cursor.
+      parameters:
+        - $ref: '#/components/parameters/FolderID'
+        - in: query
+          name: cursor
+          schema: {type: string, pattern: '^[0-9a-f]{16}\.[0-9]{1,18}$'}
+          description: next_cursor of a previous page, or the snapshot cursor; omit to start from the beginning
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Events after the cursor and the assets they add
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [folder_id, events, assets, next_cursor, has_more]
+                properties:
+                  folder_id: {type: string}
+                  events:
+                    type: array
+                    items: {$ref: '#/components/schemas/Event'}
+                  assets:
+                    type: object
+                    description: by asset id
+                    additionalProperties: {$ref: '#/components/schemas/Asset'}
+                  next_cursor: {type: string, description: 'store it after persisting this page; send it as cursor next time'}
+                  has_more: {type: boolean, description: 'true: request the next page right away'}
+        '400': {description: 'invalid_cursor (malformed), invalid_limit'}
+        '401': {description: unauthorized}
+        '403': {description: forbidden (UPLOADER)}
+        '404': {description: folder_not_found}
+        '409': {description: 'cursor_invalid (another folder, a restored server, or ahead of the feed), cursor_expired (older than the retained events): reload the snapshot'}
+  /api/v1/folders/{folder_id}/sync/cursor:
+    put:
+      tags: [Sync]
+      summary: Acknowledge how far this device has applied the feed (optional)
+      description: >-
+        Stores the cursor for the session's device and the folder. The
+        server does not depend on it yet (it is meant to let a future event
+        retention keep what devices still need). Cookie sessions need
+        X-CSRF-Token.
+      parameters:
+        - $ref: '#/components/parameters/FolderID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [cursor]
+              properties:
+                cursor: {type: string}
+      responses:
+        '204': {description: Stored}
+        '400': {description: 'invalid_json, invalid_cursor'}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (UPLOADER) or csrf_failed'}
+        '404': {description: folder_not_found}
+        '409': {description: cursor_invalid}
+        '415': {description: json_required}
+        '503': {description: 'storage_unavailable, storage_io_error, busy'}
+  /api/v1/folders/{folder_id}/assets/{asset_id}/original:
+    get:
+      tags: [Assets]
+      summary: Download the original; the asset must be linked to this folder
+      parameters:
+        - $ref: '#/components/parameters/FolderID'
+        - $ref: '#/components/parameters/AssetID'
+      responses:
+        '200': {description: 'Original bytes (Content-Type as sniffed at upload, Range supported, Cache-Control: no-store). Always Content-Disposition: attachment and Content-Security-Policy with sandbox, so a stored HTML/SVG file never runs as a page of the server origin'}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (UPLOADER; the same answer for any asset id)'}
+        '404': {description: 'folder_not_found, asset_not_found (unknown, or an asset of another folder)'}
+  /api/v1/folders/{folder_id}/assets/{asset_id}/preview:
+    get:
+      tags: [Assets]
+      summary: Download the JPEG preview, same access as the original
+      parameters:
+        - $ref: '#/components/parameters/FolderID'
+        - $ref: '#/components/parameters/AssetID'
+      responses:
+        '200': {description: JPEG preview, longer side at most 1600 px}
+        '401': {description: unauthorized}
+        '403': {description: forbidden (UPLOADER)}
+        '404': {description: 'folder_not_found, asset_not_found, preview_not_ready'}
+components:
+  parameters:
+    FolderID:
+      in: path
+      name: folder_id
+      required: true
+      schema: {type: string}
+    UserID:
+      in: path
+      name: user_id
+      required: true
+      schema: {type: string}
+    AssetID:
+      in: path
+      name: asset_id
+      required: true
+      schema: {type: string}
+    InvitationID:
+      in: path
+      name: invitation_id
+      required: true
+      schema: {type: string}
+    DeviceID:
+      in: path
+      name: device_id
+      required: true
+      schema: {type: string}
+    Limit:
+      in: query
+      name: limit
+      schema: {type: integer, minimum: 1, maximum: 500, default: 100}
+    IdempotencyKey:
+      in: header
+      name: Idempotency-Key
+      required: true
+      description: 'Chosen by the client per queue item and kept for its retries; 1-128 characters A-Z a-z 0-9 . _ : - (a UUID is recommended). Scoped to account, device and folder.'
+      schema: {type: string, pattern: '^[A-Za-z0-9._:-]{1,128}$'}
+  headers:
+    IdempotencyReplayed:
+      description: '"true" when this is the stored result of an earlier request with the same Idempotency-Key'
+      schema: {type: string, enum: ['true']}
+  schemas:
+    Folder:
+      type: object
+      required: [id, name, created_at, role, can_read, can_upload]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        created_at: {type: string}
+        role: {type: string, enum: [OWNER, CONTRIBUTOR, VIEWER, UPLOADER]}
+        can_read: {type: boolean, description: 'may list, sync and download'}
+        can_upload: {type: boolean}
+    Asset:
+      type: object
+      required: [id, sha256, filename, mime_type, bytes, preview_ready, uploaded_at]
+      properties:
+        id: {type: string, description: 'random; valid only under its folder'}
+        sha256: {type: string, description: 'of the original, to verify a download'}
+        filename: {type: string}
+        mime_type: {type: string}
+        bytes: {type: integer}
+        preview_ready: {type: boolean}
+        uploaded_at: {type: string}
+    Event:
+      type: object
+      required: [seq, kind, asset_id, folder_id, uploader_device_id, occurred_at]
+      properties:
+        seq: {type: integer, minimum: 1}
+        kind: {type: string, enum: [asset_added, asset_removed]}
+        asset_id: {type: string}
+        folder_id: {type: string}
+        uploader_device_id: {type: string, description: 'X-Device-ID label of the upload; "" for asset_removed'}
+        occurred_at: {type: string}
+    UploadResult:
+      type: object
+      required: [result, asset_id, folder_id, sha256, preview_ready]
+      properties:
+        result: {type: string, enum: [created, already_present]}
+        asset_id: {type: string}
+        folder_id: {type: string}
+        sha256: {type: string}
+        preview_ready: {type: boolean}
+    UploadReceipt:
+      type: object
+      required: [result, folder_id, sha256, bytes]
+      properties:
+        result: {type: string, enum: [accepted]}
+        folder_id: {type: string}
+        sha256: {type: string, description: 'of the bytes the client sent'}
+        bytes: {type: integer, description: 'size of the bytes the client sent'}
+    User:
+      type: object
+      required: [user_id, login_name, display_name, server_role, can_create_albums]
+      properties:
+        user_id: {type: string}
+        login_name: {type: string}
+        display_name: {type: string}
+        server_role: {type: string, enum: [SERVER_ADMIN, USER]}
+        can_create_albums: {type: boolean}
+    AdminUser:
+      allOf:
+        - $ref: '#/components/schemas/User'
+        - type: object
+          required: [status, created_at, password_locked]
+          properties:
+            status: {type: string, enum: [active, disabled]}
+            created_at: {type: string}
+            password_locked: {type: boolean, description: 'true: cannot log in (bootstrap account before admin init)'}
+    TokenResponse:
+      type: object
+      required: [token_type, device_id, access_expires_at, refresh_expires_at, user]
+      properties:
+        token_type: {type: string, enum: [Bearer, cookie], description: 'cookie for platform web'}
+        access_token: {type: string, description: 'apps only'}
+        refresh_token: {type: string, description: 'apps only'}
+        csrf_token: {type: string, description: 'web only; also in the withalbum_csrf cookie'}
+        access_expires_at: {type: string, format: date-time}
+        refresh_expires_at: {type: string, format: date-time}
+        device_id: {type: string}
+        user: {$ref: '#/components/schemas/User'}
+    Invitation:
+      type: object
+      required: [id, folder_id, folder_name, invitee_user_id, invitee_display_name, inviter_user_id, inviter_display_name, role, status, created_at, expires_at]
+      properties:
+        id: {type: string, description: 'random; not a secret, acceptance needs the invitee session'}
+        folder_id: {type: string}
+        folder_name: {type: string}
+        invitee_user_id: {type: string}
+        invitee_display_name: {type: string}
+        inviter_user_id: {type: string}
+        inviter_display_name: {type: string}
+        role: {type: string, enum: [VIEWER, UPLOADER, CONTRIBUTOR]}
+        status: {type: string, enum: [pending]}
+        created_at: {type: string, format: date-time}
+        expires_at: {type: string, format: date-time, description: created_at + 7 days}
+    Member:
+      type: object
+      required: [user_id, display_name, role, active, joined_at]
+      properties:
+        user_id: {type: string}
+        display_name: {type: string}
+        role: {type: string, enum: [OWNER, CONTRIBUTOR, VIEWER, UPLOADER]}
+        active: {type: boolean, description: the account can log in}
+        joined_at: {type: string, description: 'album creation time for the owner'}
+    Device:
+      type: object
+      required: [device_id, device_name, platform, created_at, last_used_at, expires_at, current]
+      properties:
+        device_id: {type: string}
+        device_name: {type: string}
+        platform: {type: string, enum: [ios, android, macos, web]}
+        created_at: {type: string, format: date-time}
+        last_used_at: {type: string, format: date-time, description: last login or refresh}
+        expires_at: {type: string, format: date-time, description: end of the refresh window}
+        current: {type: boolean, description: the device of this request}
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque access token (15 minutes)
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: withalbum_access
+      description: Browsers only; unsafe methods also need the X-CSRF-Token header.

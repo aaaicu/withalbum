@@ -171,7 +171,9 @@
       const button = $('upload'); button.disabled = true;
       $('feedback').textContent = '업로드 중 (최대 512MB)...';
       try {
-        const result = await api(`/api/v1/folders/${encodeURIComponent(folder)}/assets`, {method:'POST', headers:{'Content-Type':'application/octet-stream','X-Filename': encodeURIComponent(file.name)}, body: file});
+        // One key per upload attempt; the retry after a token refresh reuses it.
+        const key = crypto.randomUUID ? crypto.randomUUID() : Array.from(crypto.getRandomValues(new Uint8Array(16)), x => x.toString(16).padStart(2, '0')).join('');
+        const result = await api(`/api/v1/folders/${encodeURIComponent(folder)}/assets`, {method:'POST', headers:{'Content-Type':'application/octet-stream','X-Filename': encodeURIComponent(file.name),'Idempotency-Key': key}, body: file});
         const msg = {already_present: '이미 이 앨범에 있는 파일입니다.', accepted: '전송했습니다 (업로드 전용 앨범).'}[result.result] || '업로드 완료.';
         $('feedback').textContent = `${msg} 해시: ${result.sha256.slice(0,16)}…`;
         $('file').value = '';

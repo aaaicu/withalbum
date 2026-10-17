@@ -50,6 +50,7 @@ type Auth struct {
 	Users     *users.Store
 	Passwords *password.Limiter
 	Limiter   *ratelimit.Limiter
+	db        *sql.DB // the account database, for denial audit rows
 }
 
 // AuthOptions configures NewAuth. Zero values take the defaults.
@@ -77,7 +78,7 @@ func NewAuth(db *sql.DB, o AuthOptions) (*Auth, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Auth{Sessions: session.New(db, pw, o.Session), Users: users.New(db), Passwords: pw, Limiter: ratelimit.New(o.RateLimit)}, nil
+	return &Auth{Sessions: session.New(db, pw, o.Session), Users: users.New(db), Passwords: pw, Limiter: ratelimit.New(o.RateLimit), db: db}, nil
 }
 
 type identityKey struct{}

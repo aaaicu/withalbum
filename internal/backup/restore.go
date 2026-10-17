@@ -420,7 +420,8 @@ func stage(ctx context.Context, vol *storage.Volume, s *snapshot, staging string
 	return syncDir(filepath.Join(staging, "pool"))
 }
 
-// finalizeDB migrates the staged database, revokes every session and
+// finalizeDB migrates the staged database, revokes every session, rotates
+// the sync epoch (every client sync cursor becomes invalid) and
 // records the restore, then checkpoints the WAL so that the single database
 // file is complete before it is renamed.
 func finalizeDB(ctx context.Context, path string, m *Manifest) (int64, error) {
@@ -442,6 +443,13 @@ func finalizeDB(ctx context.Context, path string, m *Manifest) (int64, error) {
 		return 0, err
 	}
 	n, err := session.RevokeAllTx(ctx, tx, session.ReasonRestore)
+	if err == nil {
+		// Sync cursors handed out before the restore point to events that
+		// no longer exist (or will be numbered again): a new epoch makes
+		// every client cursor invalid (409), so clients resync from a
+		// snapshot instead of skipping events.
+		_, err = tx.ExecContext(ctx, "UPDATE sync_state SET epoch = lower(hex(randomblob(16))) WHERE singleton = 1")
+	}
 	if err == nil {
 		err = audit.Record(ctx, tx, audit.Entry{Action: restoreAuditAction, TargetType: restoreAuditTarget, Result: audit.Allowed,
 			Details: map[string]any{"backup_id": m.ID, "backup_created_at": m.CreatedAt, "sessions_revoked": n}})

@@ -20,7 +20,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"github.com/aaaicu/withalbum/internal/authz"
@@ -31,8 +30,6 @@ import (
 
 // MaxUploadSize is the largest accepted single-request upload.
 const MaxUploadSize int64 = 512 << 20
-
-const syncPageSize = 100
 
 //go:embed web/index.html
 var dashboardHTML []byte
@@ -109,6 +106,7 @@ type Server struct {
 	auth             *Auth
 	members          meta.Memberships
 	tls              *TLSInfo
+	denials          *denialLog
 }
 
 // New returns a Server for cfg.
@@ -121,6 +119,9 @@ func New(cfg Config) *Server {
 	}
 	if s.freeBytes == nil {
 		s.freeBytes = cfg.Volume.FreeBytes
+	}
+	if cfg.Auth != nil {
+		s.denials = newDenialLog(cfg.Auth.db)
 	}
 	return s
 }
@@ -177,10 +178,10 @@ func (s *Server) Handler() http.Handler {
 	rt.handle("GET /api/v1/folders", s.getFolders)
 	rt.handle("POST /api/v1/folders", s.createFolder)
 	rt.handleAlbum("GET /api/v1/folders/{folderID}", s.getFolder)
-	rt.handleAlbum("POST /api/v1/folders/{folderID}/assets", s.upload)
-	rt.handleAlbum("GET /api/v1/folders/{folderID}/sync", s.syncEvents)
+	rt.handleAlbum(uploadRoute, s.upload)
 	rt.handleAlbum("GET /api/v1/folders/{folderID}/assets/{assetID}/original", s.download(false))
 	rt.handleAlbum("GET /api/v1/folders/{folderID}/assets/{assetID}/preview", s.download(true))
+	s.syncRoutes(rt)
 	s.memberRoutes(rt)
 	rt.handle("GET /api/v1/admin/server/tls", s.serverTLS)
 	return securityHeaders(rt.finish())
@@ -365,9 +366,11 @@ func (s *Server) uploadBudget(w http.ResponseWriter) (int64, bool) {
 // Whether the bytes are new to the server, already stored for another
 // folder, or already in this folder does not change the steps taken before
 // the commit: the pool file is promoted (or the existing one re-verified)
-// and the preview generated in every case. The latency still differs by a
-// few milliseconds (new directory entries and database rows must be synced,
-// known ones not); that is a known, documented limit. Callers who can read the folder get
+// and the preview generated in every case, and every outcome commits a
+// receipt row (Idempotency-Key), so the database write and its sync happen
+// for known bytes too. The latency can still differ slightly (a new pool
+// file needs new directory entries synced); that is a known, documented
+// limit. Callers who can read the folder get
 // "created" (201) or "already_present" (200) and the asset; a caller who may
 // only upload (UPLOADER) always gets the same 202 receipt.
 func (s *Server) upload(w http.ResponseWriter, r *http.Request, a albumRequest) {
@@ -378,6 +381,17 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request, a albumRequest) 
 		errorReply(w, 400, "invalid_device_id")
 		return
 	}
+	key := r.Header.Get(headerIdempotencyKey)
+	if key == "" {
+		errorReply(w, 400, "idempotency_key_required")
+		return
+	}
+	if !validIdempotencyKey(key) {
+		errorReply(w, 400, "invalid_idempotency_key")
+		return
+	}
+	// Scoped to this account, its session's device and this folder.
+	idem := meta.Idempotency{DeviceID: a.ID.DeviceID, Key: key}
 	// Fail fast before spooling the body to a volume that is already gone.
 	if !s.storageReady(w) {
 		return
@@ -442,6 +456,17 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request, a albumRequest) 
 	if name == "" || name == "." || name == "/" || len(name) > 240 {
 		name = sha
 	}
+	// The same key with other bytes is a client error; refuse it before the
+	// bytes reach the pool. A retry with the same bytes goes through every
+	// step again (same work as a first attempt) and the commit then answers
+	// what was stored the first time.
+	if rc, err := s.meta.LookupReceipt(ctx, a.P.UserID, folderID, idem); err == nil && rc.SHA256 != sha {
+		errorReply(w, 422, "idempotency_key_reused")
+		return
+	} else if err != nil && !errors.Is(err, meta.ErrReceiptNotFound) {
+		metaReadFailed(w, err)
+		return
+	}
 
 	// Blob before metadata: the pool file must be durable before
 	// CommitUpload makes the asset visible. For bytes the pool already holds
@@ -480,6 +505,9 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request, a albumRequest) 
 		UserID:    a.P.UserID,
 		SessionID: a.ID.SessionID,
 		Asset:     meta.Asset{SHA256: sha, Filename: name, MimeType: staged.MimeType, Bytes: staged.Size, PreviewReady: previewReady},
+		// Every outcome writes its receipt, so a new asset and bytes the
+		// folder already holds take the same write path.
+		Idempotency: &idem,
 		// The permission checked when the request arrived may have been
 		// revoked while the body was streaming: decide again on what is
 		// stored now, under the database write lock.
@@ -509,15 +537,23 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request, a albumRequest) 
 	switch {
 	case errors.Is(err, errHidden), errors.Is(err, meta.ErrFolderNotFound):
 		log.Printf("upload refused at commit: no longer a member of the folder")
+		s.denied(r, a.P.UserID, uploadRoute, 404, folderID)
 		errorReply(w, 404, "folder_not_found")
 		return
 	case errors.Is(err, errDenied):
 		log.Printf("upload refused at commit: permission revoked during the upload")
+		s.denied(r, a.P.UserID, uploadRoute, 403, folderID)
 		errorReply(w, 403, "forbidden")
+		return
+	case errors.Is(err, meta.ErrIdempotencyMismatch):
+		errorReply(w, 422, "idempotency_key_reused")
 		return
 	case err != nil:
 		writeFailed(w, "commit upload", err, "metadata_write_failed")
 		return
+	}
+	if res.Replayed {
+		w.Header().Set("Idempotency-Replayed", "true")
 	}
 	if !canRead {
 		// Upload-only: nothing about the folder's contents, the asset or
@@ -530,51 +566,6 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request, a albumRequest) 
 		status, result = 200, "already_present"
 	}
 	jsonReply(w, status, map[string]any{"result": result, "asset_id": res.Asset.ID, "folder_id": folderID, "sha256": sha, "preview_ready": res.Asset.PreviewReady})
-}
-
-// assetJSON is an asset as a reader of its folder sees it. sha256 lets the
-// client verify a downloaded original.
-type assetJSON struct {
-	ID           string `json:"id"`
-	SHA256       string `json:"sha256"`
-	Filename     string `json:"filename"`
-	MimeType     string `json:"mime_type"`
-	Bytes        int64  `json:"bytes"`
-	PreviewReady bool   `json:"preview_ready"`
-	UploadedAt   string `json:"uploaded_at"`
-}
-
-func (s *Server) syncEvents(w http.ResponseWriter, r *http.Request, a albumRequest) {
-	folderID := a.Folder.Folder.ID
-	cursor, err := strconv.ParseInt(r.URL.Query().Get("cursor"), 10, 64)
-	if r.URL.Query().Get("cursor") == "" {
-		cursor = 0
-		err = nil
-	}
-	if err != nil || cursor < 0 {
-		errorReply(w, 400, "invalid_cursor")
-		return
-	}
-	page, err := s.meta.ListEvents(r.Context(), folderID, cursor, syncPageSize)
-	if errors.Is(err, meta.ErrFolderNotFound) {
-		errorReply(w, 404, "folder_not_found")
-		return
-	}
-	if err != nil {
-		metaReadFailed(w, err)
-		return
-	}
-	events := page.Events
-	if events == nil {
-		events = []meta.Event{}
-	}
-	assets := make(map[string]assetJSON, len(page.Assets))
-	for id, as := range page.Assets {
-		assets[id] = assetJSON{ID: as.ID, SHA256: as.SHA256, Filename: as.Filename, MimeType: as.MimeType, Bytes: as.Bytes,
-			PreviewReady: as.PreviewReady, UploadedAt: as.UploadedAt}
-	}
-	jsonReply(w, 200, map[string]any{"folder_id": folderID, "events": events, "assets": assets,
-		"next_cursor": page.NextCursor, "has_more": page.HasMore})
 }
 
 // download serves an original or preview of an asset that is linked to the

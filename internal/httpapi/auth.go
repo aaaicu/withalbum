@@ -14,7 +14,7 @@ import (
 	"github.com/aaaicu/withalbum/internal/users"
 )
 
-// Auth, own-account and account administration routes (API_AUTH_v1.4.yaml).
+// Auth, own-account and account administration routes (docs/API_v2.yaml).
 // Their access policies are declared in middleware_authz.go.
 
 const maxAuthBody = 8 << 10
@@ -32,6 +32,8 @@ func (s *Server) authRoutes(rt *router) {
 	rt.handle("GET /api/v1/admin/users/{userID}", s.adminGetUser)
 	rt.handle("PATCH /api/v1/admin/users/{userID}", s.adminSetStatus)
 	rt.handle("PATCH /api/v1/admin/users/{userID}/permissions", s.adminSetPermissions)
+	rt.handle("GET /api/v1/admin/users/{userID}/devices", s.adminListDevices)
+	rt.handle("DELETE /api/v1/admin/users/{userID}/devices/{deviceID}", s.adminRevokeDevice)
 }
 
 // decodeJSON reads a JSON object body. It requires Content-Type
@@ -235,6 +237,10 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
 	err := s.auth.Sessions.VerifyPassword(r.Context(), id.UserID, req.CurrentPassword)
 	if errors.Is(err, session.ErrInvalidCredentials) {
 		s.auth.Limiter.Failure(rateKey(c.IP), id.LoginName)
+		if err := s.auth.Sessions.AuditPasswordChangeFailure(r.Context(), id.UserID, c); err != nil {
+			internalError(w, "audit password change", err)
+			return
+		}
 		errorReply(w, 403, "invalid_credentials")
 		return
 	}
@@ -265,7 +271,14 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) listDevices(w http.ResponseWriter, r *http.Request) {
 	id, _ := IdentityFrom(r.Context())
-	list, err := s.auth.Sessions.ListDevices(r.Context(), id.UserID)
+	s.devicesReply(w, r, id.UserID)
+}
+
+// devicesReply lists userID's devices with a live session; "current" marks
+// the device of the request.
+func (s *Server) devicesReply(w http.ResponseWriter, r *http.Request, userID string) {
+	id, _ := IdentityFrom(r.Context())
+	list, err := s.auth.Sessions.ListDevices(r.Context(), userID)
 	if err != nil {
 		internalError(w, "list devices", err)
 		return
@@ -282,6 +295,41 @@ func (s *Server) revokeDevice(w http.ResponseWriter, r *http.Request) {
 	id, _ := IdentityFrom(r.Context())
 	deviceID := r.PathValue("deviceID")
 	err := s.auth.Sessions.RevokeDevice(r.Context(), id.UserID, deviceID, client(r))
+	if errors.Is(err, session.ErrDeviceNotFound) {
+		errorReply(w, 404, "device_not_found")
+		return
+	}
+	if err != nil {
+		internalError(w, "revoke device", err)
+		return
+	}
+	if deviceID == id.DeviceID && id.IsBrowser() {
+		clearCookies(w, r)
+	}
+	w.WriteHeader(204)
+}
+
+// adminListDevices: another account's devices with a live session (names,
+// platforms and times only), so that an administrator can sign out a lost
+// device.
+func (s *Server) adminListDevices(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.auth.Users.Get(r.Context(), r.PathValue("userID")); err != nil {
+		s.usersError(w, "get user", err)
+		return
+	}
+	s.devicesReply(w, r, r.PathValue("userID"))
+}
+
+// adminRevokeDevice revokes a device of another account (or the
+// administrator's own); its tokens are refused from the next request on.
+func (s *Server) adminRevokeDevice(w http.ResponseWriter, r *http.Request) {
+	userID, deviceID := r.PathValue("userID"), r.PathValue("deviceID")
+	if _, err := s.auth.Users.Get(r.Context(), userID); err != nil {
+		s.usersError(w, "get user", err)
+		return
+	}
+	id, _ := IdentityFrom(r.Context())
+	err := s.auth.Sessions.RevokeDeviceAsAdmin(r.Context(), id.UserID, userID, deviceID, client(r))
 	if errors.Is(err, session.ErrDeviceNotFound) {
 		errorReply(w, 404, "device_not_found")
 		return

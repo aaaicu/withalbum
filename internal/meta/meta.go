@@ -59,8 +59,46 @@ type Event struct {
 	OccurredAt       string `json:"occurred_at"`
 }
 
-// EventAssetAdded is the Event.Kind written by CommitUpload.
-const EventAssetAdded = "asset_added"
+// Event kinds. EventAssetRemoved is a tombstone: the asset is no longer in
+// the folder (its original stays on disk; other folders are not affected).
+const (
+	EventAssetAdded   = "asset_added"   // written by CommitUpload
+	EventAssetRemoved = "asset_removed" // written by RemoveAsset
+)
+
+// FeedState locates a folder's change feed. Epoch identifies the feed of
+// this folder in this database: it differs between folders and changes
+// when the database is restored from a backup, so a sync cursor carrying
+// another epoch does not belong to this feed. Events with Seq <= PrunedSeq
+// may no longer be kept (retention; nothing prunes events yet).
+type FeedState struct {
+	Epoch     string
+	LastSeq   int64
+	PrunedSeq int64
+}
+
+// Idempotency names one upload request of a client: the session's device
+// and the client's Idempotency-Key. Together with CommitRequest.UserID and
+// FolderID it identifies the request; keys of other accounts, devices or
+// folders never match.
+type Idempotency struct {
+	DeviceID string // devices.device_id of the uploading session
+	Key      string
+}
+
+// Receipt is the stored outcome of a committed upload request.
+type Receipt struct {
+	SHA256    string
+	Bytes     int64
+	Result    string // ResultCreated or ResultAlreadyPresent
+	AssetID   string
+	CreatedAt string
+}
+
+// ReceiptTTL is how long a receipt is kept (PruneUploadReceipts). A retry
+// after that is a new request; the content is still deduplicated
+// (ResultAlreadyPresent), so nothing is stored twice.
+const ReceiptTTL = 30 * 24 * time.Hour
 
 // CommitResult values.
 const (
@@ -75,6 +113,12 @@ var (
 	// ErrIDGeneration means no random identifier could be generated.
 	ErrIDGeneration = errors.New("id generation failed")
 	ErrInvalidLimit = errors.New("limit must be positive")
+	// ErrIdempotencyMismatch: the idempotency key was already used by this
+	// account and device for this folder with other bytes.
+	ErrIdempotencyMismatch = errors.New("idempotency key already used for other content")
+	ErrReceiptNotFound     = errors.New("upload receipt not found")
+	// ErrCursorInvalid: a sync position beyond the folder's last event.
+	ErrCursorInvalid = errors.New("sync cursor is not a position of this feed")
 	// ErrBusy means a write could not get the database write lock in time
 	// (concurrent writers). Nothing was written; retrying later is safe.
 	ErrBusy = errors.New("metadata store is busy")
@@ -127,25 +171,44 @@ type CommitRequest struct {
 	// BeforeCommit, if set, is called after all changes are prepared and
 	// immediately before they are made durable, while the store holds its
 	// write lock. If it returns an error nothing is written and CommitUpload
-	// returns an error wrapping it. It is not called when the result is
-	// ResultAlreadyPresent (nothing to write). The HTTP API re-verifies the
-	// storage volume and the pool file here.
+	// returns an error wrapping it. It is not called when nothing is
+	// written: ResultAlreadyPresent without Idempotency, or a replay. The
+	// HTTP API re-verifies the storage volume and the pool file here.
 	BeforeCommit func() error
+	// Idempotency, if set (UserID must be set too), records a receipt in the
+	// same transaction, for every outcome including ResultAlreadyPresent.
+	// If a receipt for the same request exists, nothing is written and its
+	// result is returned with Replayed set (after Authorize); if that receipt
+	// is for other bytes, CommitUpload returns ErrIdempotencyMismatch.
+	Idempotency *Idempotency
 }
 
 // CommitResult reports what CommitUpload did. Asset is the stored asset: the
 // new one, or the folder's existing one for ResultAlreadyPresent.
 type CommitResult struct {
-	Result string
-	Asset  Asset
+	Result   string
+	Asset    Asset
+	Replayed bool // the stored result of an earlier request with the same idempotency key
 }
 
 // EventPage is one page of a folder's change feed.
 type EventPage struct {
-	Events     []Event          // never nil
-	Assets     map[string]Asset // assets referenced by Events, by Asset.ID; never nil
-	NextCursor int64            // last Seq in Events, or the input cursor if empty
-	HasMore    bool             // events after NextCursor exist
+	Events []Event // never nil
+	// Assets holds the assets of the asset_added events in Events that are
+	// still linked to the folder, by Asset.ID; never nil. An asset that was
+	// removed since is left out (its asset_removed event follows).
+	Assets     map[string]Asset
+	NextCursor int64     // last Seq in Events, or the input cursor if empty
+	HasMore    bool      // events after NextCursor exist
+	State      FeedState // read before the events
+}
+
+// AssetPage is one page of the assets currently linked to a folder, in
+// Asset.ID order.
+type AssetPage struct {
+	Assets  []Asset   // never nil
+	HasMore bool      // assets after the last one exist
+	State   FeedState // read before the assets
 }
 
 // Invitation statuses (folder_invitations.status). A pending invitation
@@ -295,6 +358,31 @@ type MetadataStore interface {
 	// It returns ErrFolderNotFound for an unknown folder and ErrInvalidLimit
 	// for limit <= 0.
 	ListEvents(ctx context.Context, folderID string, cursor int64, limit int) (EventPage, error)
+	// FeedState returns the folder's feed position. ErrFolderNotFound.
+	FeedState(ctx context.Context, folderID string) (FeedState, error)
+	// ListFolderAssets returns up to limit assets currently linked to the
+	// folder with Asset.ID > after, in Asset.ID order (a snapshot page).
+	// ErrFolderNotFound, ErrInvalidLimit.
+	ListFolderAssets(ctx context.Context, folderID, after string, limit int) (AssetPage, error)
+	// FindFolderAssets returns, for each given SHA-256 that the folder
+	// currently holds, the ID of its asset there. It never looks at other
+	// folders.
+	FindFolderAssets(ctx context.Context, folderID string, shas []string) (map[string]string, error)
+	// RemoveAsset unlinks asset c.TargetID from c.FolderID and appends an
+	// EventAssetRemoved event, re-checking the caller (c.Authorize) and
+	// writing an audit row in the same transaction. The asset row and the
+	// original file are kept. ErrAssetNotFound (unknown, removed already,
+	// or of another folder).
+	RemoveAsset(ctx context.Context, c AlbumChange) error
+	// AckSyncCursor records that deviceID has applied c.FolderID's feed up
+	// to seq (device_sync_cursors), after re-checking the caller.
+	// ErrCursorInvalid when seq is beyond the last event.
+	AckSyncCursor(ctx context.Context, c AlbumChange, deviceID string, seq int64) error
+	// LookupReceipt returns the receipt of an upload request, or
+	// ErrReceiptNotFound. It is a read; CommitUpload decides again.
+	LookupReceipt(ctx context.Context, userID, folderID string, id Idempotency) (Receipt, error)
+	// PruneUploadReceipts deletes receipts created before t.
+	PruneUploadReceipts(ctx context.Context, before time.Time) (int64, error)
 	// GetFolderAsset returns the asset with this ID if it is currently linked
 	// to the folder, and ErrAssetNotFound otherwise (unknown ID, removed, or
 	// an asset of another folder).

@@ -251,7 +251,9 @@ func TestRefreshRotatesAndDetectsReuse(t *testing.T) {
 	if _, err := e.svc.Authenticate(ctx, second.AccessToken); err != nil {
 		t.Fatal(err)
 	}
-	// Replaying the exchanged refresh token revokes the whole session.
+	// Replaying the exchanged refresh token after the grace window revokes
+	// the whole session.
+	e.clk.Add(session.DefaultRefreshGrace + time.Second)
 	if _, _, err := e.svc.Refresh(ctx, session.RefreshRequest{RefreshToken: first.RefreshToken}); !errors.Is(err, session.ErrRefreshReuse) {
 		t.Fatalf("reuse: %v", err)
 	}
@@ -300,10 +302,11 @@ func TestConcurrentRefreshOneWins(t *testing.T) {
 		})
 	}
 	wg.Wait()
-	// Exactly one exchange wins; every other one is a replay of the same
-	// token, which (by design) revokes the session.
-	if ok != 1 {
-		t.Fatalf("%d concurrent refreshes succeeded, want 1", ok)
+	// One exchange wins and the grace allows exactly one more (as for a
+	// lost response); every further replay of the same token revokes the
+	// session (by design: apps must serialize refreshes).
+	if ok != 2 {
+		t.Fatalf("%d concurrent refreshes succeeded, want 2", ok)
 	}
 	var revoked sql.NullString
 	e.db.QueryRow("SELECT revoke_reason FROM auth_sessions WHERE session_id = ?", tok.SessionID).Scan(&revoked)

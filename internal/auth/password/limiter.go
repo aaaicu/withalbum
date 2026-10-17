@@ -83,6 +83,21 @@ func (l *Limiter) Hash(ctx context.Context, pw string) (string, error) {
 	return Hash(pw, l.params)
 }
 
+// Rehash is Hash(pw, l.Params()) inside a slot without the policy check: it
+// re-hashes a password that was just verified (stored with older
+// parameters), which may predate the current policy. Passwords longer than
+// MaxBytes are refused.
+func (l *Limiter) Rehash(ctx context.Context, pw string) (string, error) {
+	if len(pw) > MaxBytes {
+		return "", errors.New("password: too long")
+	}
+	if err := l.acquire(ctx); err != nil {
+		return "", err
+	}
+	defer l.release()
+	return Hash(pw, l.params)
+}
+
 // Verify reports whether pw matches encoded, inside a slot. When encoded is
 // not a usable hash (empty because the account does not exist, locked or
 // malformed) it verifies pw against the dummy hash instead and returns

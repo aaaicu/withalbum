@@ -178,7 +178,9 @@ func TestLoginAndSessionLifecycle(t *testing.T) {
 	wantStatus(t, "old access after refresh", e.call(t, "GET", "/api/v1/me", nil, bearer(access)), 401, "unauthorized")
 	wantStatus(t, "new access", e.call(t, "GET", "/api/v1/me", nil, bearer(access2)), 200, "")
 
-	// Replaying the old refresh token revokes the session.
+	// Replaying the old refresh token after the grace window revokes the
+	// session.
+	e.clock.Add(session.DefaultRefreshGrace + time.Second)
 	wantStatus(t, "refresh reuse", e.call(t, "POST", "/api/v1/auth/refresh", map[string]string{"refresh_token": refresh}, nil), 401, "unauthorized")
 	wantStatus(t, "access after reuse", e.call(t, "GET", "/api/v1/me", nil, bearer(access2)), 401, "unauthorized")
 	wantStatus(t, "refresh after reuse", e.call(t, "POST", "/api/v1/auth/refresh", map[string]string{"refresh_token": refresh2}, nil), 401, "unauthorized")

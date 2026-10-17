@@ -38,8 +38,8 @@ func TestEmbeddedMigrationsAreContiguous(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ms) != 6 || LatestVersion() != 6 {
-		t.Fatalf("got %d migrations, LatestVersion %d; want 6", len(ms), LatestVersion())
+	if len(ms) != 7 || LatestVersion() != 7 {
+		t.Fatalf("got %d migrations, LatestVersion %d; want 7", len(ms), LatestVersion())
 	}
 }
 
@@ -134,14 +134,15 @@ func TestMigrateNewDatabase(t *testing.T) {
 		"users", "devices", "auth_sessions", "folders", "folder_members",
 		"folder_invitations", "blobs", "assets", "folder_assets",
 		"folder_sequences", "folder_changes", "device_sync_cursors",
-		"upload_receipts", "audit_log", "legacy_imports", "legacy_asset_map",
+		"upload_receipts", "audit_log", "legacy_imports", "legacy_asset_map", "sync_state",
 	} {
 		var n int
 		if err := sqlDB.QueryRow("SELECT count(*) FROM sqlite_schema WHERE type='table' AND name=?", table).Scan(&n); err != nil || n != 1 {
 			t.Errorf("table %s: count=%d err=%v", table, n, err)
 		}
 	}
-	for _, tc := range [][2]string{{"folder_assets", "uploader_device_label"}, {"folder_changes", "uploader_device_label"}, {"assets", "preview_ready"}} {
+	for _, tc := range [][2]string{{"folder_assets", "uploader_device_label"}, {"folder_changes", "uploader_device_label"}, {"assets", "preview_ready"},
+		{"folder_sequences", "pruned_seq"}, {"upload_receipts", "idempotency_key"}, {"auth_refresh_used", "grace"}} {
 		var n int
 		if err := sqlDB.QueryRow("SELECT count(*) FROM pragma_table_info(?) WHERE name=?", tc[0], tc[1]).Scan(&n); err != nil || n != 1 {
 			t.Errorf("column %s.%s missing: %v", tc[0], tc[1], err)

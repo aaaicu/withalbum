@@ -130,7 +130,19 @@ func (l sharedLibrary) probe(t *testing.T, h http.Handler, tok map[string]string
 	for _, login := range l.logins {
 		for _, p := range paths {
 			w := serve(h, tok[login], "GET", p, nil)
-			out = append(out, fmt.Sprintf("%s GET %s -> %d %s", login, p, w.Code, shaHex(w.Body.Bytes())))
+			body := w.Body.Bytes()
+			if strings.HasSuffix(p, "/sync") && w.Code == 200 {
+				// A restore rotates the feed epoch on purpose (cursors from
+				// before it must be refused); compare only the position.
+				var m map[string]any
+				if err := json.Unmarshal(body, &m); err != nil {
+					t.Fatal(err)
+				}
+				_, seq, _ := strings.Cut(m["next_cursor"].(string), ".")
+				m["next_cursor"] = seq
+				body, _ = json.Marshal(m)
+			}
+			out = append(out, fmt.Sprintf("%s GET %s -> %d %s", login, p, w.Code, shaHex(body)))
 		}
 		w := serve(h, tok[login], "POST", "/api/v1/folders/"+l.folder+"/assets", testPhoto(t, 40))
 		out = append(out, fmt.Sprintf("%s POST upload -> %d", login, w.Code))
@@ -163,6 +175,12 @@ func TestBackupRestoreSameBehavior(t *testing.T) {
 		tok[login] = loginAs(t, a.api.Handler(), login)
 	}
 	before := lib.probe(t, a.api.Handler(), tok)
+	var feed struct {
+		NextCursor string `json:"next_cursor"`
+	}
+	if err := json.Unmarshal(serve(a.api.Handler(), tok["owner"], "GET", "/api/v1/folders/"+lib.folder+"/sync", nil).Body.Bytes(), &feed); err != nil {
+		t.Fatal(err)
+	}
 	if !strings.Contains(strings.Join(before, "\n"), "stranger GET /api/v1/folders/"+lib.folder+" -> 404") ||
 		!strings.Contains(strings.Join(before, "\n"), "uploader POST upload -> 202") {
 		t.Fatalf("unexpected permissions before backup:\n%s", strings.Join(before, "\n"))
@@ -222,6 +240,10 @@ func TestBackupRestoreSameBehavior(t *testing.T) {
 		tok2[login] = loginAs(t, h2, login)
 	}
 	after := lib.probe(t, h2, tok2)
+	// A cursor issued before the restore no longer fits the feed.
+	if w := serve(h2, tok2["owner"], "GET", "/api/v1/folders/"+lib.folder+"/sync?cursor="+feed.NextCursor, nil); w.Code != 409 || !strings.Contains(w.Body.String(), "cursor_invalid") {
+		t.Fatalf("cursor from before the restore: %d %s", w.Code, w.Body)
+	}
 	if strings.Join(before, "\n") != strings.Join(after, "\n") {
 		t.Fatalf("responses differ after restore\nbefore:\n%s\nafter:\n%s", strings.Join(before, "\n"), strings.Join(after, "\n"))
 	}

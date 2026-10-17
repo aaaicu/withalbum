@@ -3,6 +3,11 @@ info:
   title: WithAlbum Self-Hosted Identity and Authorization API
   version: 1.4.4-draft
   description: >-
+    HISTORICAL (superseded by API_v2.yaml, the one official contract). Kept
+    to show the 1.4 decisions; do not implement against it (sync cursors are
+    now strings, uploads need Idempotency-Key, new routes exist).
+
+
     Access-control contract. IMPLEMENTED in the Go server: /api/v1/auth/*,
     /api/v1/me*, /api/v1/admin/users* (login, device sessions, account
     administration) and the album routes GET/POST /api/v1/folders,

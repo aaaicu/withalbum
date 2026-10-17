@@ -57,6 +57,7 @@ const (
 type Store struct {
 	db      *sql.DB
 	ownerID string // users.user_id of the bootstrap administrator
+	epoch   string // sync_state.epoch, read at Open (a restore happens offline)
 }
 
 // DB returns the underlying database so that other stores of the same
@@ -99,6 +100,10 @@ func Open(ctx context.Context, vol *storage.Volume) (*Store, error) {
 	if s.ownerID, err = ensureBootstrapOwner(ctx, sqlDB); err != nil {
 		sqlDB.Close()
 		return nil, fmt.Errorf("bootstrap owner: %w", err)
+	}
+	if err := sqlDB.QueryRowContext(ctx, "SELECT epoch FROM sync_state WHERE singleton = 1").Scan(&s.epoch); err != nil {
+		sqlDB.Close()
+		return nil, fmt.Errorf("sync epoch: %w", err)
 	}
 	return s, nil
 }
@@ -429,17 +434,55 @@ func (s *Store) commitUpload(ctx context.Context, req meta.CommitRequest) (meta.
 		}
 	}
 
+	idem := req.Idempotency
+	if idem != nil {
+		if req.UserID == "" || idem.DeviceID == "" || idem.Key == "" {
+			return meta.CommitResult{}, errors.New("sqlitestore: idempotent commit needs user, device and key")
+		}
+		// The same request again (a retry after a lost response): answer
+		// what was committed then, write nothing.
+		rc, err := lookupReceipt(ctx, tx, req.UserID, req.FolderID, *idem)
+		switch {
+		case err == nil && rc.SHA256 != sha:
+			return meta.CommitResult{}, meta.ErrIdempotencyMismatch
+		case err == nil:
+			a, err := assetByID(ctx, tx, rc.AssetID)
+			if err != nil {
+				return meta.CommitResult{}, err
+			}
+			return meta.CommitResult{Result: rc.Result, Asset: a, Replayed: true}, nil
+		case !errors.Is(err, meta.ErrReceiptNotFound):
+			return meta.CommitResult{}, err
+		}
+	}
+	ts := now()
+
 	existing, err := scanAsset(tx.QueryRowContext(ctx, "SELECT "+assetColumns+` FROM folder_assets fa
 		JOIN assets a ON a.asset_id = fa.asset_id JOIN blobs b ON b.sha256 = a.original_sha256
 		WHERE fa.folder_id = ? AND a.original_sha256 = ? AND fa.removed_at IS NULL ORDER BY fa.rowid LIMIT 1`, req.FolderID, sha))
 	if err == nil {
+		if idem == nil {
+			return meta.CommitResult{Result: meta.ResultAlreadyPresent, Asset: existing}, nil
+		}
+		// Nothing changes in the folder, but the receipt is written (and
+		// synced) like for a new asset.
+		if err := insertReceipt(ctx, tx, req, meta.ResultAlreadyPresent, existing.ID, ts); err != nil {
+			return meta.CommitResult{}, err
+		}
+		if req.BeforeCommit != nil {
+			if err := req.BeforeCommit(); err != nil {
+				return meta.CommitResult{}, fmt.Errorf("before commit: %w", err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return meta.CommitResult{}, err
+		}
 		return meta.CommitResult{Result: meta.ResultAlreadyPresent, Asset: existing}, nil
 	}
 	if !errors.Is(err, meta.ErrAssetNotFound) {
 		return meta.CommitResult{}, err
 	}
 
-	ts := now()
 	result := meta.ResultLinked
 	ins, err := tx.ExecContext(ctx, `INSERT INTO blobs (sha256, bytes, mime_type, relative_path, verified_at, created_at)
 		VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(sha256) DO NOTHING`,
@@ -472,9 +515,15 @@ func (s *Store) commitUpload(ctx context.Context, req meta.CommitRequest) (meta.
 		req.FolderID, seq, meta.EventAssetAdded, newAssetID, ts, req.DeviceID); err != nil {
 		return meta.CommitResult{}, fmt.Errorf("insert change: %w", err)
 	}
+	if idem != nil {
+		// ResultLinked is stored as created: the API never tells the two apart.
+		if err := insertReceipt(ctx, tx, req, meta.ResultCreated, newAssetID, ts); err != nil {
+			return meta.CommitResult{}, err
+		}
+	}
 	// Re-read so the result reflects the stored rows (an already present
 	// blob row keeps its own size and type).
-	asset, err := scanAsset(tx.QueryRowContext(ctx, "SELECT "+assetColumns+" FROM assets a JOIN blobs b ON b.sha256 = a.original_sha256 WHERE a.asset_id = ?", newAssetID))
+	asset, err := assetByID(ctx, tx, newAssetID)
 	if err != nil {
 		return meta.CommitResult{}, err
 	}
@@ -490,33 +539,38 @@ func (s *Store) commitUpload(ctx context.Context, req meta.CommitRequest) (meta.
 }
 
 // ListEvents implements meta.MetadataStore. It runs plain queries, not a
-// transaction; events and assets are append-only, so a concurrent commit can
-// only add events after the page, which HasMore then reports.
+// transaction. The feed state is read first; events are append-only and
+// each page is one statement, so a concurrent commit or removal can only add
+// events after the page, which HasMore then reports.
 func (s *Store) ListEvents(ctx context.Context, folderID string, cursor int64, limit int) (meta.EventPage, error) {
 	if limit <= 0 {
 		return meta.EventPage{}, meta.ErrInvalidLimit
 	}
-	if _, err := s.GetFolder(ctx, folderID); err != nil {
+	state, err := s.FeedState(ctx, folderID)
+	if err != nil {
 		return meta.EventPage{}, err
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT c.seq, c.event_type, c.asset_id, COALESCE(c.uploader_device_label, ''), c.occurred_at,
-			a.original_sha256, a.original_filename, b.mime_type, b.bytes, a.preview_ready, a.created_at
+			a.original_sha256, a.original_filename, b.mime_type, b.bytes, a.preview_ready, a.created_at,
+			fa.asset_id IS NOT NULL AND fa.removed_at IS NULL
 		FROM folder_changes c
 		LEFT JOIN assets a ON a.asset_id = c.asset_id
 		LEFT JOIN blobs b ON b.sha256 = a.original_sha256
+		LEFT JOIN folder_assets fa ON fa.folder_id = c.folder_id AND fa.asset_id = c.asset_id
 		WHERE c.folder_id = ? AND c.seq > ? ORDER BY c.seq LIMIT ?`, folderID, cursor, limit)
 	if err != nil {
 		return meta.EventPage{}, err
 	}
 	defer rows.Close()
-	page := meta.EventPage{Events: []meta.Event{}, Assets: map[string]meta.Asset{}, NextCursor: cursor}
+	page := meta.EventPage{Events: []meta.Event{}, Assets: map[string]meta.Asset{}, NextCursor: cursor, State: state}
 	for rows.Next() {
 		e := meta.Event{FolderID: folderID}
 		var sha, filename, mime, uploadedAt sql.NullString
 		var size sql.NullInt64
 		var preview sql.NullBool
+		var linked bool
 		if err := rows.Scan(&e.Seq, &e.Kind, &e.AssetID, &e.UploaderDeviceID, &e.OccurredAt,
-			&sha, &filename, &mime, &size, &preview, &uploadedAt); err != nil {
+			&sha, &filename, &mime, &size, &preview, &uploadedAt, &linked); err != nil {
 			return meta.EventPage{}, err
 		}
 		if !sha.Valid || !mime.Valid {
@@ -525,8 +579,10 @@ func (s *Store) ListEvents(ctx context.Context, folderID string, cursor int64, l
 			return meta.EventPage{}, fmt.Errorf("folder %s event %d references a missing asset or blob", folderID, e.Seq)
 		}
 		page.Events = append(page.Events, e)
-		page.Assets[e.AssetID] = meta.Asset{ID: e.AssetID, SHA256: sha.String, Filename: filename.String, MimeType: mime.String,
-			Bytes: size.Int64, PreviewReady: preview.Bool, UploadedAt: uploadedAt.String}
+		if e.Kind == meta.EventAssetAdded && linked {
+			page.Assets[e.AssetID] = meta.Asset{ID: e.AssetID, SHA256: sha.String, Filename: filename.String, MimeType: mime.String,
+				Bytes: size.Int64, PreviewReady: preview.Bool, UploadedAt: uploadedAt.String}
+		}
 		page.NextCursor = e.Seq
 	}
 	if err := rows.Err(); err != nil {
