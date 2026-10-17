@@ -1,5 +1,5 @@
-// Package authz defines authorization decisions for the future WithAlbum server.
-// IMPORTANT: This package is not yet wired into the server HTTP handlers.
+// Package authz defines authorization decisions for the WithAlbum server.
+// Every protected HTTP route decides with Allowed (internal/httpapi).
 package authz
 
 // ServerRole is the scope of the account on one self-hosted server instance.
@@ -35,6 +35,7 @@ const (
 	InviteMember     Action = "invite_member"
 	RevokeMember     Action = "revoke_member"
 	ChangeMemberRole Action = "change_member_role"
+	ListMembers      Action = "list_members" // members and pending invitations
 	TransferOwner    Action = "transfer_owner"
 	DeleteAlbum      Action = "delete_album"
 )
@@ -74,7 +75,7 @@ func Allowed(user Principal, action Action, album *AlbumAccess) bool {
 		switch action {
 		case GetAlbumMetadata, ListAlbumAssets, DownloadAsset, UploadAsset,
 			DeleteAsset, InviteMember, RevokeMember, ChangeMemberRole,
-			TransferOwner, DeleteAlbum:
+			ListMembers, TransferOwner, DeleteAlbum:
 			return true
 		default:
 			return false

@@ -6,8 +6,9 @@
 //
 // Recorded so far: account changes (internal/users), logins (successful and
 // failed, with the reason), login throttling (once per block), logout,
-// device revocation and refresh-token reuse (internal/auth/session). Album
-// events follow with the album API.
+// device revocation and refresh-token reuse (internal/auth/session), and
+// album sharing: invitations, role changes, removals, ownership transfers
+// and archiving (internal/meta/sqlitestore).
 package audit
 
 import (

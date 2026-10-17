@@ -4,6 +4,11 @@
 
 - 최소 Go 버전 1.23 → 1.26 (지원 종료 버전 탈피), modernc.org/sqlite v1.39.0 → v1.60.1 (SQLite 3.53.4).
 
+### Added (M11, album sharing)
+- 초대·멤버·소유권 이전·보관 API(OWNER만, 멤버 403·비멤버/관리자 404): `GET /api/v1/folders/{id}/members`, `PATCH|DELETE /api/v1/folders/{id}/members/{uid}`, `POST /api/v1/folders/{id}/owner`, `GET|POST /api/v1/folders/{id}/invitations`, `DELETE /api/v1/folders/{id}/invitations/{iid}`, `DELETE /api/v1/folders/{id}`(보관). 초대받은 계정: `GET /api/v1/invitations`, `POST /api/v1/invitations/{iid}/accept`. 규격: `docs/API_AUTH_v1.4.yaml`(1.4.3-draft).
+- 쓰기마다 BEGIN IMMEDIATE 트랜잭션 안에서 계정·세션·소유자·멤버십을 다시 읽어 재판정하고 감사 로그(`invitation.create|accept|revoke`, `member.role_change|remove`, `folder.transfer_owner|archive`)를 함께 커밋. 초대는 활성 등록 계정만(없음·비활성·잠금은 같은 404), 7일 만료(조회 시 판정), 대상·앨범당 대기 1개, 토큰 없음(수락에 대상 본인 세션 필요). 소유권 이전은 현재 멤버에게만, 이전 오너는 CONTRIBUTOR, 대기 초대 취소.
+- 마이그레이션 0006: 대기 초대 부분 UNIQUE 인덱스(`folder_id, invited_user_id WHERE status='pending'`)와 폴더별 인덱스. `authz.ListMembers` 액션(OWNER만).
+
 ### Changed (breaking, API)
 - 앨범 ACL(M10): 대시보드 페이지·`/api/v1/health`·`/api/v1/auth/login`·`/api/v1/auth/refresh` 외 모든 경로가 세션 필요(없거나 무효하면 401, 알 수 없는 `/api/v1/*` 경로도). 폴더·자산 라우트는 요청마다 DB의 소유자·멤버십으로 판정: 소유·멤버가 아닌 폴더는 SERVER_ADMIN이라도 404 `folder_not_found`, 역할 부족은 403 `forbidden`. 라우트별 접근 정책은 `internal/httpapi/middleware_authz.go` 표 하나에만 선언하며 미선언 라우트는 핸들러 구성 시 panic.
 - `POST /api/v1/folders`는 SERVER_ADMIN 또는 `can_create_albums`만(아니면 403), 만든 사람이 유일한 OWNER. `GET /api/v1/folders`는 내가 소유하거나 멤버인 폴더만 `role`·`can_read`·`can_upload`와 함께 반환. `GET /api/v1/folders/{id}` 추가(UPLOADER 포함 멤버에게 최소 메타데이터).

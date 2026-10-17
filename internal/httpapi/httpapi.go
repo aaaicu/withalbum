@@ -49,6 +49,10 @@ const (
 	FaultAfterPreview = "after_preview" // preview done, metadata not yet committed
 	FaultBeforeCommit = "before_commit" // inside the metadata transaction, before COMMIT
 	FaultAfterCommit  = "after_commit"  // committed, response not yet sent
+	// FaultMembershipBeforeCommit: inside the transaction of an invitation,
+	// membership, ownership or archive change, everything prepared, before
+	// COMMIT; an error rolls the change back.
+	FaultMembershipBeforeCommit = "membership_before_commit"
 )
 
 // FaultInjector is for tests only and must be nil in production. Fault is
@@ -81,6 +85,10 @@ type Config struct {
 	// Auth holds the login, session and account services (NewAuth).
 	// Required: Handler panics without it.
 	Auth *Auth
+	// Members serves invitations, memberships and ownership changes. nil:
+	// Meta, which must then implement meta.Memberships (Handler panics
+	// otherwise).
+	Members meta.Memberships
 }
 
 // Server holds the HTTP handlers.
@@ -94,12 +102,17 @@ type Server struct {
 	integrityWarning bool
 	faults           FaultInjector
 	auth             *Auth
+	members          meta.Memberships
 }
 
 // New returns a Server for cfg.
 func New(cfg Config) *Server {
 	s := &Server{vol: cfg.Volume, meta: cfg.Meta, blobs: cfg.Blobs, version: cfg.Version,
-		minFree: max(cfg.MinFreeBytes, 0), freeBytes: cfg.FreeBytes, integrityWarning: cfg.IntegrityWarning, faults: cfg.Faults, auth: cfg.Auth}
+		minFree: max(cfg.MinFreeBytes, 0), freeBytes: cfg.FreeBytes, integrityWarning: cfg.IntegrityWarning, faults: cfg.Faults, auth: cfg.Auth,
+		members: cfg.Members}
+	if s.members == nil {
+		s.members, _ = cfg.Meta.(meta.Memberships)
+	}
 	if s.freeBytes == nil {
 		s.freeBytes = cfg.Volume.FreeBytes
 	}
@@ -128,6 +141,9 @@ func errorReply(w http.ResponseWriter, status int, code string) {
 func (s *Server) Handler() http.Handler {
 	if s.auth == nil {
 		panic("httpapi: Config.Auth is required")
+	}
+	if s.members == nil {
+		panic("httpapi: Config.Members is required")
 	}
 	rt := newRouter(s)
 	rt.handle("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
@@ -160,6 +176,7 @@ func (s *Server) Handler() http.Handler {
 	rt.handleAlbum("GET /api/v1/folders/{folderID}/sync", s.syncEvents)
 	rt.handleAlbum("GET /api/v1/folders/{folderID}/assets/{assetID}/original", s.download(false))
 	rt.handleAlbum("GET /api/v1/folders/{folderID}/assets/{assetID}/preview", s.download(true))
+	s.memberRoutes(rt)
 	return rt.finish()
 }
 
