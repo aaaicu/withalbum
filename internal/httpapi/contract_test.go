@@ -2,6 +2,7 @@ package httpapi_test
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -13,6 +14,7 @@ import (
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -126,6 +128,8 @@ func runContract(t *testing.T, newStore storeOpener) {
 	t.Run("RestoreMissingOriginal", func(t *testing.T) { contractRestoreMissingOriginal(t, newEnv(t)) })
 }
 
+const idemKey = "Idempotency-Key"
+
 type reply struct {
 	Status int
 	Header http.Header
@@ -141,6 +145,9 @@ func (r reply) object(t *testing.T) map[string]any {
 	return m
 }
 
+// do sends one request. An upload (POST .../assets) without an
+// Idempotency-Key in header gets a fresh one, as a new client request
+// would; an empty value sends none.
 func do(t *testing.T, h http.Handler, method, path string, body []byte, header map[string]string) reply {
 	t.Helper()
 	var rd io.Reader
@@ -148,8 +155,13 @@ func do(t *testing.T, h http.Handler, method, path string, body []byte, header m
 		rd = bytes.NewReader(body)
 	}
 	req := httptest.NewRequest(method, path, rd)
+	if _, set := header[idemKey]; !set && method == "POST" && strings.HasSuffix(req.URL.Path, "/assets") {
+		req.Header.Set(idemKey, rand.Text())
+	}
 	for k, v := range header {
-		req.Header.Set(k, v)
+		if v != "" {
+			req.Header.Set(k, v)
+		}
 	}
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -234,7 +246,7 @@ func syncPage(t *testing.T, h http.Handler, folderID, cursor string) map[string]
 	t.Helper()
 	path := "/api/v1/folders/" + folderID + "/sync"
 	if cursor != "" {
-		path += "?cursor=" + cursor
+		path += "?cursor=" + url.QueryEscape(cursor)
 	}
 	m := wantJSON(t, "sync", do(t, h, "GET", path, nil, nil), 200)
 	wantKeys(t, "sync", m, "folder_id", "events", "assets", "next_cursor", "has_more")
@@ -411,12 +423,26 @@ func contractUploadFilenames(t *testing.T, env contractEnv) {
 	}
 }
 
+// cursorAt replaces the sequence of a sync cursor.
+func cursorAt(t *testing.T, cursor string, seq int) string {
+	t.Helper()
+	epoch, _, ok := strings.Cut(cursor, ".")
+	if !ok || len(epoch) != 16 {
+		t.Fatalf("cursor %q", cursor)
+	}
+	return fmt.Sprintf("%s.%d", epoch, seq)
+}
+
 func contractSync(t *testing.T, env contractEnv) {
 	h := env.Handler
 	wantError(t, "unknown folder", do(t, h, "GET", "/api/v1/folders/nope/sync", nil, nil), 404, "folder_not_found")
 	fid := createFolder(t, h, "s")["id"].(string)
-	for _, c := range []string{"abc", "-1", "1.5"} {
-		wantError(t, "cursor "+c, do(t, h, "GET", "/api/v1/folders/"+fid+"/sync?cursor="+c, nil, nil), 400, "invalid_cursor")
+	other := createFolder(t, h, "other")["id"].(string)
+	for _, c := range []string{"abc", "-1", "1.5", "0", "1", "0123456789abcdef.", "0123456789abcdef.-1", "0123456789ABCDEF.1", "0123456789abcdef.1.2"} {
+		wantError(t, "cursor "+c, do(t, h, "GET", "/api/v1/folders/"+fid+"/sync?cursor="+url.QueryEscape(c), nil, nil), 400, "invalid_cursor")
+	}
+	for _, l := range []string{"0", "-1", "501", "x", "1.5", "+5"} {
+		wantError(t, "limit "+l, do(t, h, "GET", "/api/v1/folders/"+fid+"/sync?limit="+url.QueryEscape(l), nil, nil), 400, "invalid_limit")
 	}
 
 	m := syncPage(t, h, fid, "")
@@ -426,18 +452,27 @@ func contractSync(t *testing.T, env contractEnv) {
 	if as, ok := m["assets"].(map[string]any); !ok || len(as) != 0 {
 		t.Fatalf("empty assets = %#v, want {}", m["assets"])
 	}
-	if m["next_cursor"] != float64(0) || m["has_more"] != false {
+	start := m["next_cursor"].(string)
+	if cursorAt(t, start, 0) != start || m["has_more"] != false {
 		t.Fatalf("empty sync %v", m)
 	}
+	otherStart := syncPage(t, h, other, "")["next_cursor"].(string)
+	if otherStart == start {
+		t.Fatal("two folders share a feed epoch")
+	}
+	// A cursor of another folder, or ahead of the feed, is not a position
+	// of this feed.
+	wantError(t, "other folder's cursor", do(t, h, "GET", "/api/v1/folders/"+fid+"/sync?cursor="+otherStart, nil, nil), 409, "cursor_invalid")
+	wantError(t, "cursor ahead", do(t, h, "GET", "/api/v1/folders/"+fid+"/sync?cursor="+cursorAt(t, start, 1), nil, nil), 409, "cursor_invalid")
 
 	pic := jpegBytes(t, 3, 2)
 	picID := wantJSON(t, "upload", uploadTo(t, h, fid, pic, map[string]string{"X-Filename": "p.jpg", "X-Device-ID": " dev-1 "}), 201)["asset_id"].(string)
 	wantJSON(t, "upload", uploadTo(t, h, fid, pic, nil), 200) // already present: no new event
 	wantJSON(t, "upload", uploadTo(t, h, fid, []byte("second"), nil), 201)
 
-	m = syncPage(t, h, fid, "0")
+	m = syncPage(t, h, fid, start)
 	events := m["events"].([]any)
-	if len(events) != 2 || m["next_cursor"] != float64(2) || m["has_more"] != false {
+	if len(events) != 2 || m["next_cursor"] != cursorAt(t, start, 2) || m["has_more"] != false {
 		t.Fatalf("sync %v", m)
 	}
 	e := events[0].(map[string]any)
@@ -458,14 +493,42 @@ func contractSync(t *testing.T, env contractEnv) {
 		t.Fatalf("asset %v", a)
 	}
 
-	m = syncPage(t, h, fid, "1")
-	if len(m["events"].([]any)) != 1 || m["next_cursor"] != float64(2) {
+	m = syncPage(t, h, fid, cursorAt(t, start, 1))
+	if len(m["events"].([]any)) != 1 || m["next_cursor"] != cursorAt(t, start, 2) {
 		t.Fatalf("cursor 1: %v", m)
 	}
-	// A cursor past the end echoes back unchanged.
-	m = syncPage(t, h, fid, "50")
-	if len(m["events"].([]any)) != 0 || m["next_cursor"] != float64(50) || m["has_more"] != false {
-		t.Fatalf("cursor 50: %v", m)
+	// The latest cursor gives an empty page and is echoed back.
+	m = syncPage(t, h, fid, cursorAt(t, start, 2))
+	if len(m["events"].([]any)) != 0 || m["next_cursor"] != cursorAt(t, start, 2) || m["has_more"] != false {
+		t.Fatalf("latest cursor: %v", m)
+	}
+	wantError(t, "cursor past the end", do(t, h, "GET", "/api/v1/folders/"+fid+"/sync?cursor="+cursorAt(t, start, 50), nil, nil), 409, "cursor_invalid")
+
+	// Removal: a tombstone event; the asset leaves "assets", also for a
+	// client reading from the beginning.
+	if r := do(t, h, "DELETE", "/api/v1/folders/"+fid+"/assets/"+picID, nil, nil); r.Status != 204 {
+		t.Fatalf("remove: %d %s", r.Status, r.Body)
+	}
+	wantError(t, "remove again", do(t, h, "DELETE", "/api/v1/folders/"+fid+"/assets/"+picID, nil, nil), 404, "asset_not_found")
+	m = syncPage(t, h, fid, cursorAt(t, start, 2))
+	events = m["events"].([]any)
+	if len(events) != 1 || len(m["assets"].(map[string]any)) != 0 || m["next_cursor"] != cursorAt(t, start, 3) {
+		t.Fatalf("after remove: %v", m)
+	}
+	e = events[0].(map[string]any)
+	wantKeys(t, "tombstone", e, "seq", "kind", "asset_id", "folder_id", "uploader_device_id", "occurred_at")
+	if e["kind"] != "asset_removed" || e["asset_id"] != picID || e["seq"] != float64(3) || e["uploader_device_id"] != "" {
+		t.Fatalf("tombstone %v", e)
+	}
+	m = syncPage(t, h, fid, "")
+	if len(m["events"].([]any)) != 3 || len(m["assets"].(map[string]any)) != 1 || m["assets"].(map[string]any)[picID] != nil {
+		t.Fatalf("full feed after remove: %v", m)
+	}
+	wantError(t, "removed original", do(t, h, "GET", "/api/v1/folders/"+fid+"/assets/"+picID+"/original", nil, nil), 404, "asset_not_found")
+	// The same bytes again are a new asset with a new ID.
+	again := wantJSON(t, "re-upload", uploadTo(t, h, fid, pic, nil), 201)["asset_id"].(string)
+	if again == picID {
+		t.Fatal("re-upload revived the removed asset id")
 	}
 }
 
@@ -476,12 +539,21 @@ func contractSyncPaging(t *testing.T, env contractEnv) {
 		wantJSON(t, "upload", uploadTo(t, h, fid, []byte(fmt.Sprintf("item-%03d", i)), nil), 201)
 	}
 	m := syncPage(t, h, fid, "")
-	if len(m["events"].([]any)) != 100 || m["next_cursor"] != float64(100) || m["has_more"] != true || len(m["assets"].(map[string]any)) != 100 {
+	start := m["next_cursor"].(string)
+	if len(m["events"].([]any)) != 100 || m["has_more"] != true || len(m["assets"].(map[string]any)) != 100 {
 		t.Fatalf("page 1: events=%d next=%v more=%v", len(m["events"].([]any)), m["next_cursor"], m["has_more"])
 	}
-	m = syncPage(t, h, fid, "100")
-	if len(m["events"].([]any)) != 1 || m["next_cursor"] != float64(101) || m["has_more"] != false {
+	m = syncPage(t, h, fid, start)
+	if len(m["events"].([]any)) != 1 || m["next_cursor"] != cursorAt(t, start, 101) || m["has_more"] != false {
 		t.Fatalf("page 2: %v", m)
+	}
+	m = wantJSON(t, "limit", do(t, h, "GET", "/api/v1/folders/"+fid+"/sync?limit=7&cursor="+cursorAt(t, start, 90), nil, nil), 200)
+	if len(m["events"].([]any)) != 7 || m["next_cursor"] != cursorAt(t, start, 97) || m["has_more"] != true {
+		t.Fatalf("limit 7: %v", m)
+	}
+	m = wantJSON(t, "max limit", do(t, h, "GET", "/api/v1/folders/"+fid+"/sync?limit=500", nil, nil), 200)
+	if len(m["events"].([]any)) != 101 || m["has_more"] != false {
+		t.Fatalf("limit 500: %d events", len(m["events"].([]any)))
 	}
 }
 
@@ -636,6 +708,7 @@ func contractInsufficientStorage(t *testing.T, newStore storeOpener) {
 	wantError(t, "content-length over budget", uploadTo(t, h, fid, body, nil), 507, "insufficient_storage")
 	// Unknown length (chunked): staged up to the budget, then refused.
 	req := httptest.NewRequest("POST", "/api/v1/folders/"+fid+"/assets", io.MultiReader(bytes.NewReader(body)))
+	req.Header.Set(idemKey, rand.Text())
 	req.ContentLength = -1
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -646,6 +719,7 @@ func contractInsufficientStorage(t *testing.T, newStore storeOpener) {
 	}
 	// Larger than MaxUploadSize stays 413 even when space is short.
 	big := httptest.NewRequest("POST", "/api/v1/folders/"+fid+"/assets", bytes.NewReader(body))
+	big.Header.Set(idemKey, rand.Text())
 	big.ContentLength = httpapi.MaxUploadSize + 1
 	w = httptest.NewRecorder()
 	h.ServeHTTP(w, big)

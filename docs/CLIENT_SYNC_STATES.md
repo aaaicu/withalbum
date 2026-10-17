@@ -53,3 +53,12 @@ METADATA_ONLY -> PREVIEW_QUEUED -> PREVIEW_READY -> ORIGINAL_TEMPORARY
 8. 멤버 권한 철회: 서버 API 즉시 차단, 로컬 캐시 정리 정책 적용.
 9. 저장소 유실/서버 DB 복원: 파일 재스캔 및 스냅샷 동기화 설계 필요.
 10. 사진 앱 원본 직접 삭제: PhotoHub 스테이징 복사본과 서버 원본에 영향 없음.
+
+## 서버 API 대응 (docs/API_v2.yaml, M16)
+
+- UPLOADING: 큐 아이템마다 `Idempotency-Key`(UUID 권장)를 정해 영속화하고 모든 재시도에 그대로 보낸다. 같은 키·같은 바이트 재시도는 첫 커밋 결과(같은 상태 코드·asset_id, `Idempotency-Replayed: true`)를 받고 서버에 아무것도 더 저장되지 않는다. 같은 키·다른 바이트는 422 `idempotency_key_reused`(앱 버그) → 새 키로 다시. 키는 계정·기기·폴더 범위, 30일 보존.
+- VERIFYING: 200/201은 응답 `folder_id`·`sha256`·`asset_id`를, 202(UPLOADER)는 `folder_id`·`sha256`·`bytes`를 로컬 값과 대조. 이 외 상태는 SYNCED 금지(507은 자동 재시도 금지, 503 busy는 Retry-After).
+- READY 사전 조회: `POST /folders/{id}/assets/check`는 읽기 권한자만, 이 폴더만. UPLOADER는 사전 조회 없이 업로드.
+- 수신: 폴더별 cursor(문자열)를 페이지를 로컬 DB에 저장한 뒤에만 갱신. `has_more`면 이어서 요청. `asset_removed`는 폴더 연결 해제. 409(`cursor_invalid`: 다른 폴더·서버 복원·앞선 cursor / `cursor_expired`: 보존 범위 밖)면 그 폴더 인덱스를 버리고 `GET /folders/{id}/assets` 스냅샷을 `after`로 끝까지 받은 뒤 첫 페이지의 `cursor`부터 피드를 이어 받는다(시나리오 9의 서버 측 대응).
+- 권한 철회(8): 다음 요청이 404(추방)·403(UPLOADER로 하향) → 앱은 해당 폴더 캐시 정리 정책 적용.
+- 서버 측 자동화된 시나리오: 2·3·6·7·8 (`internal/httpapi/sync_v2_test.go`).

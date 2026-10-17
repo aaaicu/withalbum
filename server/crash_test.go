@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -126,10 +127,14 @@ func testPhoto(t *testing.T, seed int) []byte {
 	return buf.Bytes()
 }
 
-// serve sends one request with the Bearer token.
+// serve sends one request with the Bearer token. An upload gets a fresh
+// Idempotency-Key (each call is a new request).
 func serve(h http.Handler, token, method, path string, body []byte) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, path, bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+token)
+	if method == "POST" && strings.HasSuffix(path, "/assets") {
+		req.Header.Set("Idempotency-Key", rand.Text())
+	}
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 	return w
@@ -547,6 +552,7 @@ func killDuringUpload(t *testing.T, root string, folder testFolder, point string
 		t.Fatal(err)
 	}
 	req.Header.Set("Authorization", "Bearer "+folder.token)
+	req.Header.Set("Idempotency-Key", rand.Text())
 	var wg sync.WaitGroup
 	var status int
 	var reqErr error

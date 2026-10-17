@@ -145,7 +145,7 @@ Drive의 개인 My Drive ACL 역할은 `owner`, `writer`, `commenter`, `reader` 
   - 최초 관리자(**서버 콘솔 전용**): `withalbum-server admin init -login <이름>`. 기존 폴더를 소유한 잠금 bootstrap 계정(`account_bootstrap`, 처음 이름 `admin`)을 **인수**한다. user_id를 유지하므로 레거시 폴더 소유가 그대로이며, 한 번만 가능하다. 인수 전에는 bootstrap 계정을 다른 방법으로 바꿀 수 없고 다른 계정도 만들 수 없다. 이름 `admin`은 인수 전에는 bootstrap 계정이 점유하고, 인수 때 그대로 둘 수도 있으며, 다른 이름으로 바꾸면 일반 계정에 쓸 수 있다(bootstrap 식별은 이름이 아니라 user_id).
   - 일반 사용자: 관리자가 콘솔 `admin create-user`로 생성(기본 USER, `can_create_albums=false`). 가입 신청은 후속.
   - 복구: `admin reset-password` (콘솔 전용, `SECURITY.md` 참조).
-- **로그인·세션 구현(HTTP, 테스트·로컬 바이너리 스모크 검증):** 규격은 `docs/API_AUTH_v1.4.yaml`.
+- **로그인·세션 구현(HTTP, 테스트·로컬 바이너리 스모크 검증):** 규격은 `docs/API_v2.yaml`(통합, M16).
   - `internal/auth/session`: 로그인 1회 = `devices` 1행 + `auth_sessions` 1행(마이그레이션 0005로 access 토큰 해시·만료, CSRF 해시, 교환된 refresh 기록 `auth_refresh_used` 추가). 토큰은 256비트 랜덤(base64url), DB에는 SHA-256만 저장. access 15분, refresh 30일(교환 때마다 창 재시작). refresh는 access·refresh를 모두 회전해 이전 토큰은 즉시 무효. 이미 교환된 refresh가 다시 오면 **세션 전체 폐기**(재사용 감지, `auth.refresh_reuse` 감사). 같은 refresh로 동시에 두 번 요청해도 재사용으로 간주된다(앱은 refresh를 직렬화해야 함).
   - `internal/httpapi/middleware_auth.go` `RequireSession`: Bearer 또는 웹 쿠키. **매 요청 DB에서 세션·기기·계정 상태를 재조회**해 `authz.Principal`을 만든다(`PrincipalFrom`). 비활성·기기 해지·만료는 다음 요청에서 401, 역할·앨범 생성 권한 변경도 다음 요청에 반영.
   - 웹(platform `web`): 토큰을 본문에 주지 않고 HttpOnly·SameSite=Strict 쿠키(`withalbum_access` Path=/api/, `withalbum_refresh` Path=/api/v1/auth/) + 읽을 수 있는 `withalbum_csrf` 쿠키. 쿠키로 인증된 GET/HEAD/OPTIONS 이외 요청은 `X-CSRF-Token` 필수(없거나 틀리면 403). Authorization 헤더가 있으면 쿠키는 무시. 본문은 `application/json`만 허용(교차 사이트 폼 차단). Secure는 TLS 요청에서 설정(현재는 loopback HTTP 전용, TLS는 M15).
@@ -171,7 +171,15 @@ Drive의 개인 My Drive ACL 역할은 `owner`, `writer`, `commenter`, `reader` 
   - 역할 변경(`PATCH /folders/{id}/members/{uid}`)·추방(`DELETE`): 대상이 오너면 409 `target_is_owner`, 멤버가 아니면 404 `member_not_found`. 다음 요청부터 새 역할로 판정(하향 → 403, 추방 → 404, 업로드 중 추방 → 커밋 재확인에서 404).
   - 소유권 이전(`POST /folders/{id}/owner`, `new_owner_user_id`): 새 오너는 **현재 멤버이며 활성 계정**이어야 한다(아니면 404 `member_not_found` / 409 `user_inactive`). 앨범을 동의 없는 계정에 떠넘기지 않기 위해 멤버로 제한했다. 1 트랜잭션: 새 오너 멤버십 삭제 → `owner_user_id` 변경 → 이전 오너를 **CONTRIBUTOR** 멤버로 삽입(트리거 순서) → 대기 초대 전부 취소 → 감사. 중간 실패는 전부 롤백되고 오너는 항상 1명(실패 주입 테스트).
   - 보관(`DELETE /folders/{id}`): `archived_at` 설정 + 대기 초대 취소 + 감사. 파일·행은 남고 모든 라우트에서 404(오너 포함). 복원 API는 없다. **한계:** 보관된 앨범도 소유로 남아 그 오너 계정은 비활성화할 수 없다(트리거 `cannot_disable_owner`); 관리자 복구 기능은 후속.
-- **미구현:** 초대 거절(초대받은 사람이 직접 거절)·멤버 스스로 탈퇴, 보관 앨범 복원, 앱 UX(핀닝 구현 포함), Drive 계정 연동, 로그인 성공 시 Argon2id 파라미터 재해시, 오래된 세션 행 정리, 관리자에 의한 타인 기기 목록/해지.
+- **M16 추가(HTTP 테스트·로컬 바이너리 스모크 검증):**
+  - 사진 제거 `DELETE /folders/{fid}/assets/{aid}`: OWNER만(§7-5: CONTRIBUTOR는 자기 사진도 403, VIEWER·UPLOADER 403, 비멤버·관리자 404). 트랜잭션 안 재판정 + `asset.remove` 감사, `asset_removed` tombstone. 원본 파일은 지우지 않는다(GC 없음).
+  - `/assets/check`: 읽기 권한자만, **이 폴더의** 해시만 대조(전역·타 폴더 존재 비노출). UPLOADER 403(§4 "이 역할에서는 사전 중복 조회를 막는다").
+  - 멱등 키는 계정·세션 기기·폴더 범위(`upload_receipts` PK). 다른 계정·기기·폴더의 같은 키 문자열은 별개 요청이라 결과·존재가 교차 노출되지 않는다. 모든 업로드가 영수증을 같은 트랜잭션에 기록하므로 UPLOADER의 신규/중복 업로드가 같은 쓰기·fsync 경로를 탄다(지연 차이 완화; 새 pool 파일의 디렉터리 fsync 차이는 남음).
+  - refresh 유예: 앱(Bearer) refresh 토큰이 교환 후 30초 안에, 그 뒤 다른 교환 없이 다시 오면 1회만 재회전(`auth.refresh_grace` 감사), 첫 교환이 발급한 토큰은 사용된 것으로 기록. 유예 밖·두 번째·브라우저는 기존대로 세션 폐기. 대가: 토큰을 훔친 쪽이 정상 기기 직후 30초 안에 쓰면 정상 기기의 다음 refresh까지 세션을 얻는다(그때 재사용 감지로 폐기).
+  - 세션 절대 만료 90일, 로그인 성공 시 파라미터가 다르면 재해시(`account.password_rehash`), 6시간마다 30일 지난 폐기·만료 세션 행·만료된 used refresh·30일 지난 업로드 영수증 정리(기기 행은 유지).
+  - 관리자: `GET /admin/users/{uid}/devices`, `DELETE /admin/users/{uid}/devices/{did}`(`device.admin_revoke`, 행위자 = 관리자). 앨범 열람권은 여전히 없음.
+  - 감사: 본인 비밀번호 변경 실패(`account.password_change` denied), 권한 거부 요약(`access.denied`: 계정·라우트·상태별 첫 거부를 즉시, 이후 10분 창 동안은 개수만 세어 다음 행의 `suppressed_before`로). 401은 기록하지 않는다(행위자 없음, DB 쓰기 폭주 방지).
+- **미구현:** 초대 거절(초대받은 사람이 직접 거절)·멤버 스스로 탈퇴, 보관 앨범 복원·관리자 복구(설계 메모: 마일스톤 M16 파일), 앱 UX(핀닝 구현 포함), Drive 계정 연동, 이벤트 보존 기간·삭제(409 경로만 구현).
 - 구현 순서: SQLite 트랜잭션 및 마이그레이션 → 최초 관리자 생성/로그인 → 권한 미들웨어 → 폴더 오너/멤버 권한 → 초대/수락/회수 → 전체 통합 테스트 → Mac LAN 테스트.
 - **중요:** LAN 공개는 위 TLS 게이트에서만 가능하다(SECURITY.md). 인터넷 공개·대체 불가능한 원본의 유일 저장소로 사용하면 안 된다.
 

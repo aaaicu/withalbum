@@ -2,6 +2,7 @@ package httpapi_test
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -88,6 +89,9 @@ func TestUploadAndDeltaSyncOverRealHTTP(t *testing.T) {
 		req.Header.Set("Authorization", "Bearer "+env.Token)
 		req.Header.Set("X-Filename", "pic.jpg")
 		req.Header.Set("X-Device-ID", "iphone-A")
+		if method == "POST" {
+			req.Header.Set("Idempotency-Key", rand.Text())
+		}
 		res, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatal(err)
@@ -114,16 +118,16 @@ func TestUploadAndDeltaSyncOverRealHTTP(t *testing.T) {
 		}
 		assetID = up.AssetID
 	}
-	res = authed("GET", "/api/v1/folders/"+folder.ID+"/sync?cursor=0", nil)
+	res = authed("GET", "/api/v1/folders/"+folder.ID+"/sync", nil)
 	var data struct {
 		Events     []meta.Event `json:"events"`
-		NextCursor int          `json:"next_cursor"`
+		NextCursor string       `json:"next_cursor"`
 	}
 	if err := json.NewDecoder(res.Body).Decode(&data); err != nil {
 		t.Fatal(err)
 	}
 	res.Body.Close()
-	if len(data.Events) != 1 || data.NextCursor != 1 {
+	if len(data.Events) != 1 || !strings.HasSuffix(data.NextCursor, ".1") {
 		t.Fatalf("unexpected delta %+v", data)
 	}
 	prev := authed("GET", "/api/v1/folders/"+folder.ID+"/assets/"+assetID+"/preview", nil)

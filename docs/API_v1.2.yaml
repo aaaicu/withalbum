@@ -7,8 +7,7 @@ info:
     every folder and asset route now requires a session and album
     permissions, asset IDs are random, and the unauthenticated
     /api/v1/assets/{assetID}/original|preview routes (which took the SHA-256)
-    are REMOVED. The current contract is API_AUTH_v1.4.yaml; the unified
-    API arrives with M16.
+    are REMOVED. The current contract is API_v2.yaml.
     Upload success (200/201) is sent only after the original file and its metadata are
     both durably committed; any other status means nothing was committed and the
     same bytes can be retried.

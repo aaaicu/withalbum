@@ -62,12 +62,18 @@ var routePolicies = []RoutePolicy{
 	{"GET /api/v1/admin/users/{userID}", AccessServer, authz.ManageAccounts},
 	{"PATCH /api/v1/admin/users/{userID}", AccessServer, authz.ManageAccounts},
 	{"PATCH /api/v1/admin/users/{userID}/permissions", AccessServer, authz.ManageAccounts},
+	{"GET /api/v1/admin/users/{userID}/devices", AccessServer, authz.ManageAccounts},
+	{"DELETE /api/v1/admin/users/{userID}/devices/{deviceID}", AccessServer, authz.ManageAccounts},
 	{"GET /api/v1/admin/server/tls", AccessServer, authz.ManageServer},
 	{"GET /api/v1/folders", AccessSession, ""},
 	{"POST /api/v1/folders", AccessServer, authz.CreateAlbum},
 	{"GET /api/v1/folders/{folderID}", AccessAlbum, authz.GetAlbumMetadata},
 	{"POST /api/v1/folders/{folderID}/assets", AccessAlbum, authz.UploadAsset},
+	{"GET /api/v1/folders/{folderID}/assets", AccessAlbum, authz.ListAlbumAssets},
+	{"POST /api/v1/folders/{folderID}/assets/check", AccessAlbum, authz.ListAlbumAssets},
+	{"DELETE /api/v1/folders/{folderID}/assets/{assetID}", AccessAlbum, authz.DeleteAsset},
 	{"GET /api/v1/folders/{folderID}/sync", AccessAlbum, authz.ListAlbumAssets},
+	{"PUT /api/v1/folders/{folderID}/sync/cursor", AccessAlbum, authz.ListAlbumAssets},
 	{"GET /api/v1/folders/{folderID}/assets/{assetID}/original", AccessAlbum, authz.DownloadAsset},
 	{"GET /api/v1/folders/{folderID}/assets/{assetID}/preview", AccessAlbum, authz.DownloadAsset},
 	{"DELETE /api/v1/folders/{folderID}", AccessAlbum, authz.DeleteAlbum},
@@ -152,6 +158,7 @@ func (rt *router) handle(pattern string, h http.HandlerFunc) {
 		rt.mux.Handle(pattern, rt.s.RequireSession(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			pr, _ := PrincipalFrom(r.Context())
 			if !authz.Allowed(pr, p.Action, nil) {
+				rt.s.denied(r, pr.UserID, pattern, 403, "")
 				errorReply(w, 403, "forbidden")
 				return
 			}
@@ -170,6 +177,7 @@ func (rt *router) handleAlbum(pattern string, h albumHandler) {
 		a := albumRequest{ID: id, P: principal(id)}
 		fa, err := rt.s.meta.GetFolderAccess(r.Context(), r.PathValue("folderID"), a.P.UserID)
 		if errors.Is(err, meta.ErrFolderNotFound) {
+			rt.s.denied(r, a.P.UserID, pattern, 404, r.PathValue("folderID"))
 			errorReply(w, 404, "folder_not_found")
 			return
 		}
@@ -180,10 +188,12 @@ func (rt *router) handleAlbum(pattern string, h albumHandler) {
 		a.Folder = fa
 		// Owners and members (any role) may know the folder exists.
 		if !a.allowed(authz.GetAlbumMetadata) {
+			rt.s.denied(r, a.P.UserID, pattern, 404, r.PathValue("folderID"))
 			errorReply(w, 404, "folder_not_found")
 			return
 		}
 		if !a.allowed(p.Action) {
+			rt.s.denied(r, a.P.UserID, pattern, 403, fa.Folder.ID)
 			errorReply(w, 403, "forbidden")
 			return
 		}

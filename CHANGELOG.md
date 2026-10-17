@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Added (M16, sync API v2 / idempotent uploads / unified OpenAPI)
+- 공식 규격 `docs/API_v2.yaml`(2.0.0-draft) 하나로 통합. `API_AUTH_v1.4.yaml`·`API_v1.2.yaml`은 역사 기록. `internal/httpapi/openapi_test.go`가 라우트 정책 표와 경로·메서드·공개 여부·401/403/404 문서화를 대조.
+- 업로드 `Idempotency-Key` 필수(없음 400 `idempotency_key_required`, 형식 오류 400 `invalid_idempotency_key`). 계정·세션 기기·폴더·키 범위의 `upload_receipts`를 커밋과 같은 트랜잭션에 기록(already_present 포함). 같은 키 재시도는 첫 결과 그대로(`Idempotency-Replayed: true`), 같은 키·다른 바이트 422 `idempotency_key_reused`. 영수증 30일 보존 후 정리.
+- sync v2: cursor는 문자열 `<epoch>.<seq>`(폴더·DB별, `restore`가 epoch 교체), `limit`(1–500, 기본 100), tombstone `asset_removed`, 409 `cursor_invalid`/`cursor_expired`. 스냅샷 `GET /api/v1/folders/{id}/assets?after=&limit=`, 폴더 범위 `POST .../assets/check`(UPLOADER 403), OWNER 사진 제거 `DELETE .../assets/{aid}`(감사 `asset.remove`, 원본 파일 유지), 선택적 ack `PUT .../sync/cursor`(`device_sync_cursors`).
+- 인증: refresh 응답 유실 30초 유예(앱만, 1회, `auth.refresh_grace`), 세션 절대 만료 90일, 로그인 시 Argon2id 파라미터 재해시, 6시간마다 오래된 세션 행·used refresh·영수증 정리, 관리자 `GET|DELETE /api/v1/admin/users/{uid}/devices*`(`device.admin_revoke`), 본인 비밀번호 변경 실패 감사, 권한 거부(403/404) 요약 감사 `access.denied`.
+- 마이그레이션 0007: `sync_state`, `folder_sequences.pruned_seq`, `upload_receipts` 재생성(미사용 테이블), `auth_refresh_used.used_at/grace`.
+
+### Changed (M16, breaking for clients)
+- `GET .../sync`의 `cursor`·`next_cursor`가 정수에서 문자열로. 정수 cursor는 400, 끝을 넘은 cursor는 이제 409.
+- `sync` 응답 `assets`에는 아직 폴더에 있는 자산만 들어감.
+
 ### Added (M15, TLS / LAN gate)
 - `-tls`: 자체 서명 TLS(`internal/tlsid`). 첫 기동 시 ECDSA P-256 키와 인증서를 `.system/tls/server.pem`(키+인증서 한 파일, 0600, 디렉터리 0700, 임시 파일·fsync·rename)에 생성. TLS 1.3 전용. 인증서는 820일, 만료 60일 전·listen IP 누락 시 **같은 키로** 재발급(핀 불변). 0600이 아니거나 심볼릭 링크·손상 파일은 기동 거부(조용히 새 키를 만들지 않음).
 - `-allow-lan`: non-loopback `WITHALBUM_LISTEN`은 `-allow-lan` + `-tls` + 로그인 가능한 활성 SERVER_ADMIN ≥1 모두 충족 시에만, 사설 IP(RFC 1918, fc00::/7) 또는 와일드카드만. 공인 IP·호스트 이름은 거부. 평문 HTTP는 loopback만.
