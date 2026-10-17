@@ -11,6 +11,7 @@ package meta
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/aaaicu/withalbum/internal/authz"
 )
@@ -145,6 +146,121 @@ type EventPage struct {
 	Assets     map[string]Asset // assets referenced by Events, by Asset.ID; never nil
 	NextCursor int64            // last Seq in Events, or the input cursor if empty
 	HasMore    bool             // events after NextCursor exist
+}
+
+// Invitation statuses (folder_invitations.status). A pending invitation
+// whose ExpiresAt has passed is reported as InvitationExpired; the stored
+// row may still say pending.
+const (
+	InvitationPending  = "pending"
+	InvitationAccepted = "accepted"
+	InvitationRevoked  = "revoked"
+	InvitationExpired  = "expired"
+)
+
+// InvitationTTL is how long an invitation can be accepted.
+const InvitationTTL = 7 * 24 * time.Hour
+
+// Invitation names one registered account (InviteeID) that the folder's
+// owner invited with Role. Only that account can accept it, with its own
+// session; the ID is random but is not a secret.
+type Invitation struct {
+	ID          string
+	FolderID    string
+	FolderName  string
+	InviteeID   string
+	InviteeName string // display name
+	InviterID   string
+	InviterName string // display name
+	Role        authz.AlbumRole
+	Status      string // effective status, see InvitationPending
+	CreatedAt   string
+	ExpiresAt   string
+	AcceptedAt  string // "" unless accepted
+}
+
+// Member is the owner (Role "OWNER") or a member of a folder.
+type Member struct {
+	UserID      string
+	DisplayName string
+	Role        string // "OWNER" or an authz.AlbumRole
+	Active      bool   // the account can log in
+	JoinedAt    string // created_at of the folder for the owner
+}
+
+// AlbumChange is a membership write made by an authenticated user.
+type AlbumChange struct {
+	FolderID  string // "" for AcceptInvitation (taken from the invitation)
+	ActorID   string // users.user_id of the caller
+	SessionID string // the caller's session, see NewFolder.SessionID
+	// TargetID is the user (invitee, member, new owner) or the invitation
+	// the change is about.
+	TargetID string
+	Role     authz.AlbumRole // CreateInvitation and SetMemberRole
+	// Authorize re-checks the caller inside the write transaction, with the
+	// account, session, owner and membership as stored at that moment. It is
+	// required; its error aborts the change and is returned wrapped.
+	Authorize Authorizer
+	// BeforeCommit, if set, runs after every change is prepared, right
+	// before COMMIT. Its error rolls everything back (tests inject faults).
+	BeforeCommit func() error
+}
+
+// Membership errors.
+var (
+	ErrInvalidRole = errors.New("invalid album role")
+	// ErrInviteeNotFound: no account with this ID can be invited (unknown,
+	// disabled or unable to log in). The three are not told apart.
+	ErrInviteeNotFound    = errors.New("invitee not found")
+	ErrAlreadyMember      = errors.New("already owner or member")
+	ErrInvitationPending  = errors.New("a pending invitation exists")
+	ErrInvitationNotFound = errors.New("invitation not found")
+	// ErrInvitationGone: accepted, revoked or expired; it cannot be used.
+	ErrInvitationGone = errors.New("invitation no longer valid")
+	// ErrNotInvitee: the invitation names another account.
+	ErrNotInvitee     = errors.New("invitation is addressed to another account")
+	ErrMemberNotFound = errors.New("member not found")
+	ErrTargetIsOwner  = errors.New("target is the owner")
+	// ErrNewOwnerInactive: the member chosen as new owner cannot log in.
+	ErrNewOwnerInactive = errors.New("new owner account is not active")
+)
+
+// Memberships manages invitations, memberships, ownership transfer and
+// archiving. Every write runs in one transaction that re-checks the caller
+// (AlbumChange.Authorize) and records an audit_log row; either all of it is
+// committed or none of it. Folders keep exactly one owner at all times.
+type Memberships interface {
+	// CreateInvitation invites TargetID with Role to FolderID, valid for
+	// InvitationTTL. ErrInviteeNotFound, ErrAlreadyMember (the owner or a
+	// member), ErrInvitationPending (one per folder and account).
+	CreateInvitation(ctx context.Context, c AlbumChange) (Invitation, error)
+	// ListFolderInvitations returns the folder's pending invitations.
+	ListFolderInvitations(ctx context.Context, folderID string) ([]Invitation, error)
+	// RevokeInvitation cancels invitation TargetID of FolderID.
+	// ErrInvitationNotFound (unknown or of another folder), ErrInvitationGone.
+	RevokeInvitation(ctx context.Context, c AlbumChange) error
+	// ListInvitationsFor returns the pending invitations addressed to userID
+	// for folders that are not archived.
+	ListInvitationsFor(ctx context.Context, userID string) ([]Invitation, error)
+	// AcceptInvitation makes the caller a member with the invited role and
+	// returns the folder with the caller's new relation.
+	// ErrInvitationNotFound, ErrNotInvitee, ErrInvitationGone (also when the
+	// folder was archived or its owner changed), ErrAlreadyMember.
+	AcceptInvitation(ctx context.Context, c AlbumChange) (FolderAccess, error)
+	// ListMembers returns the owner first, then the members by join time.
+	ListMembers(ctx context.Context, folderID string) ([]Member, error)
+	// SetMemberRole changes member TargetID's role. ErrMemberNotFound,
+	// ErrTargetIsOwner.
+	SetMemberRole(ctx context.Context, c AlbumChange) (Member, error)
+	// RemoveMember deletes member TargetID. ErrMemberNotFound, ErrTargetIsOwner.
+	RemoveMember(ctx context.Context, c AlbumChange) error
+	// TransferOwnership makes member TargetID the owner; the previous owner
+	// becomes a CONTRIBUTOR and pending invitations are revoked.
+	// ErrMemberNotFound, ErrTargetIsOwner (the caller), ErrNewOwnerInactive.
+	TransferOwnership(ctx context.Context, c AlbumChange) error
+	// ArchiveFolder hides the folder from everyone (data is kept) and revokes
+	// its pending invitations.
+	ArchiveFolder(ctx context.Context, c AlbumChange) error
 }
 
 // MetadataStore is safe for concurrent use. Write methods either apply all of

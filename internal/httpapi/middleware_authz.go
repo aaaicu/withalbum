@@ -69,6 +69,18 @@ var routePolicies = []RoutePolicy{
 	{"GET /api/v1/folders/{folderID}/sync", AccessAlbum, authz.ListAlbumAssets},
 	{"GET /api/v1/folders/{folderID}/assets/{assetID}/original", AccessAlbum, authz.DownloadAsset},
 	{"GET /api/v1/folders/{folderID}/assets/{assetID}/preview", AccessAlbum, authz.DownloadAsset},
+	{"DELETE /api/v1/folders/{folderID}", AccessAlbum, authz.DeleteAlbum},
+	{"GET /api/v1/folders/{folderID}/members", AccessAlbum, authz.ListMembers},
+	{"PATCH /api/v1/folders/{folderID}/members/{userID}", AccessAlbum, authz.ChangeMemberRole},
+	{"DELETE /api/v1/folders/{folderID}/members/{userID}", AccessAlbum, authz.RevokeMember},
+	{"POST /api/v1/folders/{folderID}/owner", AccessAlbum, authz.TransferOwner},
+	{"GET /api/v1/folders/{folderID}/invitations", AccessAlbum, authz.ListMembers},
+	{"POST /api/v1/folders/{folderID}/invitations", AccessAlbum, authz.InviteMember},
+	{"DELETE /api/v1/folders/{folderID}/invitations/{invitationID}", AccessAlbum, authz.InviteMember},
+	// Only the invited account's own invitations; acceptance is checked
+	// against the invitation and the folder inside the transaction.
+	{"GET /api/v1/invitations", AccessSession, ""},
+	{"POST /api/v1/invitations/{invitationID}/accept", AccessSession, ""},
 }
 
 // Routes returns the declared protection of every route (for tests and

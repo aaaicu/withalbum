@@ -1,7 +1,7 @@
 # 위드앨범(WithAlbum) 계정·오너·초대·권한 설계 v1.4
 
 - 기준: 2026-10-17
-- 상태: **P0 확정 설계 / 정책 함수·계정 코어·HTTP 로그인·기기 세션·계정 관리 API·앨범 ACL(폴더·업로드·동기화·다운로드) 구현**. 초대·역할 변경·소유권 이전 API 전(M11).
+- 상태: **P0 확정 설계 / 정책 함수·계정 코어·HTTP 로그인·기기 세션·계정 관리 API·앨범 ACL(폴더·업로드·동기화·다운로드)·초대·역할 변경·추방·소유권 이전·보관 구현**(테스트·로컬 바이너리 스모크 검증, loopback 전용).
 - 적용 대상: `SELF_HOSTED` Mac mini 우선 (동일 Go 서버 코어를 Linux/Raspberry Pi에도 적용).
 - Google Drive 지원: 아래 **[Drive 별도 제한]**을 반드시 확인. 네이티브 ACL과 동일하지 않다.
 
@@ -163,8 +163,15 @@ Drive의 개인 My Drive ACL 역할은 `owner`, `writer`, `commenter`, `reader` 
   - 업로드: 요청 진입 시 판정 + **커밋 직전 재확인**(`meta.CommitRequest.Authorize`, `BEGIN IMMEDIATE` 쓰기 트랜잭션 안에서 계정 상태·잠금 여부·세션/기기 해지·소유자·멤버십을 다시 읽음; 계정·멤버십 변경도 같은 DB 쓰기이므로 그 사이 바뀔 수 없다). 회수되면 403/404, 자산·연결·이벤트 기록 없음. 결과가 `already_present`여도 재확인한다.
   - UPLOADER 응답: 신규·다른 폴더에 이미 있는 바이트·이 폴더에 이미 있는 바이트 모두 같은 `202 {"result":"accepted","folder_id","sha256","bytes"}`(클라이언트가 보낸 것만 되돌림). 읽기 권한자에게도 "다른 폴더에 있음"(`linked`)은 `created`로 합쳐 전역 존재를 알리지 않는다. 이미 있는 바이트도 pool 파일 재해시·프리뷰 재생성을 똑같이 수행한다. **남은 한계:** 지연 시간 차이(로컬 측정 수 ms, 새 디렉터리 항목·DB 행 fsync 유무)는 완전히 없애지 못했다.
   - 권한 회수 즉시 반영: 역할 하향·멤버 제거·앨범 생성 권한 회수는 다음 요청에서 403/404, 계정 비활성·기기 해지는 401.
-  - 멤버십을 만드는 초대 API는 아직 없다(M11). 테스트는 `folder_members`에 직접 넣어 검증한다.
-- **미구현:** 초대 워크플로우·역할 변경·추방·소유권 이전(M11), TLS, 앱 UX, Drive 계정 연동, 로그인 성공 시 Argon2id 파라미터 재해시, 오래된 세션 행 정리, 관리자에 의한 타인 기기 목록/해지.
+- **초대·멤버·소유권 이전·보관 구현(HTTP, 테스트·로컬 바이너리 스모크 검증):** `internal/meta/sqlitestore/memberships.go`(`meta.Memberships`), `internal/httpapi/members.go`.
+  - 관리 라우트는 모두 OWNER만(`authz` 액션 `InviteMember`·`ListMembers`·`ChangeMemberRole`·`RevokeMember`·`TransferOwner`·`DeleteAlbum`). 멤버는 403, 비멤버·관리자는 404. 쓰기는 요청 진입 판정 + **같은 쓰기 트랜잭션 안에서 계정·세션·소유자·멤버십을 다시 읽어 재판정**하고, 변경과 `audit_log` 행을 함께 커밋한다(토큰·비밀 값은 기록하지 않음).
+  - 초대(`POST /folders/{id}/invitations`): 대상은 `user_id`로 지정한 **활성·로그인 가능한 등록 계정**. 없는 계정·비활성·잠금 계정은 똑같은 404 `invitee_not_found`(상태 비노출). 오너·기존 멤버는 409 `already_member`, 같은 앨범·대상의 대기 초대는 1개(409 `invitation_pending`, 부분 UNIQUE 인덱스, 마이그레이션 0006). 만료 7일(`meta.InvitationTTL`), 만료는 **조회·수락 시 판정**하고 만료된 대기 행은 같은 대상을 다시 초대할 때 `expired`로 바꾼다. 초대는 계정이 고정되고 수락에 그 계정의 세션이 필요하므로 **베어러 토큰이 없다**(`token_sha256`는 NULL, 공개 초대 링크는 지원하지 않음). 초대 ID는 128비트 랜덤.
+  - 수락(`POST /invitations/{id}/accept`): 1 트랜잭션(멤버십 생성 + `accepted` + 감사). 없는 ID 404, 다른 계정(관리자 포함) 403, 이미 수락·취소·만료·앨범 보관·작성자가 더 이상 오너가 아님 410 `invitation_gone`. 동시 수락은 1건만 성공. 수락 전에는 앨범이 404.
+  - 대기 초대 목록: 본인 것만(`GET /invitations`), 오너는 앨범의 대기 초대(`GET /folders/{id}/invitations`)·취소(`DELETE .../invitations/{iid}`, 이미 끝난 초대 410).
+  - 역할 변경(`PATCH /folders/{id}/members/{uid}`)·추방(`DELETE`): 대상이 오너면 409 `target_is_owner`, 멤버가 아니면 404 `member_not_found`. 다음 요청부터 새 역할로 판정(하향 → 403, 추방 → 404, 업로드 중 추방 → 커밋 재확인에서 404).
+  - 소유권 이전(`POST /folders/{id}/owner`, `new_owner_user_id`): 새 오너는 **현재 멤버이며 활성 계정**이어야 한다(아니면 404 `member_not_found` / 409 `user_inactive`). 앨범을 동의 없는 계정에 떠넘기지 않기 위해 멤버로 제한했다. 1 트랜잭션: 새 오너 멤버십 삭제 → `owner_user_id` 변경 → 이전 오너를 **CONTRIBUTOR** 멤버로 삽입(트리거 순서) → 대기 초대 전부 취소 → 감사. 중간 실패는 전부 롤백되고 오너는 항상 1명(실패 주입 테스트).
+  - 보관(`DELETE /folders/{id}`): `archived_at` 설정 + 대기 초대 취소 + 감사. 파일·행은 남고 모든 라우트에서 404(오너 포함). 복원 API는 없다. **한계:** 보관된 앨범도 소유로 남아 그 오너 계정은 비활성화할 수 없다(트리거 `cannot_disable_owner`); 관리자 복구 기능은 후속.
+- **미구현:** 초대 거절(초대받은 사람이 직접 거절)·멤버 스스로 탈퇴, 보관 앨범 복원, TLS, 앱 UX, Drive 계정 연동, 로그인 성공 시 Argon2id 파라미터 재해시, 오래된 세션 행 정리, 관리자에 의한 타인 기기 목록/해지.
 - 구현 순서: SQLite 트랜잭션 및 마이그레이션 → 최초 관리자 생성/로그인 → 권한 미들웨어 → 폴더 오너/멤버 권한 → 초대/수락/회수 → 전체 통합 테스트 → Mac LAN 테스트.
 - **중요:** TLS가 없어서(M15) 서버는 `127.0.0.1`만 바인딩되며 사용자 데이터나 외부 접근에 사용하면 안 된다.
 

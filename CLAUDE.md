@@ -31,15 +31,16 @@
 ## 현재 코드의 진짜 상태 (절대 혼동 금지)
 
 - `server/main.go`(기동) + `internal/httpapi`(핸들러) + `internal/meta/sqlitestore` + `internal/blobstore`: localhost 전용 Go 서버(TLS 없음). 메타데이터는 SQLite `.system/withalbum.db`(`meta.MetadataStore` 인터페이스 뒤). 512MiB 단일 요청 원본 업로드/초보적 프리뷰. **API 자산 ID는 폴더별 랜덤 asset_id**(SHA-256은 내부 중복 제거·`sha256` 필드). 새 폴더 소유자는 생성자, 이전·이관 폴더는 bootstrap 관리자 계정(`account_bootstrap.user_id`, 처음엔 로그인 불가한 잠금 `admin`, `admin init`으로 인수해도 user_id 유지).
-- `internal/httpapi/middleware_authz.go`: 모든 라우트의 접근 정책 표(public 4개 = 대시보드 페이지·health·login·refresh / session / server+액션 / album+액션). 미선언 라우트는 핸들러 구성 시 panic. album 라우트는 매 요청 DB 소유자·멤버십 → `authz.Allowed`, 비멤버(관리자 포함) 404 · 역할 부족 403. 업로드는 커밋 직전 트랜잭션 안에서 재확인(`meta.CommitRequest.Authorize`). UPLOADER 응답은 항상 202 영수증. HTTP E2E 테스트(`authz_test.go`)·로컬 바이너리 스모크로 검증. **초대·역할 변경·소유권 이전 API는 없음(M11)**: 멤버십은 테스트에서 DB 직접 삽입.
+- `internal/httpapi/middleware_authz.go`: 모든 라우트의 접근 정책 표(public 4개 = 대시보드 페이지·health·login·refresh / session / server+액션 / album+액션). 미선언 라우트는 핸들러 구성 시 panic. album 라우트는 매 요청 DB 소유자·멤버십 → `authz.Allowed`, 비멤버(관리자 포함) 404 · 역할 부족 403. 업로드는 커밋 직전 트랜잭션 안에서 재확인(`meta.CommitRequest.Authorize`). UPLOADER 응답은 항상 202 영수증. HTTP E2E 테스트(`authz_test.go`)·로컬 바이너리 스모크로 검증.
+- `internal/meta/sqlitestore/memberships.go`(`meta.Memberships`) + `internal/httpapi/members.go`: 초대(활성 등록 계정, 7일, 1회, 취소, 토큰 없음)·수락(대상 본인, 1 트랜잭션)·역할 변경·추방·소유권 이전(현재 멤버에게, 이전 오너 CONTRIBUTOR, 대기 초대 취소)·보관. OWNER만, 쓰기마다 트랜잭션 안 재판정 + 같은 트랜잭션 감사 로그. HTTP E2E 테스트(`members_test.go`)·실패 주입·동시성 테스트·로컬 바이너리 스모크로 검증. 초대 거절·자진 탈퇴·보관 복원은 없음.
 - `internal/meta/jsonstore`: 서버 기동에 쓰이지 않음, `MetadataStore` 미구현(테스트에서 이전 버전 데이터 생성용으로 고정). state.json만 있는 저장소는 기동 거부.
 - `internal/legacyimport` + `withalbum-server migrate-legacy [-apply]`: state.json → SQLite 무손실 이관(dry-run 기본, 백업·임시 DB 단일 트랜잭션·전 행 검증·원자적 rename·state.json 보존). 테스트와 로컬 스모크(이전 버전 바이너리로 만든 데이터)로 검증, 대용량·외장 디스크 실기기 이관은 미검증.
 - 업로드 커밋 순서·기동 재조정(`blobstore.Reconcile`, `server/main.go` `openApp`)·여유 공간 507·단일 인스턴스 잠금: 장애 주입·SIGKILL 테스트로 검증, 전원 차단·실기기 미검증.
 - `internal/auth/password`(Argon2id) + `internal/users`(사용자 저장소, 마지막 관리자 보호, 감사 로그 `internal/audit`) + `server/admin.go`(`admin init`=bootstrap 인수·`create-user`·`reset-password`, 콘솔 전용, 저장소 잠금 필요): 테스트·로컬 바이너리 스모크로 검증. 비밀번호 재설정·비활성화는 세션을 같은 트랜잭션에서 회수.
 - `internal/auth/session`(기기 세션, access 15분/refresh 30일 회전·재사용 시 세션 폐기, 토큰 SHA-256만 저장) + `internal/auth/ratelimit`(메모리 속도 제한) + `password.Limiter`(Argon2id 동시 2개, 더미 해시로 열거 방지) + `internal/httpapi/auth.go`·`middleware_auth.go`(`/api/v1/auth/*`, `/api/v1/me*`, `/api/v1/admin/users*`, `RequireSession`, 웹 쿠키+CSRF): 테스트·로컬 바이너리 스모크로 검증.
 - `internal/authz`: 권한 함수와 테스트. 모든 관리자·앨범 라우트에서 사용.
-- `internal/db`: SQLite 열기·PRAGMA·마이그레이션(0001 schema v1.4, 0002 이관 보조, 0003 `assets.preview_ready`, 0004 `account_bootstrap`, 0005 세션 토큰 컬럼·`auth_refresh_used`). `docs/schema_v1.4.sql`은 마이그레이션 0001과 동일(정본은 `internal/db/migrations/`). users·audit_log·devices·auth_sessions 사용, folder_members는 ACL 판정에 읽기만(쓰기 API는 M11), 초대 테이블 미사용.
-- `docs/API_AUTH_v1.4.yaml`(1.4.2-draft): `/auth/*`·`/me*`·`/admin/users*`·폴더 목록/생성/조회·업로드·sync·원본/프리뷰는 **구현됨**, 초대·멤버·소유권 이전·폴더 삭제·자산 목록은 **미구현**. `docs/API_v1.2.yaml`은 폐기(역사).
+- `internal/db`: SQLite 열기·PRAGMA·마이그레이션(0001 schema v1.4, 0002 이관 보조, 0003 `assets.preview_ready`, 0004 `account_bootstrap`, 0005 세션 토큰 컬럼·`auth_refresh_used`, 0006 대기 초대 부분 UNIQUE 인덱스). `docs/schema_v1.4.sql`은 마이그레이션 0001과 동일(정본은 `internal/db/migrations/`). users·audit_log·devices·auth_sessions·folder_members·folder_invitations 사용(`token_sha256`은 미사용, NULL).
+- `docs/API_AUTH_v1.4.yaml`(1.4.3-draft): `/auth/*`·`/me*`·`/admin/users*`·폴더 목록/생성/조회·업로드·sync·원본/프리뷰·초대·멤버·소유권 이전·폴더 보관은 **구현됨**, 자산 목록만 **미구현**. `docs/API_v1.2.yaml`은 폐기(역사).
 - Flutter/iOS/Android, OAuth Drive, 외부 통신, 실시간 푸시, GUI DMG, 신뢰 가능한 백업 복원은 없음.
 - README v1.5는 **기획·인수인계 정리판**이고 새 기능 릴리스가 아님.
 

@@ -1,17 +1,21 @@
 openapi: 3.1.0
 info:
   title: WithAlbum Self-Hosted Identity and Authorization API
-  version: 1.4.2-draft
+  version: 1.4.3-draft
   description: >-
     Access-control contract. IMPLEMENTED in the Go server: /api/v1/auth/*,
     /api/v1/me*, /api/v1/admin/users* (login, device sessions, account
     administration) and the album routes GET/POST /api/v1/folders,
     GET /api/v1/folders/{folder_id}, POST /api/v1/folders/{folder_id}/assets,
-    GET /api/v1/folders/{folder_id}/sync and
-    GET /api/v1/folders/{folder_id}/assets/{asset_id}/original|preview.
-    Still TARGET DESIGN (marked "not implemented"): folder deletion,
-    invitations, membership changes, ownership transfer and the asset list
-    (M11/M16). The unauthenticated PoC routes /api/v1/assets/{sha256}/* of
+    GET /api/v1/folders/{folder_id}/sync,
+    GET /api/v1/folders/{folder_id}/assets/{asset_id}/original|preview,
+    and album sharing: DELETE /api/v1/folders/{folder_id} (archive),
+    /api/v1/folders/{folder_id}/members*, /api/v1/folders/{folder_id}/owner,
+    /api/v1/folders/{folder_id}/invitations* and /api/v1/invitations*.
+    Only the owner manages an album; every change is one audited database
+    transaction that re-checks the caller. Still TARGET DESIGN (marked
+    "not implemented"): the asset list (M16). The unauthenticated PoC
+    routes /api/v1/assets/{sha256}/* of
     API_v1.2.yaml are removed. There is no TLS yet (M15): the server listens
     on loopback only.
 
@@ -400,17 +404,69 @@ paths:
         '404': {description: 'folder_not_found (unknown, or not owner/member)'}
     delete:
       tags: [Albums]
-      summary: Delete or archive album (OWNER only) - not implemented
+      summary: Archive the album (OWNER only)
+      description: >-
+        Sets archived_at and revokes pending invitations in one audited
+        transaction. Files, assets and memberships are kept, but every route
+        answers 404 folder_not_found for the folder from then on, for the
+        owner too (there is no restore API yet). Cookie sessions need
+        X-CSRF-Token.
       responses:
-        '204': {description: Archived/deleted under retention policy}
-        '403': {description: Not owner}
-  /api/v1/folders/{folder_id}/invitations:
-    post:
-      tags: [Invitations]
-      summary: Invite a registered user, OWNER only - not implemented (M11)
-      description: Target must be an existing approved server account; cannot auto-create an unapproved account.
+        '204': {description: Archived}
+        '403': {description: 'forbidden (member, not owner) or csrf_failed'}
+        '404': {description: folder_not_found}
+        '503': {description: 'storage_unavailable, storage_io_error, busy'}
+  /api/v1/folders/{folder_id}/members:
+    get:
+      tags: [Albums]
+      summary: Owner and members of the album (OWNER only)
       parameters:
         - $ref: '#/components/parameters/FolderID'
+      responses:
+        '200':
+          description: The owner first (role OWNER), then members by join time
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [folder_id, members]
+                properties:
+                  folder_id: {type: string}
+                  members:
+                    type: array
+                    items: {$ref: '#/components/schemas/Member'}
+        '403': {description: forbidden (member, not owner)}
+        '404': {description: folder_not_found}
+  /api/v1/folders/{folder_id}/invitations:
+    parameters:
+      - $ref: '#/components/parameters/FolderID'
+    get:
+      tags: [Invitations]
+      summary: Pending, unexpired invitations of the album (OWNER only)
+      responses:
+        '200':
+          description: Oldest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [invitations]
+                properties:
+                  invitations:
+                    type: array
+                    items: {$ref: '#/components/schemas/Invitation'}
+        '403': {description: forbidden (member, not owner)}
+        '404': {description: folder_not_found}
+    post:
+      tags: [Invitations]
+      summary: Invite a registered, active account (OWNER only)
+      description: >-
+        The invitation names one account by user_id (the invitee can read
+        its own user_id from GET /api/v1/me), is valid for 7 days and can be
+        accepted once, only by that account with its own session. It carries
+        no secret token. Unknown, disabled and locked accounts are the same
+        404 invitee_not_found. One pending invitation per album and account;
+        an expired one is replaced. Never creates an account. Audited.
       requestBody:
         required: true
         content:
@@ -422,53 +478,141 @@ paths:
                 invited_user_id: {type: string}
                 role: {type: string, enum: [VIEWER, UPLOADER, CONTRIBUTOR]}
       responses:
-        '201': {description: Pending invitation created}
-        '403': {description: Not owner}
-        '404': {description: Invitee not eligible or album not accessible}
+        '201':
+          description: Pending invitation created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Invitation'}
+        '400': {description: 'invalid_json, invalid_request (no invited_user_id), invalid_role'}
+        '403': {description: 'forbidden (member, not owner) or csrf_failed'}
+        '404': {description: 'folder_not_found, invitee_not_found'}
+        '409': {description: 'already_member (the owner or a member), invitation_pending'}
+        '415': {description: json_required}
+        '503': {description: 'storage_unavailable, storage_io_error, busy'}
+  /api/v1/folders/{folder_id}/invitations/{invitation_id}:
+    delete:
+      tags: [Invitations]
+      summary: Revoke a pending invitation (OWNER only)
+      parameters:
+        - $ref: '#/components/parameters/FolderID'
+        - $ref: '#/components/parameters/InvitationID'
+      responses:
+        '204': {description: Revoked (audited)}
+        '403': {description: 'forbidden (member, not owner) or csrf_failed'}
+        '404': {description: 'folder_not_found, invitation_not_found (unknown or of another album)'}
+        '410': {description: 'invitation_gone (already accepted, revoked or expired)'}
   /api/v1/invitations:
     get:
       tags: [Invitations]
-      summary: List pending invitations addressed to current account - not implemented (M11)
+      summary: Pending invitations addressed to the current account
+      description: >-
+        Only the caller's own invitations that can still be accepted:
+        pending, unexpired, for an album that is not archived and written by
+        its current owner.
       responses:
-        '200': {description: Own invitations only}
+        '200':
+          description: Own invitations only, oldest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [invitations]
+                properties:
+                  invitations:
+                    type: array
+                    items: {$ref: '#/components/schemas/Invitation'}
+        '401': {description: unauthorized}
   /api/v1/invitations/{invitation_id}/accept:
     post:
       tags: [Invitations]
-      summary: Accept a valid invitation as its named recipient - not implemented (M11)
+      summary: Accept an invitation as its named recipient
+      description: >-
+        One transaction: membership with the invited role, invitation marked
+        accepted, audit row. Ownership transfer and archiving revoke pending
+        invitations; an invitation whose author is no longer the owner is
+        refused as well. No request body. Cookie sessions need X-CSRF-Token.
       parameters:
         - $ref: '#/components/parameters/InvitationID'
       responses:
-        '200': {description: Membership created atomically}
-        '403': {description: Invitee mismatch or not eligible}
-        '410': {description: Invite expired or revoked}
+        '200':
+          description: Membership created; the album as the caller now sees it
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Folder'}
+        '403': {description: 'forbidden (the invitation names another account; administrators included) or csrf_failed'}
+        '404': {description: invitation_not_found}
+        '409': {description: already_member}
+        '410': {description: 'invitation_gone (accepted, revoked, expired, album archived or owner changed)'}
   /api/v1/folders/{folder_id}/members/{user_id}:
+    parameters:
+      - $ref: '#/components/parameters/FolderID'
+      - $ref: '#/components/parameters/UserID'
     patch:
       tags: [Albums]
-      summary: Change member role (OWNER only) - not implemented (M11)
-      parameters:
-        - $ref: '#/components/parameters/FolderID'
-        - $ref: '#/components/parameters/UserID'
+      summary: Change a member's role (OWNER only)
+      description: The member's next request is decided with the new role. Setting the current role changes nothing.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role: {type: string, enum: [VIEWER, UPLOADER, CONTRIBUTOR]}
       responses:
-        '200': {description: Role changed; next requests use new authorization}
-        '403': {description: Not owner}
+        '200':
+          description: Role changed (audited)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Member'}
+        '400': {description: 'invalid_json, invalid_role'}
+        '403': {description: 'forbidden (member, not owner) or csrf_failed'}
+        '404': {description: 'folder_not_found, member_not_found'}
+        '409': {description: target_is_owner}
     delete:
       tags: [Albums]
-      summary: Remove member (OWNER only) - not implemented (M11)
-      parameters:
-        - $ref: '#/components/parameters/FolderID'
-        - $ref: '#/components/parameters/UserID'
+      summary: Remove a member (OWNER only)
+      description: >-
+        The removed member's next request on the album is 404, an upload in
+        progress is refused at its commit. Files already downloaded cannot be
+        recalled.
       responses:
-        '204': {description: Member removed}
-        '403': {description: Not owner}
+        '204': {description: Member removed (audited)}
+        '403': {description: 'forbidden (member, not owner) or csrf_failed'}
+        '404': {description: 'folder_not_found, member_not_found'}
+        '409': {description: target_is_owner}
   /api/v1/folders/{folder_id}/owner:
     post:
       tags: [Albums]
-      summary: Transfer unique ownership to active user atomically - not implemented (M11)
+      summary: Transfer the unique ownership to a member (OWNER only)
+      description: >-
+        One transaction: the new owner's membership row is deleted, the
+        owner changes, the previous owner becomes a CONTRIBUTOR member,
+        pending invitations are revoked, audit row. The new owner must
+        already be a member with an active account. A failure rolls
+        everything back; the album always has exactly one owner.
       parameters:
         - $ref: '#/components/parameters/FolderID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [new_owner_user_id]
+              properties:
+                new_owner_user_id: {type: string}
       responses:
-        '200': {description: Ownership transferred and audited}
-        '403': {description: Not owner}
+        '200':
+          description: Transferred; the album as the caller (now CONTRIBUTOR) sees it
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Folder'}
+        '400': {description: 'invalid_json, invalid_request'}
+        '403': {description: 'forbidden (member, not owner) or csrf_failed'}
+        '404': {description: 'folder_not_found, member_not_found (not a member)'}
+        '409': {description: 'target_is_owner (the caller), user_inactive (disabled or locked account)'}
   /api/v1/folders/{folder_id}/assets:
     parameters:
       - $ref: '#/components/parameters/FolderID'
@@ -687,6 +831,30 @@ components:
         refresh_expires_at: {type: string, format: date-time}
         device_id: {type: string}
         user: {$ref: '#/components/schemas/User'}
+    Invitation:
+      type: object
+      required: [id, folder_id, folder_name, invitee_user_id, invitee_display_name, inviter_user_id, inviter_display_name, role, status, created_at, expires_at]
+      properties:
+        id: {type: string, description: 'random; not a secret, acceptance needs the invitee session'}
+        folder_id: {type: string}
+        folder_name: {type: string}
+        invitee_user_id: {type: string}
+        invitee_display_name: {type: string}
+        inviter_user_id: {type: string}
+        inviter_display_name: {type: string}
+        role: {type: string, enum: [VIEWER, UPLOADER, CONTRIBUTOR]}
+        status: {type: string, enum: [pending]}
+        created_at: {type: string, format: date-time}
+        expires_at: {type: string, format: date-time, description: created_at + 7 days}
+    Member:
+      type: object
+      required: [user_id, display_name, role, active, joined_at]
+      properties:
+        user_id: {type: string}
+        display_name: {type: string}
+        role: {type: string, enum: [OWNER, CONTRIBUTOR, VIEWER, UPLOADER]}
+        active: {type: boolean, description: the account can log in}
+        joined_at: {type: string, description: 'album creation time for the owner'}
     Device:
       type: object
       required: [device_id, device_name, platform, created_at, last_used_at, expires_at, current]

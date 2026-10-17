@@ -32,7 +32,7 @@ func TestGlobalPermissions(t *testing.T) {
 }
 
 func TestFolderRoles(t *testing.T) {
-	acts := []Action{GetAlbumMetadata, ListAlbumAssets, DownloadAsset, UploadAsset, DeleteAsset, InviteMember, RevokeMember, ChangeMemberRole, TransferOwner, DeleteAlbum}
+	acts := []Action{GetAlbumMetadata, ListAlbumAssets, DownloadAsset, UploadAsset, DeleteAsset, InviteMember, RevokeMember, ChangeMemberRole, ListMembers, TransferOwner, DeleteAlbum}
 	roleCases := []struct {
 		name   string
 		user   Principal
@@ -40,7 +40,7 @@ func TestFolderRoles(t *testing.T) {
 		want   map[Action]bool
 	}{
 		{"owner", Principal{UserID: "owner", Active: true, ServerRole: ServerUser}, AlbumAccess{OwnerID: "owner"}, map[Action]bool{
-			GetAlbumMetadata: true, ListAlbumAssets: true, DownloadAsset: true, UploadAsset: true, DeleteAsset: true, InviteMember: true, RevokeMember: true, ChangeMemberRole: true, TransferOwner: true, DeleteAlbum: true,
+			GetAlbumMetadata: true, ListAlbumAssets: true, DownloadAsset: true, UploadAsset: true, DeleteAsset: true, InviteMember: true, RevokeMember: true, ChangeMemberRole: true, ListMembers: true, TransferOwner: true, DeleteAlbum: true,
 		}},
 		{"viewer", Principal{UserID: "v", Active: true, ServerRole: ServerUser}, AlbumAccess{OwnerID: "owner", HasMembership: true, MemberRole: Viewer}, map[Action]bool{GetAlbumMetadata: true, ListAlbumAssets: true, DownloadAsset: true}},
 		{"uploader", Principal{UserID: "u", Active: true, ServerRole: ServerUser}, AlbumAccess{OwnerID: "owner", HasMembership: true, MemberRole: Uploader}, map[Action]bool{GetAlbumMetadata: true, UploadAsset: true}},
