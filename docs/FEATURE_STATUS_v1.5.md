@@ -6,10 +6,12 @@
 |---|---|---|---|
 | Go 로컬 HTTP 서버 | 개발 PoC 구현 | `server/main.go`(기동), `internal/httpapi` | 개발용 로컬 실행·테스트 |
 | 로컬 관리 UI (M17) | **부분 구현(httptest 검증, 브라우저 수동 점검 전)** — 로그인(웹 쿠키+CSRF), 받은 초대 수락, 내 앨범·생성·업로드, OWNER 멤버·초대·소유권 이전·보관, 비밀번호 변경·기기 해지, 관리자 사용자 관리(생성·권한·비활성·기기 해지·보관 앨범 재배정 후 비활성화)·저장소 상태·TLS 지문. 해시 기반 CSP(`'unsafe-inline'` 없음) | `internal/httpapi/web/index.html`, `internal/httpapi/admin.go`, `internal/httpapi/admin_test.go`, `docs/DASHBOARD_CHECKLIST.md` | Mac 브라우저(Safari·Chrome) 관리자/일반 사용자 시나리오 수동 점검 |
-| 전체 파일 업로드 (512MiB 이하) | 개발 PoC 구현 | `internal/httpapi`, `internal/blobstore` | 영상 대용량 재개/정합성은 추가 구현 |
+| 전체 파일 업로드 (512MiB 이하) | 개발 PoC 구현 | `internal/httpapi`, `internal/blobstore` | — |
+| 대용량 재개 업로드 (M22) | **부분 구현(HTTP 테스트·로컬 바이너리 스모크 검증)** — 세션(계정·기기·폴더 소유, 타인 404, `Idempotency-Key` 같은 범위), 전체 크기 공간 예약(507), 오프셋 조회, 청크 순차 추가(fsync 후 기록, 선택 청크 해시), 끊긴 청크의 도착분 보존, SIGKILL 후 기동 시 부분 파일을 기록 오프셋으로 절단, 완료 시 전체 SHA-256 재계산·불일치 시 0부터, 단일 업로드와 같은 커밋 경로(권한·볼륨 재확인, UPLOADER 202), 24시간 만료·주기 정리 | `internal/httpapi/uploads.go`, `internal/blobstore/uploads.go`, `internal/meta/sqlitestore/uploads.go`, 마이그레이션 0008 | 앱 큐 연동, 실기기·외장 디스크·Wi-Fi 끊김 장시간 시험 |
 | SHA-256 content-addressed 원본 | 개발 PoC 구현 | `internal/blobstore` | 동시성/복구/블롭 접근 권한 시험 |
 | 폴더별 해시 중복 인식 | 개발 PoC 구현 | `internal/meta/sqlitestore` (`CommitUpload`) | 업로드·복제·재시도·동시성 통합 시험 |
-| 기본 JPEG/PNG/GIF 프리뷰 | 개발 PoC 구현 | `internal/blobstore/preview.go` | HEIC/RAW/Live Photo/영상 미지원 검증 |
+| 기본 JPEG/PNG/GIF 프리뷰 | 개발 PoC 구현 | `internal/blobstore/preview.go` | — |
+| HEIC·영상 프리뷰 (M22) | **부분 구현(테스트·로컬 바이너리 스모크 검증, macOS)** — 선택적 외부 도구(sips: HEIC/HEIF/AVIF/WebP/TIFF/BMP, ffmpeg: 영상 대표 프레임), 커밋 후 DB 기반 워커(재시작 안전), `preview_status` ready/pending/failed/unsupported + `asset_updated` 이벤트, 도구 없으면 unsupported. 셸 없음·최소 환경·시간 제한·프로세스 그룹 종료·`.system/work` 격리·원본 0400 및 실행 전후 크기·모드·mtime 확인·출력 JPEG 디코드 후 재인코드, ffmpeg는 file 프로토콜·컨테이너 화이트리스트 | `internal/blobstore/convert.go`, `internal/httpapi/previews.go` | Linux ffmpeg 실기기, RAW·Live Photo·HDR, 자식 프로세스 메모리 상한(Go 단독으로 불가) |
 | JSON 상태 파일 (이전 버전) | **서버 미사용** — state.json만 있는 저장소는 기동 거부(파일 불변) | `internal/meta/jsonstore`, `server/main.go` (`openMetadata`) | — |
 | state.json → SQLite 이관 | **부분 구현(테스트 검증)** — `migrate-legacy` dry-run/`-apply`, 백업·단일 트랜잭션·전 행 검증·원자적 rename, 단계별 크래시 재실행 복구 | `internal/legacyimport`, `server/main.go`, `docs/MIGRATION_legacy_state.md` | 대용량·실기기(외장 디스크) 이관 검증 |
 | 폴더별 event/cursor (sync API v2) | **부분 구현(HTTP 테스트·로컬 바이너리 스모크 검증)** — 문자열 cursor(폴더·DB epoch 포함, 복원 시 epoch 교체), `limit`, tombstone `asset_removed`, 409 `cursor_invalid`/`cursor_expired` + 스냅샷(`GET /assets`), 선택적 ack(`device_sync_cursors`), OWNER 사진 제거, 폴더 범위 `/assets/check` | `internal/httpapi/sync.go`, `internal/meta/sqlitestore/sync.go`, `docs/API_v2.yaml` | 앱 연동, 이벤트 보존(삭제) 정책은 미구현 |

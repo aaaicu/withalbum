@@ -182,10 +182,7 @@ func TestPromoteQuarantinesDamagedPoolFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Remove()
-	dest := s.PoolPath(f.SHA256)
-	if err := os.Mkdir(filepath.Dir(dest), 0700); err != nil {
-		t.Fatal(err)
-	}
+	dest := s.PoolPath(f.SHA256)           // its prefix directory exists from New
 	damaged := []byte("the real originaX") // same size, other bytes
 	if err := os.WriteFile(dest, damaged, 0400); err != nil {
 		t.Fatal(err)

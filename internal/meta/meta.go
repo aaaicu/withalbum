@@ -38,8 +38,19 @@ type Asset struct {
 	MimeType     string `json:"mime_type"`
 	Bytes        int64  `json:"bytes"`
 	PreviewReady bool   `json:"preview_ready"`
-	UploadedAt   string `json:"uploaded_at"`
+	// PreviewStatus is one of the PreviewStatus* constants; PreviewReady
+	// is PreviewStatus == PreviewStatusReady. Not part of the PoC format.
+	PreviewStatus string `json:"-"`
+	UploadedAt    string `json:"uploaded_at"`
 }
+
+// Preview states of an asset (Asset.PreviewStatus).
+const (
+	PreviewStatusReady       = "ready"       // the JPEG preview exists
+	PreviewStatusPending     = "pending"     // waiting for the preview worker
+	PreviewStatusFailed      = "failed"      // the converter could not make one
+	PreviewStatusUnsupported = "unsupported" // no converter for this type on this server
+)
 
 // Link records that an asset belongs to a folder.
 type Link struct {
@@ -64,6 +75,9 @@ type Event struct {
 const (
 	EventAssetAdded   = "asset_added"   // written by CommitUpload
 	EventAssetRemoved = "asset_removed" // written by RemoveAsset
+	// EventAssetUpdated: the asset's metadata changed (currently only its
+	// preview status, written by SetPreviewStatus); read it again.
+	EventAssetUpdated = "asset_updated"
 )
 
 // FeedState locates a folder's change feed. Epoch identifies the feed of
@@ -122,7 +136,84 @@ var (
 	// ErrBusy means a write could not get the database write lock in time
 	// (concurrent writers). Nothing was written; retrying later is safe.
 	ErrBusy = errors.New("metadata store is busy")
+	// ErrUploadNotFound: no upload session with this ID that belongs to this
+	// account, device and folder and has not expired.
+	ErrUploadNotFound = errors.New("upload session not found")
+	// ErrUploadConflict: the session is not at the offset the write assumed
+	// (another request moved it), or it is no longer open.
+	ErrUploadConflict = errors.New("upload session changed")
+	// ErrUploadCommitted: the idempotency key of a new session was already
+	// committed with the same bytes (by a single request or a session that
+	// has since been pruned).
+	ErrUploadCommitted = errors.New("upload already committed")
+	// ErrTooManyUploads: the account has MaxOpenUploads open sessions.
+	ErrTooManyUploads = errors.New("too many open upload sessions")
 )
+
+// Upload session states (UploadSession.Status).
+const (
+	UploadOpen      = "open"
+	UploadCompleted = "completed"
+)
+
+// UploadSessionTTL is how long an upload session lives after its last
+// change (creation, an appended chunk, completion).
+const UploadSessionTTL = 24 * time.Hour
+
+// MaxOpenUploads bounds the open upload sessions of one account.
+const MaxOpenUploads = 16
+
+// UploadSession is a resumable upload of one original in chunks. It is
+// visible only to its account, its device and its folder.
+type UploadSession struct {
+	ID          string // random, 32 hex digits
+	UserID      string
+	DeviceID    string // devices.device_id of the creating session
+	FolderID    string
+	Key         string // Idempotency-Key
+	SHA256      string // declared SHA-256 of the whole original
+	TotalBytes  int64
+	Received    int64 // bytes durably appended so far
+	Filename    string
+	DeviceLabel string // X-Device-ID label, recorded at commit
+	Status      string // UploadOpen or UploadCompleted
+	CreatedAt   string
+	ExpiresAt   string
+}
+
+// NewUploadSession is a CreateUploadSession request.
+type NewUploadSession struct {
+	UserID      string
+	SessionID   string // the caller's auth session, see NewFolder.SessionID
+	DeviceID    string
+	FolderID    string
+	Key         string
+	SHA256      string
+	TotalBytes  int64
+	Filename    string
+	DeviceLabel string
+	// Authorize re-checks the caller inside the write transaction (required).
+	Authorize Authorizer
+	// Reserve is called inside the write transaction with the bytes that
+	// other open sessions still expect; an error refuses the new session
+	// (the HTTP API answers 507 when the volume cannot hold them and this
+	// one). Required.
+	Reserve func(reserved int64) error
+}
+
+// UploadRef names an upload session as seen by its owner.
+type UploadRef struct {
+	ID       string
+	UserID   string
+	DeviceID string
+	FolderID string
+}
+
+// PreviewJob is an original whose assets wait for a preview.
+type PreviewJob struct {
+	SHA256   string
+	MimeType string
+}
 
 // Authorizer re-checks a write inside the store's write transaction, with
 // the principal and the folder access exactly as stored at that moment. The
@@ -181,6 +272,12 @@ type CommitRequest struct {
 	// result is returned with Replayed set (after Authorize); if that receipt
 	// is for other bytes, CommitUpload returns ErrIdempotencyMismatch.
 	Idempotency *Idempotency
+	// UploadSessionID, if set, is the open upload session (of UserID and
+	// Idempotency.DeviceID, for FolderID) these bytes came from: the same
+	// transaction marks it completed, for every outcome including a replay.
+	// If it is not open, CommitUpload returns ErrUploadNotFound and writes
+	// nothing.
+	UploadSessionID string
 }
 
 // CommitResult reports what CommitUpload did. Asset is the stored asset: the
@@ -194,9 +291,10 @@ type CommitResult struct {
 // EventPage is one page of a folder's change feed.
 type EventPage struct {
 	Events []Event // never nil
-	// Assets holds the assets of the asset_added events in Events that are
-	// still linked to the folder, by Asset.ID; never nil. An asset that was
-	// removed since is left out (its asset_removed event follows).
+	// Assets holds the assets of the asset_added and asset_updated events in
+	// Events that are still linked to the folder, by Asset.ID, as they are
+	// now; never nil. An asset that was removed since is left out (its
+	// asset_removed event follows).
 	Assets     map[string]Asset
 	NextCursor int64     // last Seq in Events, or the input cursor if empty
 	HasMore    bool      // events after NextCursor exist
@@ -424,6 +522,43 @@ type MetadataStore interface {
 	LookupReceipt(ctx context.Context, userID, folderID string, id Idempotency) (Receipt, error)
 	// PruneUploadReceipts deletes receipts created before t.
 	PruneUploadReceipts(ctx context.Context, before time.Time) (int64, error)
+	// CreateUploadSession starts an upload session, or returns the existing
+	// one of the same (account, device, folder, key) with created false when
+	// it has the same SHA-256 and size (a retried creation; a completed
+	// session included). An expired session of the key is replaced; its ID
+	// is returned in replaced so the caller can delete its file.
+	// ErrIdempotencyMismatch (the key names other bytes, in a session or a
+	// receipt), ErrUploadCommitted, ErrTooManyUploads, ErrFolderNotFound,
+	// and the errors of Authorize and Reserve, wrapped.
+	CreateUploadSession(ctx context.Context, req NewUploadSession) (us UploadSession, created bool, replaced string, err error)
+	// GetUploadSession returns the session if it belongs to ref's account,
+	// device and folder and has not expired, ErrUploadNotFound otherwise.
+	GetUploadSession(ctx context.Context, ref UploadRef) (UploadSession, error)
+	// AdvanceUploadSession records that the open session ref has received
+	// bytes up to to, if it is at from now, and extends its expiry.
+	// ErrUploadNotFound, ErrUploadConflict.
+	AdvanceUploadSession(ctx context.Context, ref UploadRef, from, to int64) error
+	// DeleteUploadSession removes the session ref (open or completed).
+	// ErrUploadNotFound.
+	DeleteUploadSession(ctx context.Context, ref UploadRef) error
+	// ReservedUploadBytes is what the open, unexpired sessions other than
+	// exceptID still expect to receive.
+	ReservedUploadBytes(ctx context.Context, exceptID string) (int64, error)
+	// ListUploadSessions returns every session row, expired ones included
+	// (startup reconciliation of the .part files).
+	ListUploadSessions(ctx context.Context) ([]UploadSession, error)
+	// PruneUploadSessions deletes the sessions that expired before t and
+	// returns their IDs (the caller deletes their files afterwards).
+	PruneUploadSessions(ctx context.Context, t time.Time) ([]string, error)
+	// PendingPreviews returns up to limit originals with assets whose
+	// preview is pending, oldest first.
+	PendingPreviews(ctx context.Context, limit int) ([]PreviewJob, error)
+	// SetPreviewStatus sets the preview status of every asset of the
+	// original sha whose preview is pending to status (PreviewStatusReady,
+	// PreviewStatusFailed or PreviewStatusUnsupported) and appends one
+	// EventAssetUpdated to each folder that holds one of them, in one
+	// transaction. It returns the number of assets changed.
+	SetPreviewStatus(ctx context.Context, sha, status string) (int, error)
 	// GetFolderAsset returns the asset with this ID if it is currently linked
 	// to the folder, and ErrAssetNotFound otherwise (unknown ID, removed, or
 	// an asset of another folder).

@@ -348,15 +348,48 @@ func (s *Store) GetFolder(ctx context.Context, id string) (meta.Folder, error) {
 }
 
 // assetColumns selects a meta.Asset (scanAsset) from assets a JOIN blobs b.
-const assetColumns = "a.asset_id, a.original_sha256, a.original_filename, b.mime_type, b.bytes, a.preview_ready, a.created_at"
+const assetColumns = "a.asset_id, a.original_sha256, a.original_filename, b.mime_type, b.bytes, a.preview_ready, a.preview_state, a.created_at"
 
 func scanAsset(row scanner) (meta.Asset, error) {
 	var a meta.Asset
-	err := row.Scan(&a.ID, &a.SHA256, &a.Filename, &a.MimeType, &a.Bytes, &a.PreviewReady, &a.UploadedAt)
+	var state sql.NullString
+	err := row.Scan(&a.ID, &a.SHA256, &a.Filename, &a.MimeType, &a.Bytes, &a.PreviewReady, &state, &a.UploadedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return meta.Asset{}, meta.ErrAssetNotFound
 	}
+	a.PreviewStatus = previewStatus(a.PreviewReady, state)
 	return a, err
+}
+
+// previewStatus derives meta.Asset.PreviewStatus from assets.preview_ready
+// and assets.preview_state (migration 0008: NULL means as preview_ready
+// says; rows without a preview from before it count as unsupported).
+func previewStatus(ready bool, state sql.NullString) string {
+	switch {
+	case ready:
+		return meta.PreviewStatusReady
+	case state.Valid:
+		return state.String
+	}
+	return meta.PreviewStatusUnsupported
+}
+
+// previewColumns returns the preview_ready and preview_state values that
+// store a committed asset's preview status. An empty status follows
+// PreviewReady.
+func previewColumns(a meta.Asset) (bool, any, error) {
+	switch a.PreviewStatus {
+	case "":
+		if a.PreviewReady {
+			return true, nil, nil
+		}
+		return false, nil, nil
+	case meta.PreviewStatusReady:
+		return true, nil, nil
+	case meta.PreviewStatusPending, meta.PreviewStatusFailed, meta.PreviewStatusUnsupported:
+		return false, a.PreviewStatus, nil
+	}
+	return false, nil, fmt.Errorf("sqlitestore: unknown preview status %q", a.PreviewStatus)
 }
 
 // GetAssetBySHA implements meta.MetadataStore.
@@ -434,7 +467,34 @@ func (s *Store) commitUpload(ctx context.Context, req meta.CommitRequest) (meta.
 		}
 	}
 
+	previewReady, previewState, err := previewColumns(in)
+	if err != nil {
+		return meta.CommitResult{}, err
+	}
 	idem := req.Idempotency
+	if req.UploadSessionID != "" && idem == nil {
+		return meta.CommitResult{}, errors.New("sqlitestore: an upload session commit needs its idempotency key")
+	}
+	// completeSession marks the upload session these bytes came from as
+	// completed, in this transaction; every outcome below calls it before
+	// COMMIT.
+	completeSession := func(ts string) error {
+		if req.UploadSessionID == "" {
+			return nil
+		}
+		res, err := tx.ExecContext(ctx, `UPDATE upload_sessions SET status = 'completed', received_bytes = total_bytes, updated_at = ?, expires_at = ?
+			WHERE upload_id = ? AND user_id = ? AND device_id = ? AND folder_id = ? AND status = 'open' AND expires_at > ?`,
+			ts, expiry(ts), req.UploadSessionID, req.UserID, idem.DeviceID, req.FolderID, ts)
+		if err != nil {
+			return err
+		}
+		if n, err := res.RowsAffected(); err != nil {
+			return err
+		} else if n != 1 {
+			return meta.ErrUploadNotFound
+		}
+		return nil
+	}
 	if idem != nil {
 		if req.UserID == "" || idem.DeviceID == "" || idem.Key == "" {
 			return meta.CommitResult{}, errors.New("sqlitestore: idempotent commit needs user, device and key")
@@ -449,6 +509,14 @@ func (s *Store) commitUpload(ctx context.Context, req meta.CommitRequest) (meta.
 			a, err := assetByID(ctx, tx, rc.AssetID)
 			if err != nil {
 				return meta.CommitResult{}, err
+			}
+			if req.UploadSessionID != "" {
+				if err := completeSession(now()); err != nil {
+					return meta.CommitResult{}, err
+				}
+				if err := tx.Commit(); err != nil {
+					return meta.CommitResult{}, err
+				}
 			}
 			return meta.CommitResult{Result: rc.Result, Asset: a, Replayed: true}, nil
 		case !errors.Is(err, meta.ErrReceiptNotFound):
@@ -467,6 +535,9 @@ func (s *Store) commitUpload(ctx context.Context, req meta.CommitRequest) (meta.
 		// Nothing changes in the folder, but the receipt is written (and
 		// synced) like for a new asset.
 		if err := insertReceipt(ctx, tx, req, meta.ResultAlreadyPresent, existing.ID, ts); err != nil {
+			return meta.CommitResult{}, err
+		}
+		if err := completeSession(ts); err != nil {
 			return meta.CommitResult{}, err
 		}
 		if req.BeforeCommit != nil {
@@ -495,9 +566,9 @@ func (s *Store) commitUpload(ctx context.Context, req meta.CommitRequest) (meta.
 	} else if n == 1 {
 		result = meta.ResultCreated
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO assets (asset_id, original_sha256, original_filename, media_kind, preview_ready, uploaded_by_user_id, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		newAssetID, sha, in.Filename, MediaKind(in.MimeType), in.PreviewReady, nullable(req.UserID), ts); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO assets (asset_id, original_sha256, original_filename, media_kind, preview_ready, preview_state, uploaded_by_user_id, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		newAssetID, sha, in.Filename, MediaKind(in.MimeType), previewReady, previewState, nullable(req.UserID), ts); err != nil {
 		return meta.CommitResult{}, fmt.Errorf("insert asset: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO folder_assets (folder_id, asset_id, added_by_user_id, added_at, uploader_device_label)
@@ -520,6 +591,9 @@ func (s *Store) commitUpload(ctx context.Context, req meta.CommitRequest) (meta.
 		if err := insertReceipt(ctx, tx, req, meta.ResultCreated, newAssetID, ts); err != nil {
 			return meta.CommitResult{}, err
 		}
+	}
+	if err := completeSession(ts); err != nil {
+		return meta.CommitResult{}, err
 	}
 	// Re-read so the result reflects the stored rows (an already present
 	// blob row keeps its own size and type).
@@ -551,7 +625,7 @@ func (s *Store) ListEvents(ctx context.Context, folderID string, cursor int64, l
 		return meta.EventPage{}, err
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT c.seq, c.event_type, c.asset_id, COALESCE(c.uploader_device_label, ''), c.occurred_at,
-			a.original_sha256, a.original_filename, b.mime_type, b.bytes, a.preview_ready, a.created_at,
+			a.original_sha256, a.original_filename, b.mime_type, b.bytes, a.preview_ready, a.preview_state, a.created_at,
 			fa.asset_id IS NOT NULL AND fa.removed_at IS NULL
 		FROM folder_changes c
 		LEFT JOIN assets a ON a.asset_id = c.asset_id
@@ -565,12 +639,12 @@ func (s *Store) ListEvents(ctx context.Context, folderID string, cursor int64, l
 	page := meta.EventPage{Events: []meta.Event{}, Assets: map[string]meta.Asset{}, NextCursor: cursor, State: state}
 	for rows.Next() {
 		e := meta.Event{FolderID: folderID}
-		var sha, filename, mime, uploadedAt sql.NullString
+		var sha, filename, mime, uploadedAt, state sql.NullString
 		var size sql.NullInt64
 		var preview sql.NullBool
 		var linked bool
 		if err := rows.Scan(&e.Seq, &e.Kind, &e.AssetID, &e.UploaderDeviceID, &e.OccurredAt,
-			&sha, &filename, &mime, &size, &preview, &uploadedAt, &linked); err != nil {
+			&sha, &filename, &mime, &size, &preview, &state, &uploadedAt, &linked); err != nil {
 			return meta.EventPage{}, err
 		}
 		if !sha.Valid || !mime.Valid {
@@ -579,9 +653,9 @@ func (s *Store) ListEvents(ctx context.Context, folderID string, cursor int64, l
 			return meta.EventPage{}, fmt.Errorf("folder %s event %d references a missing asset or blob", folderID, e.Seq)
 		}
 		page.Events = append(page.Events, e)
-		if e.Kind == meta.EventAssetAdded && linked {
+		if (e.Kind == meta.EventAssetAdded || e.Kind == meta.EventAssetUpdated) && linked {
 			page.Assets[e.AssetID] = meta.Asset{ID: e.AssetID, SHA256: sha.String, Filename: filename.String, MimeType: mime.String,
-				Bytes: size.Int64, PreviewReady: preview.Bool, UploadedAt: uploadedAt.String}
+				Bytes: size.Int64, PreviewReady: preview.Bool, PreviewStatus: previewStatus(preview.Bool, state), UploadedAt: uploadedAt.String}
 		}
 		page.NextCursor = e.Seq
 	}

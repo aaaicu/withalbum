@@ -62,3 +62,9 @@ METADATA_ONLY -> PREVIEW_QUEUED -> PREVIEW_READY -> ORIGINAL_TEMPORARY
 - 수신: 폴더별 cursor(문자열)를 페이지를 로컬 DB에 저장한 뒤에만 갱신. `has_more`면 이어서 요청. `asset_removed`는 폴더 연결 해제. 409(`cursor_invalid`: 다른 폴더·서버 복원·앞선 cursor / `cursor_expired`: 보존 범위 밖)면 그 폴더 인덱스를 버리고 `GET /folders/{id}/assets` 스냅샷을 `after`로 끝까지 받은 뒤 첫 페이지의 `cursor`부터 피드를 이어 받는다(시나리오 9의 서버 측 대응).
 - 권한 철회(8): 다음 요청이 404(추방)·403(UPLOADER로 하향) → 앱은 해당 폴더 캐시 정리 정책 적용.
 - 서버 측 자동화된 시나리오: 2·3·6·7·8 (`internal/httpapi/sync_v2_test.go`).
+
+## 재개 업로드·프리뷰 상태 (M22)
+
+- 512MiB를 넘거나 네트워크가 불안정하면 업로드 세션 사용: `POST /folders/{id}/uploads`(전체 크기·SHA-256, 큐 아이템의 같은 `Idempotency-Key`)로 만들고 `upload_id`를 큐 아이템에 영속화. 청크는 `PATCH` + `Upload-Offset`(서버 offset과 같아야 함), 가능하면 `X-Chunk-SHA256`. 앱 재시작·연결 끊김 뒤에는 `GET .../uploads/{uid}`의 `offset`부터 이어서 보낸다(409 `offset_mismatch`의 `offset`도 같은 의미). 끝까지 받으면 `POST .../complete` → 단일 업로드와 같은 VERIFYING 규칙. 응답 유실 시 complete 재시도(또는 같은 키로 세션 재생성 → `status: completed`면 complete)로 같은 결과.
+- 세션 404(`upload_not_found`: 24시간 만료·서버 복원 등)면 같은 키로 새 세션을 만들어 0부터. 422 `hash_mismatch`는 서버가 받은 바이트를 버리고 offset 0으로 되돌린 것 → 로컬 원본 해시 재확인 후 재전송. 507은 자동 재시도 금지.
+- 프리뷰: 응답·자산의 `preview_status`가 `pending`이면 서버 워커가 만드는 중(HEIC·영상), 끝나면 그 폴더 피드에 `asset_updated`가 오고 `assets`에 최신 자산이 담김. `failed`/`unsupported`는 서버에 원본만 있음(앱은 자체 썸네일 유지, 상태 표시). 읽기 권한이 있는 앱은 커밋 성공 + `pending`이 아닐 때 앱 내부 임시 사본을 정리한다(SMART_PREVIEW). UPLOADER는 프리뷰를 볼 수 없으므로 커밋 상태(202)만으로 판단.

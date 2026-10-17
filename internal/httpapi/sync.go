@@ -111,17 +111,21 @@ type assetJSON struct {
 	MimeType     string `json:"mime_type"`
 	Bytes        int64  `json:"bytes"`
 	PreviewReady bool   `json:"preview_ready"`
-	UploadedAt   string `json:"uploaded_at"`
+	// PreviewStatus: ready, pending (the preview worker will make it; an
+	// asset_updated event follows), failed or unsupported.
+	PreviewStatus string `json:"preview_status"`
+	UploadedAt    string `json:"uploaded_at"`
 }
 
 func assetView(as meta.Asset) assetJSON {
 	return assetJSON{ID: as.ID, SHA256: as.SHA256, Filename: as.Filename, MimeType: as.MimeType, Bytes: as.Bytes,
-		PreviewReady: as.PreviewReady, UploadedAt: as.UploadedAt}
+		PreviewReady: as.PreviewReady, PreviewStatus: as.PreviewStatus, UploadedAt: as.UploadedAt}
 }
 
 // syncEvents: GET /folders/{id}/sync?cursor=&limit=. Events after the
-// cursor in seq order: asset_added (with the asset in "assets" while it is
-// still in the folder) and asset_removed (a tombstone, no asset entry).
+// cursor in seq order: asset_added and asset_updated (with the asset as it
+// is now in "assets" while it is still in the folder) and asset_removed (a
+// tombstone, no asset entry).
 func (s *Server) syncEvents(w http.ResponseWriter, r *http.Request, a albumRequest) {
 	folderID := a.Folder.Folder.ID
 	cur, ok := parseCursor(r.URL.Query().Get("cursor"))

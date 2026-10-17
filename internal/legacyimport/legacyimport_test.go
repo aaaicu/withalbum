@@ -185,6 +185,8 @@ func observe(t *testing.T, v view, l *legacy) map[string]string {
 	}
 	norm := func(a meta.Asset) meta.Asset {
 		a.ID, a.SHA256 = shaOfAsset(a), ""
+		// Not in the PoC format; derived from preview_ready for imports.
+		a.PreviewStatus = ""
 		return a
 	}
 	for _, fid := range l.folders {

@@ -111,13 +111,15 @@ type Server struct {
 	tls              *TLSInfo
 	startup          *StartupCheck
 	denials          *denialLog
+	uploads          uploadLocks
+	previewKick      chan struct{} // wakes the preview worker (capacity 1)
 }
 
 // New returns a Server for cfg.
 func New(cfg Config) *Server {
 	s := &Server{vol: cfg.Volume, meta: cfg.Meta, blobs: cfg.Blobs, version: cfg.Version,
 		minFree: max(cfg.MinFreeBytes, 0), freeBytes: cfg.FreeBytes, integrityWarning: cfg.IntegrityWarning, faults: cfg.Faults, auth: cfg.Auth,
-		members: cfg.Members, tls: cfg.TLS, startup: cfg.StartupCheck}
+		members: cfg.Members, tls: cfg.TLS, startup: cfg.StartupCheck, previewKick: make(chan struct{}, 1)}
 	if s.members == nil {
 		s.members, _ = cfg.Meta.(meta.Memberships)
 	}
@@ -183,6 +185,7 @@ func (s *Server) Handler() http.Handler {
 	rt.handle("POST /api/v1/folders", s.createFolder)
 	rt.handleAlbum("GET /api/v1/folders/{folderID}", s.getFolder)
 	rt.handleAlbum(uploadRoute, s.upload)
+	s.uploadSessionRoutes(rt)
 	rt.handleAlbum("GET /api/v1/folders/{folderID}/assets/{assetID}/original", s.download(false))
 	rt.handleAlbum("GET /api/v1/folders/{folderID}/assets/{assetID}/preview", s.download(true))
 	s.syncRoutes(rt)
@@ -337,24 +340,31 @@ func writeFailed(w http.ResponseWriter, what string, err error, code string) {
 var errVolumeLost = errors.New("storage volume lost")
 
 // uploadBudget returns how many bytes this upload may write: the free space
-// minus the reserve, capped at MaxUploadSize. ok is false (and a reply was
+// minus the reserve and minus what open upload sessions other than
+// exceptUpload still expect, capped at limit. ok is false (and a reply was
 // sent) when the volume cannot take any upload or cannot be queried.
-func (s *Server) uploadBudget(w http.ResponseWriter) (int64, bool) {
+func (s *Server) uploadBudget(w http.ResponseWriter, r *http.Request, exceptUpload string, limit int64) (int64, bool) {
 	free, err := s.freeBytes()
 	if errors.Is(err, storage.ErrFreeSpaceUnsupported) {
-		return MaxUploadSize, true // no statfs on this platform; ENOSPC still maps to 507
+		return limit, true // no statfs on this platform; ENOSPC still maps to 507
 	}
 	if err != nil {
 		log.Printf("cannot query free space, refusing write: %v", err)
 		errorReply(w, 503, "storage_unavailable")
 		return 0, false
 	}
-	if free <= uint64(s.minFree) {
-		log.Printf("refusing upload: %d bytes free, reserve %d", free, s.minFree)
+	reserved, err := s.meta.ReservedUploadBytes(r.Context(), exceptUpload)
+	if err != nil {
+		metaReadFailed(w, err)
+		return 0, false
+	}
+	need := uint64(s.minFree) + uint64(max(reserved, 0))
+	if free <= need {
+		log.Printf("refusing upload: %d bytes free, reserve %d, open upload sessions expect %d", free, s.minFree, reserved)
 		errorReply(w, 507, "insufficient_storage")
 		return 0, false
 	}
-	return int64(min(free-uint64(s.minFree), uint64(MaxUploadSize))), true
+	return int64(min(free-need, uint64(limit))), true
 }
 
 // upload stores one original. Commit order (each step durable before the
@@ -402,7 +412,7 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request, a albumRequest) 
 	}
 	// Refuse before writing anything if the upload cannot fit. A body of
 	// unknown length is limited to the budget while it is staged.
-	budget, ok := s.uploadBudget(w)
+	budget, ok := s.uploadBudget(w, r, "", MaxUploadSize)
 	if !ok {
 		return
 	}
@@ -451,15 +461,7 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request, a albumRequest) 
 		errorReply(w, 422, "hash_mismatch")
 		return
 	}
-	filename := r.Header.Get("X-Filename")
-	// The local dashboard percent-encodes non-ASCII filenames for headers.
-	if decoded, err := url.QueryUnescape(filename); err == nil {
-		filename = decoded
-	}
-	name := filepath.Base(strings.ReplaceAll(filename, "\\", "/"))
-	if name == "" || name == "." || name == "/" || len(name) > 240 {
-		name = sha
-	}
+	name := uploadFilename(r.Header.Get("X-Filename"), sha)
 	// The same key with other bytes is a client error; refuse it before the
 	// bytes reach the pool. A retry with the same bytes goes through every
 	// step again (same work as a first attempt) and the commit then answers
@@ -471,47 +473,99 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request, a albumRequest) 
 		metaReadFailed(w, err)
 		return
 	}
+	s.commitOriginal(w, r, a, original{staged: staged, name: name, deviceLabel: deviceID, idem: idem, route: uploadRoute})
+}
 
+// uploadFilename is the stored name of an upload from the X-Filename
+// header (percent-encoding allowed), see storedFilename.
+func uploadFilename(filename, sha string) string {
+	// The local dashboard percent-encodes non-ASCII filenames for headers.
+	if decoded, err := url.QueryUnescape(filename); err == nil {
+		filename = decoded
+	}
+	return storedFilename(filename, sha)
+}
+
+// storedFilename is the last path element of the client's name, or the
+// hash when there is no usable name.
+func storedFilename(filename, sha string) string {
+	name := filepath.Base(strings.ReplaceAll(filename, "\\", "/"))
+	if name == "" || name == "." || name == "/" || len(name) > 240 {
+		name = sha
+	}
+	return name
+}
+
+// original is a complete, verified original on its way into a folder.
+type original struct {
+	staged      *blobstore.StagedFile
+	name        string
+	deviceLabel string
+	idem        meta.Idempotency
+	uploadID    string // the upload session it came from, if any
+	route       string // the route pattern, for the denial log
+}
+
+// commitOriginal stores a staged original (single request or completed
+// upload session) and replies. It never removes the staged file; the
+// caller does (a single upload's temp file always, an upload session's
+// partial file only after a successful commit). It reports whether the
+// original was committed.
+func (s *Server) commitOriginal(w http.ResponseWriter, r *http.Request, a albumRequest, o original) bool {
+	ctx := r.Context()
+	folderID := a.Folder.Folder.ID
+	staged, sha := o.staged, o.staged.SHA256
 	// Blob before metadata: the pool file must be durable before
 	// CommitUpload makes the asset visible. For bytes the pool already holds
 	// Promote re-hashes the existing file (and puts it back if it is missing
 	// or damaged), which also keeps the work the same as for new bytes.
 	if !s.storageReady(w) {
-		return
+		return false
 	}
-	err = s.blobs.Promote(staged, sha)
+	err := s.blobs.Promote(staged, sha)
 	if err == nil {
 		err = s.fault(FaultAfterPromote)
 	}
 	if err != nil {
 		writeFailed(w, "promote upload", err, "storage_failed")
-		return
+		return false
 	}
 	// The preview is derived data: its failure never fails the upload. It is
 	// (re)generated for known bytes too; the result is the same file.
-	previewReady := false
-	if err := s.fault(FaultPreview); err == nil {
-		previewReady = s.blobs.MakePreview(sha) == nil
+	// Types an external tool converts are left to the preview worker after
+	// the commit, for new and known bytes alike.
+	previewStatus := meta.PreviewStatusUnsupported
+	switch s.blobs.PreviewMode(staged.MimeType) {
+	case blobstore.PreviewBuiltin:
+		previewStatus = meta.PreviewStatusFailed
+		if err := s.fault(FaultPreview); err == nil && s.blobs.MakePreview(sha) == nil {
+			previewStatus = meta.PreviewStatusReady
+		}
+	case blobstore.PreviewExternal:
+		previewStatus = meta.PreviewStatusPending
 	}
 	if err := s.fault(FaultAfterPreview); err != nil {
 		writeFailed(w, "upload", err, "storage_failed")
-		return
+		return false
 	}
 	// Re-check: the pool rename and preview above may have taken a while.
 	if !s.storageReady(w) {
-		return
+		return false
 	}
 	poolPath := s.blobs.PoolPath(sha)
 	canRead := false
+	idem := o.idem
 	res, err := s.meta.CommitUpload(ctx, meta.CommitRequest{
 		FolderID:  folderID,
-		DeviceID:  deviceID,
+		DeviceID:  o.deviceLabel,
 		UserID:    a.P.UserID,
 		SessionID: a.ID.SessionID,
-		Asset:     meta.Asset{SHA256: sha, Filename: name, MimeType: staged.MimeType, Bytes: staged.Size, PreviewReady: previewReady},
+		Asset: meta.Asset{SHA256: sha, Filename: o.name, MimeType: staged.MimeType, Bytes: staged.Size,
+			PreviewReady: previewStatus == meta.PreviewStatusReady, PreviewStatus: previewStatus},
 		// Every outcome writes its receipt, so a new asset and bytes the
 		// folder already holds take the same write path.
-		Idempotency: &idem,
+		Idempotency:     &idem,
+		UploadSessionID: o.uploadID,
 		// The permission checked when the request arrived may have been
 		// revoked while the body was streaming: decide again on what is
 		// stored now, under the database write lock.
@@ -538,38 +592,60 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request, a albumRequest) 
 	if err == nil {
 		err = s.fault(FaultAfterCommit)
 	}
+	if !s.uploadCommitError(w, r, a, o.route, err) {
+		return false
+	}
+	if previewStatus == meta.PreviewStatusPending {
+		s.kickPreviews()
+	}
+	uploadReply(w, folderID, sha, staged.Size, res, canRead)
+	return true
+}
+
+// uploadCommitError replies to a failed CommitUpload and returns false, or
+// returns true when err is nil.
+func (s *Server) uploadCommitError(w http.ResponseWriter, r *http.Request, a albumRequest, route string, err error) bool {
+	folderID := a.Folder.Folder.ID
 	switch {
+	case err == nil:
+		return true
 	case errors.Is(err, errHidden), errors.Is(err, meta.ErrFolderNotFound):
 		log.Printf("upload refused at commit: no longer a member of the folder")
-		s.denied(r, a.P.UserID, uploadRoute, 404, folderID)
+		s.denied(r, a.P.UserID, route, 404, folderID)
 		errorReply(w, 404, "folder_not_found")
-		return
 	case errors.Is(err, errDenied):
 		log.Printf("upload refused at commit: permission revoked during the upload")
-		s.denied(r, a.P.UserID, uploadRoute, 403, folderID)
+		s.denied(r, a.P.UserID, route, 403, folderID)
 		errorReply(w, 403, "forbidden")
-		return
 	case errors.Is(err, meta.ErrIdempotencyMismatch):
 		errorReply(w, 422, "idempotency_key_reused")
-		return
-	case err != nil:
+	case errors.Is(err, meta.ErrUploadNotFound):
+		errorReply(w, 404, "upload_not_found")
+	default:
 		writeFailed(w, "commit upload", err, "metadata_write_failed")
-		return
 	}
+	return false
+}
+
+// uploadReply answers a committed (or replayed) upload. Callers who can
+// read the folder get the asset; an upload-only caller (UPLOADER) gets the
+// same 202 receipt whatever happened, which only repeats what it sent.
+func uploadReply(w http.ResponseWriter, folderID, sha string, size int64, res meta.CommitResult, canRead bool) {
 	if res.Replayed {
 		w.Header().Set("Idempotency-Replayed", "true")
 	}
 	if !canRead {
 		// Upload-only: nothing about the folder's contents, the asset or
 		// whether these bytes were already stored.
-		jsonReply(w, 202, map[string]any{"result": "accepted", "folder_id": folderID, "sha256": sha, "bytes": staged.Size})
+		jsonReply(w, 202, map[string]any{"result": "accepted", "folder_id": folderID, "sha256": sha, "bytes": size})
 		return
 	}
 	status, result := 201, "created"
 	if res.Result == meta.ResultAlreadyPresent {
 		status, result = 200, "already_present"
 	}
-	jsonReply(w, status, map[string]any{"result": result, "asset_id": res.Asset.ID, "folder_id": folderID, "sha256": sha, "preview_ready": res.Asset.PreviewReady})
+	jsonReply(w, status, map[string]any{"result": result, "asset_id": res.Asset.ID, "folder_id": folderID, "sha256": sha,
+		"preview_ready": res.Asset.PreviewReady, "preview_status": res.Asset.PreviewStatus})
 }
 
 // download serves an original or preview of an asset that is linked to the

@@ -74,6 +74,13 @@ var routePolicies = []RoutePolicy{
 	{"POST /api/v1/folders", AccessServer, authz.CreateAlbum},
 	{"GET /api/v1/folders/{folderID}", AccessAlbum, authz.GetAlbumMetadata},
 	{"POST /api/v1/folders/{folderID}/assets", AccessAlbum, authz.UploadAsset},
+	// Resumable upload sessions (uploads.go): only the account, device and
+	// folder that created a session can see it; any other ID is 404.
+	{"POST /api/v1/folders/{folderID}/uploads", AccessAlbum, authz.UploadAsset},
+	{"GET /api/v1/folders/{folderID}/uploads/{uploadID}", AccessAlbum, authz.UploadAsset},
+	{"PATCH /api/v1/folders/{folderID}/uploads/{uploadID}", AccessAlbum, authz.UploadAsset},
+	{"DELETE /api/v1/folders/{folderID}/uploads/{uploadID}", AccessAlbum, authz.UploadAsset},
+	{"POST /api/v1/folders/{folderID}/uploads/{uploadID}/complete", AccessAlbum, authz.UploadAsset},
 	{"GET /api/v1/folders/{folderID}/assets", AccessAlbum, authz.ListAlbumAssets},
 	{"POST /api/v1/folders/{folderID}/assets/check", AccessAlbum, authz.ListAlbumAssets},
 	{"DELETE /api/v1/folders/{folderID}/assets/{assetID}", AccessAlbum, authz.DeleteAsset},
