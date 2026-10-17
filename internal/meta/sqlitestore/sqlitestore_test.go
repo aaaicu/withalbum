@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aaaicu/withalbum/internal/authz"
 	"github.com/aaaicu/withalbum/internal/db"
 	"github.com/aaaicu/withalbum/internal/meta"
 	"github.com/aaaicu/withalbum/internal/meta/metatest"
@@ -51,7 +52,25 @@ func count(t *testing.T, s *Store, q string, args ...any) int {
 func sha(n int) string { return fmt.Sprintf("%064x", n+1) }
 
 func TestContract(t *testing.T) {
-	metatest.Run(t, func(t *testing.T) meta.MetadataStore { return open(t, newVolume(t)) })
+	metatest.Run(t, func(t *testing.T) metatest.Store {
+		s := open(t, newVolume(t))
+		return metatest.Store{MetadataStore: s, OwnerID: addUser(t, s, "owner", "USER")}
+	})
+}
+
+// addUser inserts an active account that can log in (its password_hash is
+// not locked; no test here verifies passwords) and returns its user_id.
+func addUser(t *testing.T, s *Store, login, role string) string {
+	t.Helper()
+	id, err := newID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`INSERT INTO users (user_id, login_name, display_name, password_hash, server_role, status)
+		VALUES (?, ?, ?, '$argon2id$test', ?, 'active')`, id, login, login, role); err != nil {
+		t.Fatal(err)
+	}
+	return id
 }
 
 func TestOpenCreatesDatabaseAndBootstrapOwner(t *testing.T) {
@@ -78,7 +97,7 @@ func TestOpenCreatesDatabaseAndBootstrapOwner(t *testing.T) {
 	if strings.HasPrefix(hash, "$") || hash == "" {
 		t.Fatalf("bootstrap password_hash %q is not locked", hash)
 	}
-	f, err := s.CreateFolder(t.Context(), "family")
+	f, err := s.CreateFolder(t.Context(), meta.NewFolder{Name: "family", OwnerID: s.ownerID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,11 +124,11 @@ func TestCommitStoresRandomAssetIDAndAllRows(t *testing.T) {
 	ctx := t.Context()
 	s := open(t, newVolume(t))
 	defer s.Close()
-	f, err := s.CreateFolder(ctx, "f")
+	f, err := s.CreateFolder(ctx, meta.NewFolder{Name: "f", OwnerID: s.ownerID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	in := meta.Asset{ID: sha(0), Filename: "a.jpg", MimeType: "image/jpeg", Bytes: 10, PreviewReady: true}
+	in := meta.Asset{SHA256: sha(0), Filename: "a.jpg", MimeType: "image/jpeg", Bytes: 10, PreviewReady: true}
 	if _, err := s.CommitUpload(ctx, meta.CommitRequest{FolderID: f.ID, DeviceID: "phone", Asset: in}); err != nil {
 		t.Fatal(err)
 	}
@@ -138,11 +157,11 @@ func TestFailedCommitRollsBack(t *testing.T) {
 	ctx := t.Context()
 	s := open(t, newVolume(t))
 	defer s.Close()
-	f, err := s.CreateFolder(ctx, "f")
+	f, err := s.CreateFolder(ctx, meta.NewFolder{Name: "f", OwnerID: s.ownerID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	bad := meta.Asset{ID: sha(0), Filename: "a.jpg", MimeType: "image/jpeg", Bytes: 0} // blobs.bytes > 0
+	bad := meta.Asset{SHA256: sha(0), Filename: "a.jpg", MimeType: "image/jpeg", Bytes: 0} // blobs.bytes > 0
 	if _, err := s.CommitUpload(ctx, meta.CommitRequest{FolderID: f.ID, Asset: bad}); err == nil {
 		t.Fatal("commit with bytes=0 succeeded")
 	}
@@ -170,18 +189,18 @@ func TestConcurrentUploadsSameBlob(t *testing.T) {
 	ctx := t.Context()
 	s := open(t, newVolume(t))
 	defer s.Close()
-	shared, err := s.CreateFolder(ctx, "shared")
+	shared, err := s.CreateFolder(ctx, meta.NewFolder{Name: "shared", OwnerID: s.ownerID})
 	if err != nil {
 		t.Fatal(err)
 	}
 	const n = 20
 	own := make([]meta.Folder, n)
 	for i := range own {
-		if own[i], err = s.CreateFolder(ctx, fmt.Sprintf("own-%d", i)); err != nil {
+		if own[i], err = s.CreateFolder(ctx, meta.NewFolder{Name: fmt.Sprintf("own-%d", i), OwnerID: s.ownerID}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	same := meta.Asset{ID: sha(1000), Filename: "same.jpg", MimeType: "image/jpeg", Bytes: 42}
+	same := meta.Asset{SHA256: sha(1000), Filename: "same.jpg", MimeType: "image/jpeg", Bytes: 42}
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	results := map[string]int{}
@@ -202,7 +221,7 @@ func TestConcurrentUploadsSameBlob(t *testing.T) {
 			mu.Lock()
 			results[res.Result]++
 			mu.Unlock()
-			unique := meta.Asset{ID: sha(i), Filename: "u.jpg", MimeType: "image/jpeg", Bytes: int64(i + 1)}
+			unique := meta.Asset{SHA256: sha(i), Filename: "u.jpg", MimeType: "image/jpeg", Bytes: int64(i + 1)}
 			if res, err := s.CommitUpload(ctx, meta.CommitRequest{FolderID: shared.ID, Asset: unique}); err != nil {
 				errs <- err
 			} else if res.Result != meta.ResultCreated {
@@ -217,19 +236,21 @@ func TestConcurrentUploadsSameBlob(t *testing.T) {
 	}
 	// The shared folder gets one link, each odd goroutine's folder one link.
 	want := map[string]int{meta.ResultCreated: 1, meta.ResultLinked: n / 2, meta.ResultAlreadyPresent: n/2 - 1}
+	sameSHA := same.SHA256
 	if fmt.Sprint(results) != fmt.Sprint(want) {
 		t.Fatalf("results %v, want %v", results, want)
 	}
-	if c := count(t, s, "SELECT count(*) FROM blobs WHERE sha256 = ?", same.ID); c != 1 {
+	if c := count(t, s, "SELECT count(*) FROM blobs WHERE sha256 = ?", sameSHA); c != 1 {
 		t.Fatalf("shared blob rows %d", c)
 	}
-	if c := count(t, s, "SELECT count(*) FROM assets WHERE original_sha256 = ?", same.ID); c != 1 {
-		t.Fatalf("shared asset rows %d", c)
+	// One asset per folder holding the bytes, all sharing the blob.
+	if c := count(t, s, "SELECT count(*) FROM assets WHERE original_sha256 = ?", sameSHA); c != n/2+1 {
+		t.Fatalf("shared asset rows %d, want %d", c, n/2+1)
 	}
 	if c := count(t, s, "SELECT count(*) FROM blobs"); c != n+1 {
 		t.Fatalf("blob rows %d, want %d", c, n+1)
 	}
-	if c := count(t, s, "SELECT count(*) FROM folder_assets fa JOIN assets a USING (asset_id) WHERE a.original_sha256 = ?", same.ID); c != n/2+1 {
+	if c := count(t, s, "SELECT count(*) FROM folder_assets fa JOIN assets a USING (asset_id) WHERE a.original_sha256 = ?", sameSHA); c != n/2+1 {
 		t.Fatalf("shared links %d, want %d", c, n/2+1)
 	}
 	for i, f := range own {
@@ -237,7 +258,7 @@ func TestConcurrentUploadsSameBlob(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if wantEvents := i % 2; len(p.Events) != wantEvents || (wantEvents == 1 && (p.Events[0].Seq != 1 || p.Events[0].AssetID != same.ID)) {
+		if wantEvents := i % 2; len(p.Events) != wantEvents || (wantEvents == 1 && (p.Events[0].Seq != 1 || p.Assets[p.Events[0].AssetID].SHA256 != sameSHA)) {
 			t.Fatalf("own folder %d events %+v", i, p.Events)
 		}
 	}
@@ -269,21 +290,21 @@ func TestRestartPreservesState(t *testing.T) {
 	ctx := t.Context()
 	vol := newVolume(t)
 	s := open(t, vol)
-	f1, err := s.CreateFolder(ctx, "family")
+	f1, err := s.CreateFolder(ctx, meta.NewFolder{Name: "family", OwnerID: s.ownerID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	f2, err := s.CreateFolder(ctx, "trip")
+	f2, err := s.CreateFolder(ctx, meta.NewFolder{Name: "trip", OwnerID: s.ownerID})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 3; i++ {
-		a := meta.Asset{ID: sha(i), Filename: fmt.Sprintf("%d.jpg", i), MimeType: "image/jpeg", Bytes: int64(10 + i), PreviewReady: i == 0}
+		a := meta.Asset{SHA256: sha(i), Filename: fmt.Sprintf("%d.jpg", i), MimeType: "image/jpeg", Bytes: int64(10 + i), PreviewReady: i == 0}
 		if _, err := s.CommitUpload(ctx, meta.CommitRequest{FolderID: f1.ID, DeviceID: "d1", Asset: a}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := s.CommitUpload(ctx, meta.CommitRequest{FolderID: f2.ID, DeviceID: "d2", Asset: meta.Asset{ID: sha(0), Bytes: 10}}); err != nil {
+	if _, err := s.CommitUpload(ctx, meta.CommitRequest{FolderID: f2.ID, DeviceID: "d2", Asset: meta.Asset{SHA256: sha(0), Bytes: 10}}); err != nil {
 		t.Fatal(err)
 	}
 	folders, _ := s.ListFolders(ctx)
@@ -315,7 +336,7 @@ func TestRestartPreservesState(t *testing.T) {
 	if got, err := r.GetAssetBySHA(ctx, sha(0)); err != nil || got != asset0 || !got.PreviewReady {
 		t.Fatalf("asset after reopen %+v %v, want %+v", got, err, asset0)
 	}
-	res, err := r.CommitUpload(ctx, meta.CommitRequest{FolderID: f1.ID, Asset: meta.Asset{ID: sha(9), Bytes: 1}})
+	res, err := r.CommitUpload(ctx, meta.CommitRequest{FolderID: f1.ID, Asset: meta.Asset{SHA256: sha(9), Bytes: 1}})
 	if err != nil || res.Result != meta.ResultCreated {
 		t.Fatal(res, err)
 	}
@@ -328,12 +349,12 @@ func TestForEachBlobInSHAOrder(t *testing.T) {
 	ctx := t.Context()
 	s := open(t, newVolume(t))
 	defer s.Close()
-	f, err := s.CreateFolder(ctx, "f")
+	f, err := s.CreateFolder(ctx, meta.NewFolder{Name: "f", OwnerID: s.ownerID})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, n := range []int{5, 1, 9, 3} {
-		if _, err := s.CommitUpload(ctx, meta.CommitRequest{FolderID: f.ID, Asset: meta.Asset{ID: sha(n), Filename: "x", MimeType: "image/jpeg", Bytes: int64(n + 1)}}); err != nil {
+		if _, err := s.CommitUpload(ctx, meta.CommitRequest{FolderID: f.ID, Asset: meta.Asset{SHA256: sha(n), Filename: "x", MimeType: "image/jpeg", Bytes: int64(n + 1)}}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -365,7 +386,7 @@ func TestWriteContentionIsErrBusy(t *testing.T) {
 	vol := newVolume(t)
 	s := open(t, vol)
 	defer s.Close()
-	f, err := s.CreateFolder(ctx, "f")
+	f, err := s.CreateFolder(ctx, meta.NewFolder{Name: "f", OwnerID: s.ownerID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -379,14 +400,14 @@ func TestWriteContentionIsErrBusy(t *testing.T) {
 		t.Fatal(err)
 	}
 	start := time.Now()
-	_, err = s.CommitUpload(ctx, meta.CommitRequest{FolderID: f.ID, Asset: meta.Asset{ID: sha(0), Filename: "x", MimeType: "image/jpeg", Bytes: 1}})
+	_, err = s.CommitUpload(ctx, meta.CommitRequest{FolderID: f.ID, Asset: meta.Asset{SHA256: sha(0), Filename: "x", MimeType: "image/jpeg", Bytes: 1}})
 	if !errors.Is(err, meta.ErrBusy) {
 		t.Fatalf("CommitUpload under contention = %v, want ErrBusy", err)
 	}
 	if waited := time.Since(start); waited < 4*time.Second {
 		t.Fatalf("gave up after %v, before busy_timeout", waited)
 	}
-	if _, err := s.CreateFolder(context.Background(), "g"); !errors.Is(err, meta.ErrBusy) {
+	if _, err := s.CreateFolder(context.Background(), meta.NewFolder{Name: "g", OwnerID: s.ownerID}); !errors.Is(err, meta.ErrBusy) {
 		t.Fatalf("CreateFolder under contention = %v, want ErrBusy", err)
 	}
 	if err := tx.Rollback(); err != nil {
@@ -395,7 +416,7 @@ func TestWriteContentionIsErrBusy(t *testing.T) {
 	if n := count(t, s, "SELECT count(*) FROM assets"); n != 0 {
 		t.Fatalf("assets = %d after busy commit", n)
 	}
-	if _, err := s.CommitUpload(ctx, meta.CommitRequest{FolderID: f.ID, Asset: meta.Asset{ID: sha(0), Filename: "x", MimeType: "image/jpeg", Bytes: 1}}); err != nil {
+	if _, err := s.CommitUpload(ctx, meta.CommitRequest{FolderID: f.ID, Asset: meta.Asset{SHA256: sha(0), Filename: "x", MimeType: "image/jpeg", Bytes: 1}}); err != nil {
 		t.Fatalf("retry after contention: %v", err)
 	}
 }
@@ -422,11 +443,113 @@ func TestBootstrapOwnerFoundByIDAfterRename(t *testing.T) {
 	if r.ownerID != owner || count(t, r, "SELECT count(*) FROM users") != 1 {
 		t.Fatal("a second bootstrap account was created after the rename")
 	}
-	f, err := r.CreateFolder(t.Context(), "after")
+	f, err := r.CreateFolder(t.Context(), meta.NewFolder{Name: "after", OwnerID: r.ownerID})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if n := count(t, r, "SELECT count(*) FROM folders WHERE folder_id = ? AND owner_user_id = ?", f.ID, owner); n != 1 {
 		t.Fatal("new folder not owned by the renamed bootstrap account")
+	}
+}
+
+// TestFolderAccessFromOwnerAndMembership: the relation of each user is read
+// from folders.owner_user_id and folder_members; archived folders are gone.
+func TestFolderAccessFromOwnerAndMembership(t *testing.T) {
+	ctx := t.Context()
+	s := open(t, newVolume(t))
+	defer s.Close()
+	owner := addUser(t, s, "owner", "USER")
+	viewer := addUser(t, s, "viewer", "USER")
+	admin := addUser(t, s, "admin2", "SERVER_ADMIN")
+	f, err := s.CreateFolder(ctx, meta.NewFolder{Name: "f", OwnerID: owner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, err := s.CreateFolder(ctx, meta.NewFolder{Name: "g", OwnerID: owner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec("INSERT INTO folder_members (folder_id, user_id, role) VALUES (?, ?, 'VIEWER')", f.ID, viewer); err != nil {
+		t.Fatal(err)
+	}
+	fa, err := s.GetFolderAccess(ctx, f.ID, viewer)
+	if err != nil || fa.Access != (authz.AlbumAccess{OwnerID: owner, HasMembership: true, MemberRole: authz.Viewer}) {
+		t.Fatalf("viewer access %+v %v", fa, err)
+	}
+	if list, err := s.ListFoldersFor(ctx, viewer); err != nil || len(list) != 1 || list[0].Folder.ID != f.ID || list[0].Access.MemberRole != authz.Viewer {
+		t.Fatalf("viewer folders %+v %v", list, err)
+	}
+	if list, err := s.ListFoldersFor(ctx, admin); err != nil || len(list) != 0 {
+		t.Fatalf("admin (not a member) folders %+v %v", list, err)
+	}
+	if list, err := s.ListFoldersFor(ctx, owner); err != nil || len(list) != 2 {
+		t.Fatalf("owner folders %+v %v", list, err)
+	}
+	if _, err := s.db.Exec("UPDATE folders SET archived_at = 'x' WHERE folder_id = ?", g.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GetFolderAccess(ctx, g.ID, owner); !errors.Is(err, meta.ErrFolderNotFound) {
+		t.Fatalf("archived folder access err %v", err)
+	}
+	if list, _ := s.ListFoldersFor(ctx, owner); len(list) != 1 {
+		t.Fatalf("archived folder listed: %+v", list)
+	}
+}
+
+// TestAuthorizeSeesRevocations: the principal handed to Authorize reflects
+// a disabled account, a revoked session and a removed membership at once.
+func TestAuthorizeSeesRevocations(t *testing.T) {
+	ctx := t.Context()
+	s := open(t, newVolume(t))
+	defer s.Close()
+	owner := addUser(t, s, "owner", "USER")
+	member := addUser(t, s, "member", "USER")
+	f, err := s.CreateFolder(ctx, meta.NewFolder{Name: "f", OwnerID: owner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec("INSERT INTO folder_members (folder_id, user_id, role) VALUES (?, ?, 'UPLOADER')", f.ID, member); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`INSERT INTO devices (device_id, user_id, platform, device_name) VALUES ('d1', ?, 'ios', 'phone');
+		INSERT INTO auth_sessions (session_id, device_id, refresh_token_sha256, expires_at) VALUES ('s1', 'd1', 'x', 'y')`, member); err != nil {
+		t.Fatal(err)
+	}
+	upload := func(n int) error {
+		_, err := s.CommitUpload(ctx, meta.CommitRequest{FolderID: f.ID, UserID: member, SessionID: "s1",
+			Asset: meta.Asset{SHA256: sha(n), Filename: "x", MimeType: "image/jpeg", Bytes: 1},
+			Authorize: func(p authz.Principal, a authz.AlbumAccess) error {
+				if !authz.Allowed(p, authz.UploadAsset, &a) {
+					return errors.New("denied")
+				}
+				return nil
+			}})
+		return err
+	}
+	if err := upload(0); err != nil {
+		t.Fatalf("allowed upload: %v", err)
+	}
+	for i, revoke := range []string{
+		"UPDATE folder_members SET role = 'VIEWER' WHERE user_id = '" + member + "'",
+		"DELETE FROM folder_members WHERE user_id = '" + member + "'",
+		"UPDATE auth_sessions SET revoked_at = 'now' WHERE session_id = 's1'",
+		"UPDATE devices SET revoked_at = 'now' WHERE device_id = 'd1'",
+		"UPDATE users SET status = 'disabled' WHERE user_id = '" + member + "'",
+	} {
+		if _, err := s.db.Exec("DELETE FROM folder_members; INSERT INTO folder_members (folder_id, user_id, role) VALUES (?, ?, 'UPLOADER'); UPDATE auth_sessions SET revoked_at = NULL; UPDATE devices SET revoked_at = NULL; UPDATE users SET status = 'active'", f.ID, member); err != nil {
+			t.Fatal(err)
+		}
+		if err := upload(10 + i); err != nil {
+			t.Fatalf("%d: upload before revocation: %v", i, err)
+		}
+		if _, err := s.db.Exec(revoke); err != nil {
+			t.Fatal(err)
+		}
+		if err := upload(20 + i); err == nil {
+			t.Fatalf("upload allowed after %s", revoke)
+		}
+	}
+	if n := count(t, s, "SELECT count(*) FROM folder_changes WHERE folder_id = ?", f.ID); n != 6 {
+		t.Fatalf("%d events, want 6 (refused uploads leave none)", n)
 	}
 }

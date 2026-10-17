@@ -17,19 +17,19 @@
 
 - **기능이 동작하는 코드:** Go 기반 localhost 전용 서버, 간단한 웹 페이지, 폴더 생성, 파일 업로드, SHA-256 중복 확인, 제한적인 이미지 프리뷰, 변경 이벤트 조회.
 - **부분 구현(실기기 미검증):** `internal/storage/` 저장소 볼륨 가드. 명시적으로 `-init-storage`한 디렉터리만 사용하고, 기동 시와 쓰기 직전에 볼륨 마커·장치 번호(st_dev)를 재확인해 외장 디스크가 빠지면 쓰기를 거부(503)합니다. 디스크 UUID 대조는 아직 없음.
-- **부분 구현:** 메타데이터는 SQLite(`.system/withalbum.db`, `internal/meta/sqlitestore`)에 저장합니다. 업로드 1건(blob·자산·폴더 연결·시퀀스·이벤트)은 트랜잭션 하나로 커밋되고, 내부 자산 ID는 랜덤입니다(HTTP 응답의 `asset_id`는 호환을 위해 아직 SHA-256). 폴더 API가 아직 로그인과 연결되지 않았으므로(M10) 모든 폴더의 소유자는 bootstrap 관리자 계정입니다(처음에는 로그인할 수 없는 잠금 상태의 `admin`, 콘솔 `withalbum-server admin init`으로 인수). **이전 버전의 `.system/state.json`만 있는 저장소는 기동을 거부합니다(파일은 변경하지 않음). `withalbum-server migrate-legacy`(점검) → `migrate-legacy -apply`로 무손실 이관한 뒤 기동하세요. 절차·롤백: [`docs/MIGRATION_legacy_state.md`](docs/MIGRATION_legacy_state.md).**
+- **부분 구현:** 메타데이터는 SQLite(`.system/withalbum.db`, `internal/meta/sqlitestore`)에 저장합니다. 업로드 1건(blob·자산·폴더 연결·시퀀스·이벤트)은 트랜잭션 하나로 커밋되고, 자산 ID는 랜덤이며 폴더마다 따로 발급됩니다(같은 바이트라도 다른 폴더에서는 다른 자산). 새 폴더의 소유자는 만든 사람이고, 이전 버전·이관 데이터의 폴더는 bootstrap 관리자 계정이 소유합니다(처음에는 로그인할 수 없는 잠금 상태의 `admin`, 콘솔 `withalbum-server admin init`으로 인수하면 user_id가 유지되어 그 폴더를 그대로 소유). **이전 버전의 `.system/state.json`만 있는 저장소는 기동을 거부합니다(파일은 변경하지 않음). `withalbum-server migrate-legacy`(점검) → `migrate-legacy -apply`로 무손실 이관한 뒤 기동하세요. 절차·롤백: [`docs/MIGRATION_legacy_state.md`](docs/MIGRATION_legacy_state.md).**
 - **부분 구현(테스트 검증, 실기기 미검증):** 업로드 원자적 커밋·크래시 복구. 성공 응답(200/201)은 원본 파일(임시 파일 fsync → pool rename → 디렉터리 fsync)과 DB 트랜잭션이 모두 디스크에 기록된 뒤에만 보냅니다. 기동 시 재조정이 미완료 업로드 임시 파일을 지우고, DB에 없는 pool 파일은 `.system/orphans/`로 옮기며(삭제 안 함), DB에 있는데 파일이 없거나 크기가 다른 원본은 로그와 `/api/v1/health`의 `integrity: warning`으로 알립니다. 여유 공간이 예약분(`WITHALBUM_MIN_FREE_BYTES`, 기본 1GiB) 아래로 내려갈 업로드는 기록 전에 `507 insufficient_storage`로 거부합니다. 같은 저장소에 서버/이관 명령이 두 개 뜨지 않도록 `.system/withalbum.lock`을 잠급니다. 단계별 장애 주입과 실제 SIGKILL 테스트로 검증했고, 실제 전원 차단·외장 디스크 분리는 미검증입니다.
 - **부분 구현:** 계정 코어. Argon2id 비밀번호 해시(`internal/auth/password`), 사용자 저장소(`internal/users`, 마지막 활성 관리자 보호·감사 로그), 콘솔 명령 `withalbum-server admin init | create-user | reset-password`.
-- **부분 구현(loopback 전용):** HTTP 로그인·기기 세션·계정 관리 API(`/api/v1/auth/login|refresh|logout`, `/api/v1/me`, `/api/v1/me/password`, `/api/v1/me/devices`, `/api/v1/admin/users*`, 규격 [`docs/API_AUTH_v1.4.yaml`](docs/API_AUTH_v1.4.yaml)). access 15분/refresh 30일 회전·재사용 감지, Bearer(앱)·HttpOnly 쿠키+CSRF(웹), 로그인 속도 제한·실패 감사, 비밀번호 재설정·계정 비활성화 시 세션 회수. **기존 폴더·업로드·동기화·다운로드 API는 아직 로그인 없이 동작합니다(M10에서 연결). 그래서 서버는 여전히 `127.0.0.1`에서만 listen합니다.**
-- **코드·테스트만 있는 기능:** `internal/authz/`의 서버/앨범 권한 판정 함수와 단위 테스트. **실제 HTTP 요청에는 적용되지 않음.**
-- **설계만 완료:** 초대·폴더 ACL, Mac 설치 마법사, iOS/Android 앱, 역방향 모바일 동기화, Google Drive 어댑터, 장애 복구.
+- **부분 구현(loopback 전용):** HTTP 로그인·기기 세션·계정 관리 API(`/api/v1/auth/login|refresh|logout`, `/api/v1/me`, `/api/v1/me/password`, `/api/v1/me/devices`, `/api/v1/admin/users*`, 규격 [`docs/API_AUTH_v1.4.yaml`](docs/API_AUTH_v1.4.yaml)). access 15분/refresh 30일 회전·재사용 감지, Bearer(앱)·HttpOnly 쿠키+CSRF(웹), 로그인 속도 제한·실패 감사, 비밀번호 재설정·계정 비활성화 시 세션 회수.
+- **부분 구현(테스트·로컬 바이너리 스모크 검증, loopback 전용):** 앨범 ACL. 대시보드 페이지·health·login·refresh를 뺀 모든 API는 세션 필요(없으면 401). 폴더·업로드·동기화·원본/프리뷰는 요청마다 DB의 소유자·멤버십으로 `internal/authz` 판정(`internal/httpapi/middleware_authz.go`, 라우트별 정책 표, 미선언 라우트는 기동 시 panic). 관리자라도 소유·멤버가 아닌 앨범은 404, 역할 부족은 403, 다른 폴더의 자산 ID는 404. UPLOADER는 업로드만 가능하고 응답은 항상 같은 202 영수증. 업로드는 커밋 직전 DB 트랜잭션 안에서 권한을 재확인. 기본 USER는 앨범 생성 불가(`can_create_albums`). 무인증 `/api/v1/assets/{sha}/*`는 제거. 멤버십을 만드는 초대 API는 M11(지금은 DB에 직접 넣는 테스트로만 검증). TLS가 없으므로 서버는 여전히 `127.0.0.1`에서만 listen합니다.
+- **설계만 완료:** 초대·역할 변경·소유권 이전, Mac 설치 마법사, iOS/Android 앱, 역방향 모바일 동기화, Google Drive 어댑터, 장애 복구.
 - **아직 없음:** 서명·공증된 DMG, 정식 Google Drive OAuth 연결, 모바일 앱, 프로덕션 안정성 보장.
-- **보안 경고:** HTTP 서버는 인증이 없으므로 의도적으로 `127.0.0.1`에만 바인딩됩니다. **LAN/인터넷에 공개하거나 대체할 수 없는 원본 사진의 단일 보관소로 사용하지 마세요.**
+- **보안 경고:** TLS가 없으므로 HTTP 서버는 의도적으로 `127.0.0.1`에만 바인딩됩니다. **LAN/인터넷에 공개하거나 대체할 수 없는 원본 사진의 단일 보관소로 사용하지 마세요.**
 
 <!-- 구현 범위 확인:
 internal/meta/sqlitestore: 서버가 쓰는 메타데이터 저장소. internal/meta/jsonstore는 서버 기동에 쓰이지 않는다(이관 테스트에서 이전 버전 데이터를 만드는 용도). 이관은 internal/legacyimport가 state.json을 자체 엄격 파서로 읽는다. 현재 전체 파일 한 번 업로드, MAX 512MiB.
-internal/httpapi: API에 노출되는 자산 ID는 아직 SHA-256이다(DB 내부 assets.asset_id는 랜덤, sha→asset 조회). 무인증 /assets/{sha} 경로는 M10에서 제거. 업로더의 identity도 신뢰할 수 있는 인증 주체에서 오지 않는다.
-internal/httpapi: 현재 예시 원본 다운로드 API는 folder_id/ACL 확인이 없어, 인증을 먼저 통합하지 않고 네트워크를 열면 심각한 정보 유출이 생긴다.
+internal/httpapi: API 자산 ID는 랜덤 assets.asset_id(폴더별). SHA-256은 업로드 중복 제거·다운로드 검증용 sha256 필드로만 노출(읽기 권한자에게만). 라우트 보호는 middleware_authz.go의 routePolicies가 단일 출처다. 업로더는 세션의 user_id로 기록(assets.uploaded_by_user_id, folder_assets.added_by_user_id).
+internal/httpapi: TLS 전이므로 loopback 가드를 유지한다(M15).
 SQLite 스키마와 YAML API 문서는 목표 규격으로만 분류할 것. 결과/HTTP 응답이 현재 구현과 다를 수 있다.
 이 패키지는 'v1.5 documentation/handoff'이고 서버 실행파일 기능이 v1.5로 향상되었다는 뜻이 아님.
 -->
@@ -292,22 +292,24 @@ CAS pool 원본에 대해 해시가 같더라도 멀티파일 Live Photo, 메타
 
 | Method | Path | 동작 | 보안 상태 |
 |---|---|---|---|
-| `GET` | `/` | 로컬 브라우저 UI | 인증 없음/loopback |
-| `GET` | `/api/v1/health` | 서버 상태 + `storage: ok\|unavailable` + `integrity: ok\|warning` | 인증 없음 |
-| `GET` | `/api/v1/folders` | 전체 데모 폴더 반환 | **권한 없음** |
-| `POST` | `/api/v1/folders` | 이름으로 폴더 생성 | **권한 없음** |
-| `POST` | `/api/v1/folders/{folderID}/assets` | 원본 전체 업로드/해시 검증. 200/201은 파일+DB 커밋 후에만. 507 `insufficient_storage`, 503 `storage_unavailable`·`storage_io_error`·`busy`(Retry-After) | **권한 없음** |
-| `GET` | `/api/v1/folders/{folderID}/sync?cursor=N` | 데모 변경 이벤트 | **권한 없음** |
-| `GET` | `/api/v1/assets/{assetID}/original` | 원본 다운로드 | **권한 없음** |
-| `GET` | `/api/v1/assets/{assetID}/preview` | 기초 프리뷰 | **권한 없음** |
+| `GET` | `/` | 로컬 브라우저 UI(정적 페이지, 데이터는 로그인 후 API로) | 공개/loopback |
+| `GET` | `/api/v1/health` | 서버 상태 + `storage: ok\|unavailable` + `integrity: ok\|warning` | 공개 |
+| `POST` | `/api/v1/auth/login`, `/api/v1/auth/refresh` | 로그인·토큰 회전 | 공개(속도 제한) |
+| `GET` | `/api/v1/folders` | 내가 소유하거나 멤버인 폴더만, 내 역할 포함 | 세션 |
+| `POST` | `/api/v1/folders` | 폴더 생성, 만든 사람이 OWNER | 세션 + SERVER_ADMIN 또는 `can_create_albums` |
+| `GET` | `/api/v1/folders/{folderID}` | 이름·내 역할·가능 작업 | OWNER·모든 멤버 |
+| `POST` | `/api/v1/folders/{folderID}/assets` | 원본 업로드. 201/200은 파일+DB 커밋 후에만, UPLOADER는 항상 202 영수증. 커밋 직전 권한 재확인 | OWNER·CONTRIBUTOR·UPLOADER |
+| `GET` | `/api/v1/folders/{folderID}/sync?cursor=N` | 변경 이벤트 | OWNER·CONTRIBUTOR·VIEWER |
+| `GET` | `/api/v1/folders/{folderID}/assets/{assetID}/original` | 원본(그 폴더에 연결된 자산만) | OWNER·CONTRIBUTOR·VIEWER |
+| `GET` | `/api/v1/folders/{folderID}/assets/{assetID}/preview` | 기초 프리뷰 | OWNER·CONTRIBUTOR·VIEWER |
 
-이 표의 경로는 실제 `internal/httpapi/httpapi.go`를 기준으로 합니다. 설계 문서의 API(`docs/API_v1.2.yaml`, `docs/API_AUTH_v1.4.yaml`)와 **서로 다르므로 목표 명세를 구현 완료로 오해하지 마세요.**
+나머지 `/api/v1/me*`, `/api/v1/admin/users*`는 [`docs/API_AUTH_v1.4.yaml`](docs/API_AUTH_v1.4.yaml) 참조. 소유·멤버가 아닌 폴더(관리자 포함)는 존재하지 않는 폴더와 똑같이 404, 멤버인데 역할이 부족하면 403. 이 표는 실제 `internal/httpapi`(라우트 정책 표 `middleware_authz.go`)를 기준으로 합니다. 초대·역할 변경·소유권 이전은 아직 없습니다(M11).
 
 **미디어 목표:** HEIC/HEIF, JPG, PNG, RAW, Live Photo(HEIC+MOV 묶음), MP4/MOV, 4K/HDR, EXIF 및 촬영 날짜 유지. 원본 바이트는 변환하지 않고 보존, 프리뷰만 별도 생성. 현재 JPEG/PNG/GIF 기초 이미지 디코딩/간이 JPEG 미리보기 외에는 구현돼 있지 않습니다. 영상 프리뷰·변환은 미구현입니다.
 
 <!-- API 개발 지시:
 internal/httpapi는 512MiB 일괄 업로드만 지원. 대용량 영상 업로드 재개, idempotency receipt, hash preflight 정합성 등은 미구현.
-차기 API에서 원본 다운로드는 단순 assets/{sha}만으로 접근하지 말고, 인증된 앨범 연결·역할을 검증.
+원본 다운로드는 /folders/{folderID}/assets/{assetID}로만, 인증된 앨범 연결(folder_assets, removed_at NULL)·역할을 매 요청 검증한다(M10 구현).
 초대/관리/원본/프리뷰/이벤트 모든 핸들러가 인증 미들웨어를 통과해야 한다.
 새 OpenAPI 명세를 작성할 때 기존 API_v1.2+API_AUTH_v1.4의 차이를 조정하고 계약 테스트 작성.
 네트워크 ACL을 완성하기 전 loopback 제한을 제거하지 말 것. HTTPS/페어링 설계 후 LAN 확장.
@@ -373,18 +375,18 @@ GitHub에 곧바로 public push, Release 발행, 실제 원본 정리/삭제 등
 | `server/main.go` | **실행됨:** 설정·기동만 (환경변수, `-init-storage`, `migrate-legacy` 서브커맨드, 볼륨 검증, loopback 가드, 저장소 조립) |
 | `server/admin.go` | **실행됨(콘솔):** `admin init`(bootstrap 관리자 인수) / `create-user` / `reset-password`. 저장소 잠금 필요(서버 중지 상태), 비밀번호는 에코 없는 TTY 2회 입력 또는 stdin 한 줄 |
 | `internal/auth/password/` | **실행됨(콘솔):** Argon2id PHC 해시(기본 m=64MiB,t=3,p=2), 상수시간 검증, 정규형·파라미터 상한 검사, 잠금 값(`!` 접두) 항상 거부, 재해시 필요 판정, 비밀번호 정책 |
-| `internal/users/` | **실행됨(콘솔):** 사용자 저장소(생성·조회·비활성·역할·앨범 생성 권한·비밀번호), bootstrap 인수 1회, 마지막 활성 관리자 보호, 감사 로그(`internal/audit`). HTTP 미연결 |
-| `internal/httpapi/` | **실행됨:** localhost HTTP PoC 핸들러(health, folders, upload, sync, original/preview), 현재 인증 없음. `contract_test.go`는 메타데이터 저장소 구현과 무관한 HTTP 계약 테스트(상태코드·JSON 키·에러 코드) |
-| `internal/httpapi/web/index.html` | **실행됨:** 내장 로컬 관리 UI; 관리자 인증 화면 아님 |
-| `internal/meta/` | **실행됨:** 메타데이터 저장소 인터페이스 `MetadataStore`와 도메인 타입. `metatest/`는 구현 공용 적합성 테스트 |
-| `internal/meta/sqlitestore/` | **실행됨(부분 구현):** SQLite `MetadataStore`. 쓰기는 `BEGIN IMMEDIATE` 트랜잭션 하나(전역 mutex 없음), 읽기는 트랜잭션 없이 조회. 랜덤 내부 asset_id, bootstrap 관리자(`account_bootstrap.user_id`로 식별, 처음엔 잠금된 `admin`)가 모든 폴더 소유 |
-| `internal/meta/jsonstore/` | **서버 미사용:** 이전 버전의 `.system/state.json` 구현. 테스트에서 이전 버전 데이터를 만드는 용도로 유지 |
+| `internal/users/` | **실행됨:** 사용자 저장소(생성·조회·비활성·역할·앨범 생성 권한·비밀번호), bootstrap 인수 1회, 마지막 활성 관리자 보호, 감사 로그(`internal/audit`). 콘솔 명령과 `/api/v1/admin/users*`에서 사용 |
+| `internal/httpapi/` | **실행됨:** localhost HTTP 핸들러(health, 로그인·세션·계정, folders, upload, sync, original/preview). `middleware_authz.go`가 모든 라우트의 접근 정책 표(public/session/server/album)와 앨범 판정을 담당. `contract_test.go`는 HTTP 계약 테스트(상태코드·JSON 키·에러 코드), `authz_test.go`는 역할×엔드포인트 권한 매트릭스·IDOR·권한 회수 테스트 |
+| `internal/httpapi/web/index.html` | **실행됨:** 내장 로컬 관리 UI. 로그인(웹 쿠키 세션+CSRF) 후 내 앨범·생성·업로드만. 계정 관리 화면은 M17 |
+| `internal/meta/` | **실행됨:** 메타데이터 저장소 인터페이스 `MetadataStore`(폴더 접근 관계 조회 `GetFolderAccess`·`ListFoldersFor`, 커밋 안 권한 재확인 `Authorizer`)와 도메인 타입. `metatest/`는 적합성 테스트 |
+| `internal/meta/sqlitestore/` | **실행됨(부분 구현):** SQLite `MetadataStore`. 쓰기는 `BEGIN IMMEDIATE` 트랜잭션 하나(전역 mutex 없음), 읽기는 트랜잭션 없이 조회. 폴더별 랜덤 asset_id, 소유자는 `folders.owner_user_id`, 멤버는 `folder_members`. bootstrap 관리자(`account_bootstrap.user_id`로 식별, 처음엔 잠금된 `admin`)가 이전·이관 폴더 소유 |
+| `internal/meta/jsonstore/` | **서버 미사용·고정:** 이전 버전의 `.system/state.json` 구현. `MetadataStore`를 더 이상 구현하지 않으며 테스트에서 이전 버전 데이터를 만드는 용도로만 유지 |
 | `internal/legacyimport/` | **실행됨(`migrate-legacy`):** state.json → SQLite 무손실 이관. dry-run 기본, `-apply` 시 백업 → 임시 DB에 단일 트랜잭션 → 전 행 대조 검증 → 원자적 rename → state.json 보존 rename. 단계별 크래시·결함 입력 테스트 |
 | `internal/blobstore/` | **실행됨:** 업로드 임시 저장(해시·크기·MIME), pool 승격(원자적 rename, 0400), JPEG 프리뷰 |
 | `server/main_test.go` 및 각 패키지 `*_test.go` | **테스트:** 현 PoC 동작 확인, 볼륨 소실 시 503 fail-closed, 프로덕션 안전성 테스트 아님 |
 | `internal/db/` | **실행됨:** `Open`(모든 연결에 foreign_keys/WAL/synchronous=FULL/busy_timeout, 트랜잭션은 BEGIN IMMEDIATE), `Migrate`(`migrations/*.sql` 내장, `PRAGMA user_version`, 상위 버전 거부, integrity_check), 스키마 트리거·FK 테스트 |
 | `internal/storage/` | **부분 구현:** 볼륨 마커 생성(`-init-storage`)/검증/쓰기 직전 재확인(st_dev). 실기기 미검증, 디스크 UUID 대조 없음 |
-| `internal/authz/policy.go`, `policy_test.go` | **부분 구현:** 역할 판정·단위 테스트. HTTP 서버 미연결 |
+| `internal/authz/policy.go`, `policy_test.go` | **실행됨:** 역할 판정·단위 테스트. 모든 관리자·앨범 라우트가 매 요청 사용 |
 | `go.mod` | Go 모듈 버전, GitHub 주소 정하면 `module` 변경 필요 |
 | `.goreleaser.yaml` | 5개 CPU/OS 조합 릴리스 압축 산출물 설정 |
 | `.github/workflows/ci.yml`, `release.yml` | 테스트/크로스빌드 및 태그 릴리스 CI/CD |

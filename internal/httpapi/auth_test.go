@@ -412,17 +412,3 @@ func TestBrowserCookiesAndCSRF(t *testing.T) {
 	}
 	wantStatus(t, "after cookie logout", e.call(t, "GET", "/api/v1/me", nil, map[string]string{"Cookie": jar2}), 401, "unauthorized")
 }
-
-func TestAuthRoutesAbsentWithoutAuth(t *testing.T) {
-	env := newContractEnv(t, openSQLiteStore)
-	srv := httptest.NewServer(env.Handler)
-	defer srv.Close()
-	res, err := http.Post(srv.URL+"/api/v1/auth/login", "application/json", strings.NewReader("{}"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	res.Body.Close()
-	if res.StatusCode != 404 && res.StatusCode != 405 {
-		t.Fatalf("login without Auth: %d", res.StatusCode)
-	}
-}

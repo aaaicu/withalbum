@@ -1,14 +1,14 @@
-// Package httpapi serves the PoC HTTP API and the local dashboard.
+// Package httpapi serves the HTTP API and the local dashboard.
 //
-// This is a LAN/localhost demonstration API, NOT a production service. Login,
-// sessions and account administration exist (auth.go, middleware_auth.go),
-// but the folder, upload, sync and download routes are NOT protected yet
-// (M10). Never publish its port.
+// Every route needs a session except the dashboard page, health, login and
+// refresh, and every folder and asset route is authorized per request
+// against the owner and memberships stored in the database
+// (middleware_authz.go). There is no TLS yet (M15), so the server still
+// listens on loopback only. Never publish its port.
 package httpapi
 
 import (
 	_ "embed"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/aaaicu/withalbum/internal/authz"
 	"github.com/aaaicu/withalbum/internal/blobstore"
 	"github.com/aaaicu/withalbum/internal/meta"
 	"github.com/aaaicu/withalbum/internal/storage"
@@ -77,8 +78,8 @@ type Config struct {
 	IntegrityWarning bool
 	// Faults is for tests only (see FaultInjector); nil in production.
 	Faults FaultInjector
-	// Auth enables the login, session and account routes (NewAuth). nil:
-	// they are not registered (stores without an account database).
+	// Auth holds the login, session and account services (NewAuth).
+	// Required: Handler panics without it.
 	Auth *Auth
 }
 
@@ -121,21 +122,24 @@ func errorReply(w http.ResponseWriter, status int, code string) {
 	jsonReply(w, status, map[string]string{"error": code})
 }
 
-// Handler returns the routing table.
+// Handler returns the routing table. Every route is registered through its
+// declared access policy (middleware_authz.go). It panics if Config.Auth was
+// nil: no folder or asset route exists without login and access control.
 func (s *Server) Handler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/" {
-			http.NotFound(w, r)
-			return
-		}
+	if s.auth == nil {
+		panic("httpapi: Config.Auth is required")
+	}
+	rt := newRouter(s)
+	rt.handle("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+		// A static page without data; everything it shows comes from API
+		// calls made after logging in.
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
 		_, _ = w.Write(dashboardHTML)
 	})
-	mux.HandleFunc("GET /api/v1/health", func(w http.ResponseWriter, r *http.Request) {
+	rt.handle("GET /api/v1/health", func(w http.ResponseWriter, r *http.Request) {
 		// Report only ok/unavailable; never expose paths or volume ids here.
 		storageState := "ok"
 		if err := s.vol.Check(); err != nil {
@@ -147,16 +151,16 @@ func (s *Server) Handler() http.Handler {
 		}
 		jsonReply(w, 200, map[string]string{"status": "ok", "version": s.version, "storage": storageState, "integrity": integrity})
 	})
-	mux.HandleFunc("GET /api/v1/folders", s.getFolders)
-	mux.HandleFunc("POST /api/v1/folders", s.createFolder)
-	mux.HandleFunc("POST /api/v1/folders/{folderID}/assets", s.upload)
-	mux.HandleFunc("GET /api/v1/folders/{folderID}/sync", s.syncEvents)
-	mux.HandleFunc("GET /api/v1/assets/{assetID}/original", s.download(false))
-	mux.HandleFunc("GET /api/v1/assets/{assetID}/preview", s.download(true))
-	if s.auth != nil {
-		s.authRoutes(mux)
-	}
-	return mux
+	rt.handle("/api/v1/", func(w http.ResponseWriter, r *http.Request) { errorReply(w, 404, "not_found") })
+	s.authRoutes(rt)
+	rt.handle("GET /api/v1/folders", s.getFolders)
+	rt.handle("POST /api/v1/folders", s.createFolder)
+	rt.handleAlbum("GET /api/v1/folders/{folderID}", s.getFolder)
+	rt.handleAlbum("POST /api/v1/folders/{folderID}/assets", s.upload)
+	rt.handleAlbum("GET /api/v1/folders/{folderID}/sync", s.syncEvents)
+	rt.handleAlbum("GET /api/v1/folders/{folderID}/assets/{assetID}/original", s.download(false))
+	rt.handleAlbum("GET /api/v1/folders/{folderID}/assets/{assetID}/preview", s.download(true))
+	return rt.finish()
 }
 
 // metaReadFailed replies to an unexpected metadata read error.
@@ -164,18 +168,75 @@ func metaReadFailed(w http.ResponseWriter, err error) {
 	log.Printf("metadata read failed: %v", err)
 	errorReply(w, 500, "metadata_read_failed")
 }
+
+// folderJSON is a folder as its owner or a member sees it: name, own role
+// and what the role allows. It never names other members or files.
+type folderJSON struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	CreatedAt string `json:"created_at"`
+	Role      string `json:"role"`
+	CanRead   bool   `json:"can_read"`
+	CanUpload bool   `json:"can_upload"`
+}
+
+func folderView(p authz.Principal, fa meta.FolderAccess) folderJSON {
+	return folderJSON{ID: fa.Folder.ID, Name: fa.Folder.Name, CreatedAt: fa.Folder.CreatedAt, Role: role(p.UserID, fa.Access),
+		CanRead:   authz.Allowed(p, authz.ListAlbumAssets, &fa.Access),
+		CanUpload: authz.Allowed(p, authz.UploadAsset, &fa.Access)}
+}
+
+// getFolders lists only the folders the caller owns or is a member of.
 func (s *Server) getFolders(w http.ResponseWriter, r *http.Request) {
-	folders, err := s.meta.ListFolders(r.Context())
+	p, _ := PrincipalFrom(r.Context())
+	list, err := s.meta.ListFoldersFor(r.Context(), p.UserID)
 	if err != nil {
 		metaReadFailed(w, err)
 		return
 	}
-	if folders == nil {
-		folders = []meta.Folder{}
+	folders := []folderJSON{}
+	for _, fa := range list {
+		if authz.Allowed(p, authz.GetAlbumMetadata, &fa.Access) {
+			folders = append(folders, folderView(p, fa))
+		}
 	}
 	jsonReply(w, 200, map[string]any{"folders": folders})
 }
+
+func (s *Server) getFolder(w http.ResponseWriter, r *http.Request, a albumRequest) {
+	jsonReply(w, 200, folderView(a.P, a.Folder))
+}
+
+// Denials found when an authorization is repeated inside a write
+// transaction (meta.Authorizer).
+var (
+	errDenied = errors.New("permission denied")  // 403
+	errHidden = errors.New("folder not visible") // 404
+)
+
+// recheck returns a meta.Authorizer that repeats the decision for action at
+// commit time, and reports through canRead whether the caller could then
+// read the folder.
+func recheck(action authz.Action, canRead *bool) meta.Authorizer {
+	return func(p authz.Principal, access authz.AlbumAccess) error {
+		if canRead != nil {
+			*canRead = authz.Allowed(p, authz.ListAlbumAssets, &access)
+		}
+		if authz.Allowed(p, action, &access) {
+			return nil
+		}
+		if action != authz.CreateAlbum && !authz.Allowed(p, authz.GetAlbumMetadata, &access) {
+			return errHidden
+		}
+		return errDenied
+	}
+}
+
+// createFolder: SERVER_ADMIN or can_create_albums (checked by the route
+// policy and again inside the transaction); the creator is the only owner.
 func (s *Server) createFolder(w http.ResponseWriter, r *http.Request) {
+	id, _ := IdentityFrom(r.Context())
+	p := principal(id)
 	var request struct {
 		Name string `json:"name"`
 	}
@@ -191,16 +252,20 @@ func (s *Server) createFolder(w http.ResponseWriter, r *http.Request) {
 	if !s.storageReady(w) {
 		return
 	}
-	folder, err := s.meta.CreateFolder(r.Context(), request.Name)
-	if errors.Is(err, meta.ErrIDGeneration) {
+	folder, err := s.meta.CreateFolder(r.Context(), meta.NewFolder{Name: request.Name, OwnerID: p.UserID, SessionID: id.SessionID,
+		Authorize: recheck(authz.CreateAlbum, nil)})
+	switch {
+	case errors.Is(err, errDenied):
+		errorReply(w, 403, "forbidden")
+		return
+	case errors.Is(err, meta.ErrIDGeneration):
 		errorReply(w, 500, "random_failure")
 		return
-	}
-	if err != nil {
+	case err != nil:
 		writeFailed(w, "create folder", err, "metadata_write_failed")
 		return
 	}
-	jsonReply(w, 201, folder)
+	jsonReply(w, 201, folderView(p, meta.FolderAccess{Folder: folder, Access: authz.AlbumAccess{OwnerID: p.UserID}}))
 }
 
 // storageReady re-verifies the volume right before a write. On failure it
@@ -267,21 +332,24 @@ func (s *Server) uploadBudget(w http.ResponseWriter) (int64, bool) {
 // upload stores one original. Commit order (each step durable before the
 // next): temp file in incoming/ fsynced -> renamed into the pool and the pool
 // directory fsynced -> preview (optional) -> one metadata transaction, inside
-// which the volume and the pool file are re-checked right before COMMIT ->
-// response. A success status is therefore only sent once file and metadata
-// are both on disk. A crash or error before COMMIT leaves at most a temp file
-// or an unreferenced pool file, which startup reconciliation removes or
-// quarantines (blobstore.Reconcile); retrying the upload is always safe.
-func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
+// which the caller's permission, the volume and the pool file are re-checked
+// right before COMMIT -> response. A success status is therefore only sent
+// once file and metadata are both on disk. A crash or error before COMMIT
+// leaves at most a temp file or an unreferenced pool file, which startup
+// reconciliation removes or quarantines (blobstore.Reconcile); retrying the
+// upload is always safe.
+//
+// Whether the bytes are new to the server, already stored for another
+// folder, or already in this folder does not change the steps taken before
+// the commit: the pool file is promoted (or the existing one re-verified)
+// and the preview generated in every case. The latency still differs by a
+// few milliseconds (new directory entries and database rows must be synced,
+// known ones not); that is a known, documented limit. Callers who can read the folder get
+// "created" (201) or "already_present" (200) and the asset; a caller who may
+// only upload (UPLOADER) always gets the same 202 receipt.
+func (s *Server) upload(w http.ResponseWriter, r *http.Request, a albumRequest) {
 	ctx := r.Context()
-	folderID := r.PathValue("folderID")
-	if _, err := s.meta.GetFolder(ctx, folderID); errors.Is(err, meta.ErrFolderNotFound) {
-		errorReply(w, 404, "folder_not_found")
-		return
-	} else if err != nil {
-		metaReadFailed(w, err)
-		return
-	}
+	folderID := a.Folder.Folder.ID
 	deviceID := strings.TrimSpace(r.Header.Get("X-Device-ID"))
 	if len(deviceID) > 100 {
 		errorReply(w, 400, "invalid_device_id")
@@ -343,7 +411,7 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	filename := r.Header.Get("X-Filename")
-	// The experimental local dashboard percent-encodes non-ASCII filenames for headers.
+	// The local dashboard percent-encodes non-ASCII filenames for headers.
 	if decoded, err := url.QueryUnescape(filename); err == nil {
 		filename = decoded
 	}
@@ -352,47 +420,29 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 		name = sha
 	}
 
+	// Blob before metadata: the pool file must be durable before
+	// CommitUpload makes the asset visible. For bytes the pool already holds
+	// Promote re-hashes the existing file (and puts it back if it is missing
+	// or damaged), which also keeps the work the same as for new bytes.
+	if !s.storageReady(w) {
+		return
+	}
+	err = s.blobs.Promote(staged, sha)
+	if err == nil {
+		err = s.fault(FaultAfterPromote)
+	}
+	if err != nil {
+		writeFailed(w, "promote upload", err, "storage_failed")
+		return
+	}
+	// The preview is derived data: its failure never fails the upload. It is
+	// (re)generated for known bytes too; the result is the same file.
 	previewReady := false
-	existing, err := s.meta.GetAssetBySHA(ctx, sha)
-	switch {
-	case err == nil:
-		previewReady = existing.PreviewReady
-		// The metadata knows this original but its pool file is gone (see
-		// the startup report): these are the same bytes, restore it.
-		if _, statErr := os.Lstat(s.blobs.PoolPath(sha)); errors.Is(statErr, os.ErrNotExist) {
-			if !s.storageReady(w) {
-				return
-			}
-			if err := s.blobs.Promote(staged, sha); err != nil {
-				writeFailed(w, "restore missing original", err, "storage_failed")
-				return
-			}
-			log.Printf("restored missing original %s from a new upload", sha)
-		}
-	case errors.Is(err, meta.ErrAssetNotFound):
-		// Blob before metadata: the pool file must be durable before
-		// CommitUpload makes the asset visible.
-		if !s.storageReady(w) {
-			return
-		}
-		err := s.blobs.Promote(staged, sha)
-		if err == nil {
-			err = s.fault(FaultAfterPromote)
-		}
-		if err != nil {
-			writeFailed(w, "promote upload", err, "storage_failed")
-			return
-		}
-		// The preview is derived data: its failure never fails the upload.
-		if err := s.fault(FaultPreview); err == nil {
-			previewReady = s.blobs.MakePreview(sha) == nil
-		}
-		if err := s.fault(FaultAfterPreview); err != nil {
-			writeFailed(w, "upload", err, "storage_failed")
-			return
-		}
-	default:
-		metaReadFailed(w, err)
+	if err := s.fault(FaultPreview); err == nil {
+		previewReady = s.blobs.MakePreview(sha) == nil
+	}
+	if err := s.fault(FaultAfterPreview); err != nil {
+		writeFailed(w, "upload", err, "storage_failed")
 		return
 	}
 	// Re-check: the pool rename and preview above may have taken a while.
@@ -400,10 +450,17 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	poolPath := s.blobs.PoolPath(sha)
+	canRead := false
 	res, err := s.meta.CommitUpload(ctx, meta.CommitRequest{
-		FolderID: folderID,
-		DeviceID: deviceID,
-		Asset:    meta.Asset{ID: sha, Filename: name, MimeType: staged.MimeType, Bytes: staged.Size, PreviewReady: previewReady},
+		FolderID:  folderID,
+		DeviceID:  deviceID,
+		UserID:    a.P.UserID,
+		SessionID: a.ID.SessionID,
+		Asset:     meta.Asset{SHA256: sha, Filename: name, MimeType: staged.MimeType, Bytes: staged.Size, PreviewReady: previewReady},
+		// The permission checked when the request arrived may have been
+		// revoked while the body was streaming: decide again on what is
+		// stored now, under the database write lock.
+		Authorize: recheck(authz.UploadAsset, &canRead),
 		// Runs under the database write lock right before COMMIT, so the
 		// window between this check and the commit is as small as possible.
 		BeforeCommit: func() error {
@@ -426,22 +483,46 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		err = s.fault(FaultAfterCommit)
 	}
-	if errors.Is(err, meta.ErrFolderNotFound) {
+	switch {
+	case errors.Is(err, errHidden), errors.Is(err, meta.ErrFolderNotFound):
+		log.Printf("upload refused at commit: no longer a member of the folder")
 		errorReply(w, 404, "folder_not_found")
 		return
-	}
-	if err != nil {
+	case errors.Is(err, errDenied):
+		log.Printf("upload refused at commit: permission revoked during the upload")
+		errorReply(w, 403, "forbidden")
+		return
+	case err != nil:
 		writeFailed(w, "commit upload", err, "metadata_write_failed")
 		return
 	}
-	status := 201
-	if res.Result == meta.ResultAlreadyPresent {
-		status = 200
+	if !canRead {
+		// Upload-only: nothing about the folder's contents, the asset or
+		// whether these bytes were already stored.
+		jsonReply(w, 202, map[string]any{"result": "accepted", "folder_id": folderID, "sha256": sha, "bytes": staged.Size})
+		return
 	}
-	jsonReply(w, status, map[string]any{"result": res.Result, "asset_id": sha, "folder_id": folderID, "sha256": sha, "preview_ready": res.Asset.PreviewReady})
+	status, result := 201, "created"
+	if res.Result == meta.ResultAlreadyPresent {
+		status, result = 200, "already_present"
+	}
+	jsonReply(w, status, map[string]any{"result": result, "asset_id": res.Asset.ID, "folder_id": folderID, "sha256": sha, "preview_ready": res.Asset.PreviewReady})
 }
-func (s *Server) syncEvents(w http.ResponseWriter, r *http.Request) {
-	folderID := r.PathValue("folderID")
+
+// assetJSON is an asset as a reader of its folder sees it. sha256 lets the
+// client verify a downloaded original.
+type assetJSON struct {
+	ID           string `json:"id"`
+	SHA256       string `json:"sha256"`
+	Filename     string `json:"filename"`
+	MimeType     string `json:"mime_type"`
+	Bytes        int64  `json:"bytes"`
+	PreviewReady bool   `json:"preview_ready"`
+	UploadedAt   string `json:"uploaded_at"`
+}
+
+func (s *Server) syncEvents(w http.ResponseWriter, r *http.Request, a albumRequest) {
+	folderID := a.Folder.Folder.ID
 	cursor, err := strconv.ParseInt(r.URL.Query().Get("cursor"), 10, 64)
 	if r.URL.Query().Get("cursor") == "" {
 		cursor = 0
@@ -460,27 +541,25 @@ func (s *Server) syncEvents(w http.ResponseWriter, r *http.Request) {
 		metaReadFailed(w, err)
 		return
 	}
-	if page.Events == nil {
-		page.Events = []meta.Event{}
+	events := page.Events
+	if events == nil {
+		events = []meta.Event{}
 	}
-	if page.Assets == nil {
-		page.Assets = map[string]meta.Asset{}
+	assets := make(map[string]assetJSON, len(page.Assets))
+	for id, as := range page.Assets {
+		assets[id] = assetJSON{ID: as.ID, SHA256: as.SHA256, Filename: as.Filename, MimeType: as.MimeType, Bytes: as.Bytes,
+			PreviewReady: as.PreviewReady, UploadedAt: as.UploadedAt}
 	}
-	jsonReply(w, 200, map[string]any{"folder_id": folderID, "events": page.Events, "assets": page.Assets,
+	jsonReply(w, 200, map[string]any{"folder_id": folderID, "events": events, "assets": assets,
 		"next_cursor": page.NextCursor, "has_more": page.HasMore})
 }
-func (s *Server) download(preview bool) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		sha := r.PathValue("assetID")
-		if len(sha) != 64 {
-			errorReply(w, 400, "invalid_asset_id")
-			return
-		}
-		if _, err := hex.DecodeString(sha); err != nil {
-			errorReply(w, 400, "invalid_asset_id")
-			return
-		}
-		asset, err := s.meta.GetAssetBySHA(r.Context(), sha)
+
+// download serves an original or preview of an asset that is linked to the
+// folder in the path (the route policy has checked the caller may read it).
+// An asset ID of another folder, even one the caller can read, is 404.
+func (s *Server) download(preview bool) albumHandler {
+	return func(w http.ResponseWriter, r *http.Request, a albumRequest) {
+		asset, err := s.meta.GetFolderAsset(r.Context(), a.Folder.Folder.ID, r.PathValue("assetID"))
 		if errors.Is(err, meta.ErrAssetNotFound) {
 			errorReply(w, 404, "asset_not_found")
 			return
@@ -489,13 +568,13 @@ func (s *Server) download(preview bool) http.HandlerFunc {
 			metaReadFailed(w, err)
 			return
 		}
-		path := s.blobs.PoolPath(sha)
+		path := s.blobs.PoolPath(asset.SHA256)
 		if preview {
 			if !asset.PreviewReady {
 				errorReply(w, 404, "preview_not_ready")
 				return
 			}
-			path = s.blobs.PreviewPath(sha)
+			path = s.blobs.PreviewPath(asset.SHA256)
 			w.Header().Set("Content-Type", "image/jpeg")
 		} else {
 			w.Header().Set("Content-Type", asset.MimeType)

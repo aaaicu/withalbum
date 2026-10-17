@@ -28,6 +28,9 @@
     ul { padding-left: 18px; line-height: 1.8; }
     .muted, small { color: #6f7c90; }
     .status { margin: 15px 0 0; min-height: 1.5rem; }
+    .bar { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 18px; }
+    .ghost { background: transparent; color: inherit; border: 1px solid #ccd5e3; }
+    [hidden] { display: none !important; }
     code { font-size: 13px; background: #edf1f7; border-radius: 5px; padding: 3px 6px; word-break: break-all; }
     @media (max-width: 680px) { .cards { grid-template-columns: 1fr; } h1 { font-size: 25px; } }
     @media (prefers-color-scheme: dark) {
@@ -43,47 +46,94 @@
 <body>
   <main>
     <div class="brand"><span class="mark" aria-hidden="true">▧</span><div><h1>WithAlbum Server</h1><div class="sub">내 컴퓨터에서 직접 운영하는 사진 서버</div></div></div>
-    <div class="warning"><strong>개발 중 · 로컬 실험용</strong><div>아직 인증, 사용자 권한, 데이터 복구 체계가 완성되지 않았습니다. 중요한 사진의 유일한 보관 장소로 사용하거나 인터넷에 공개하지 마세요.</div></div>
-    <div class="cards">
-      <section><h2>서버 상태</h2><div class="value" id="health">확인 중</div></section>
-      <section><h2>서버 버전</h2><div class="value" id="version">-</div></section>
-      <section><h2>공유 폴더</h2><div class="value" id="count">-</div></section>
-    </div>
-    <section class="wide"><h2>공유 폴더 관리</h2><div class="muted">시험용 폴더를 생성하고 파일을 서버에 업로드할 수 있습니다.</div>
-      <form id="create" class="field"><input id="folderName" type="text" maxlength="80" placeholder="예: 가족여행" required><button>폴더 만들기</button></form>
-      <ul id="folders"><li>로딩 중...</li></ul>
+    <div class="warning"><strong>개발 중 · 로컬 실험용</strong><div>로그인과 앨범 권한은 동작하지만 TLS와 데이터 복구 체계가 아직 없습니다. 중요한 사진의 유일한 보관 장소로 사용하거나 인터넷에 공개하지 마세요.</div></div>
+    <section id="loginBox" hidden><h2>로그인</h2><div class="muted">서버 콘솔에서 만든 계정으로 로그인하세요 (<code>withalbum-server admin init</code> / <code>admin create-user</code>).</div>
+      <form id="login" class="field"><input id="loginName" type="text" autocomplete="username" placeholder="아이디" required><input id="password" type="password" autocomplete="current-password" placeholder="비밀번호" required><button>로그인</button></form>
+      <div class="status" id="loginFeedback" role="status" aria-live="polite"></div>
     </section>
-    <section class="wide"><h2>파일 업로드 테스트</h2><div class="field"><select id="folderSelect" aria-label="대상 폴더"><option value="">폴더 선택</option></select><input id="file" type="file" accept="image/*,video/*" aria-label="파일 선택"><button id="upload" type="button">업로드</button></div><div class="status" id="feedback" role="status" aria-live="polite"></div></section>
-    <p class="muted"><small>인터넷 공개 및 실제 서비스 용도가 아닌, 서버 기능과 배포 방식 검증을 위한 첫 단계입니다.</small></p>
+    <div id="app" hidden>
+      <div class="bar"><div class="muted">로그인: <strong id="who">-</strong></div><button id="logout" class="ghost" type="button">로그아웃</button></div>
+      <div class="cards">
+        <section><h2>서버 상태</h2><div class="value" id="health">확인 중</div></section>
+        <section><h2>서버 버전</h2><div class="value" id="version">-</div></section>
+        <section><h2>내 앨범</h2><div class="value" id="count">-</div></section>
+      </div>
+      <section class="wide"><h2>앨범</h2><div class="muted">내가 소유하거나 초대된 앨범만 보입니다.</div>
+        <form id="create" class="field" hidden><input id="folderName" type="text" maxlength="80" placeholder="예: 가족여행" required><button>앨범 만들기</button></form>
+        <ul id="folders"><li>로딩 중...</li></ul>
+      </section>
+      <section class="wide"><h2>파일 업로드 테스트</h2><div class="field"><select id="folderSelect" aria-label="대상 앨범"><option value="">앨범 선택</option></select><input id="file" type="file" accept="image/*,video/*" aria-label="파일 선택"><button id="upload" type="button">업로드</button></div><div class="status" id="feedback" role="status" aria-live="polite"></div></section>
+    </div>
+    <p class="muted"><small>인터넷 공개 및 실제 서비스 용도가 아닌, 서버 기능과 배포 방식 검증을 위한 단계입니다.</small></p>
   </main>
   <script>
     const $ = id => document.getElementById(id);
-    async function api(url, opts = {}) {
-      const response = await fetch(url, {cache: 'no-store', ...opts});
-      const body = await response.json();
+    const ROLE = {OWNER: '소유자', CONTRIBUTOR: '참여자', VIEWER: '보기 전용', UPLOADER: '업로드 전용'};
+    function csrf() {
+      const m = document.cookie.match(/(?:^|; )withalbum_csrf=([^;]*)/);
+      return m ? decodeURIComponent(m[1]) : '';
+    }
+    class Unauthorized extends Error {}
+    // Session cookies (HttpOnly) go along automatically; unsafe methods also
+    // send the CSRF token. An expired access token is refreshed once.
+    async function api(url, opts = {}, retried = false) {
+      const headers = {...(opts.headers || {})};
+      const method = (opts.method || 'GET').toUpperCase();
+      if (method !== 'GET' && method !== 'HEAD') headers['X-CSRF-Token'] = csrf();
+      const response = await fetch(url, {cache: 'no-store', credentials: 'same-origin', ...opts, headers});
+      if (response.status === 401 && !retried && csrf()) {
+        const r = await fetch('/api/v1/auth/refresh', {method: 'POST', credentials: 'same-origin', headers: {'Content-Type': 'application/json', 'X-CSRF-Token': csrf()}, body: '{}'});
+        if (r.ok) return api(url, opts, true);
+      }
+      if (response.status === 401) throw new Unauthorized('로그인이 필요합니다.');
+      const body = response.status === 204 ? {} : await response.json();
       if (!response.ok) throw Error(body.error || '서버 오류');
       return body;
     }
+    function showLogin(message) {
+      $('app').hidden = true; $('loginBox').hidden = false;
+      $('loginFeedback').textContent = message || '';
+    }
     async function reload() {
       try {
-        const [health, folders] = await Promise.all([api('/api/v1/health'), api('/api/v1/folders')]);
-        $('health').textContent = health.status === 'ok' ? '정상 실행' : '점검 필요';
+        const [me, health, folders] = await Promise.all([api('/api/v1/me'), api('/api/v1/health'), api('/api/v1/folders')]);
+        $('loginBox').hidden = true; $('app').hidden = false;
+        $('who').textContent = me.user.display_name + ' (' + me.user.login_name + ')';
+        $('create').hidden = !(me.user.server_role === 'SERVER_ADMIN' || me.user.can_create_albums);
+        $('health').textContent = health.status === 'ok' && health.storage === 'ok' ? '정상 실행' : '점검 필요';
         $('version').textContent = health.version;
         $('count').textContent = folders.folders.length + '개';
         $('folders').replaceChildren();
-        $('folderSelect').replaceChildren(new Option('폴더 선택', ''));
-        if (!folders.folders.length) $('folders').appendChild(Object.assign(document.createElement('li'), {textContent: '아직 폴더가 없습니다.'}));
+        $('folderSelect').replaceChildren(new Option('앨범 선택', ''));
+        if (!folders.folders.length) $('folders').appendChild(Object.assign(document.createElement('li'), {textContent: '아직 볼 수 있는 앨범이 없습니다.'}));
         folders.folders.sort((a,b) => a.name.localeCompare(b.name, 'ko')).forEach(folder => {
           const li = document.createElement('li');
           li.textContent = folder.name + '  ';
           const small = document.createElement('small');
-          small.textContent = `(${folder.id.slice(0,8)})`;
+          small.textContent = `${ROLE[folder.role] || folder.role} · ${folder.id.slice(0,8)}`;
           li.appendChild(small);
           $('folders').appendChild(li);
-          $('folderSelect').appendChild(new Option(folder.name, folder.id));
+          if (folder.can_upload) $('folderSelect').appendChild(new Option(folder.name, folder.id));
         });
-      } catch (err) { $('health').textContent = '연결 오류'; $('feedback').textContent = err.message; }
+      } catch (err) {
+        if (err instanceof Unauthorized) showLogin(''); else { $('health').textContent = '연결 오류'; $('feedback').textContent = err.message; }
+      }
     }
+    $('login').addEventListener('submit', async e => {
+      e.preventDefault();
+      try {
+        const r = await fetch('/api/v1/auth/login', {method: 'POST', credentials: 'same-origin', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({login_name: $('loginName').value.trim(), password: $('password').value, device_name: 'Web dashboard', platform: 'web'})});
+        $('password').value = '';
+        if (r.status === 429) { showLogin('시도가 너무 많습니다. 잠시 후 다시 시도하세요.'); return; }
+        if (!r.ok) { showLogin('아이디 또는 비밀번호가 올바르지 않습니다.'); return; }
+        await reload();
+      } catch (err) { showLogin(err.message); }
+    });
+    $('logout').addEventListener('click', async () => {
+      try { await api('/api/v1/auth/logout', {method: 'POST'}); } catch (err) {}
+      showLogin('로그아웃했습니다.');
+    });
     $('create').addEventListener('submit', async e => {
       e.preventDefault();
       const name = $('folderName').value.trim();
@@ -91,20 +141,21 @@
       try {
         await api('/api/v1/folders', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name})});
         $('folderName').value = '';
-        $('feedback').textContent = '폴더를 만들었습니다.';
+        $('feedback').textContent = '앨범을 만들었습니다.';
         await reload();
-      } catch(err) { $('feedback').textContent = err.message; }
+      } catch(err) { if (err instanceof Unauthorized) showLogin(err.message); else $('feedback').textContent = err.message; }
     });
     $('upload').addEventListener('click', async () => {
       const file = $('file').files[0], folder = $('folderSelect').value;
-      if (!folder || !file) { $('feedback').textContent = '폴더와 파일을 선택해 주세요.'; return; }
+      if (!folder || !file) { $('feedback').textContent = '앨범과 파일을 선택해 주세요.'; return; }
       const button = $('upload'); button.disabled = true;
       $('feedback').textContent = '업로드 중 (최대 512MB)...';
       try {
         const result = await api(`/api/v1/folders/${encodeURIComponent(folder)}/assets`, {method:'POST', headers:{'Content-Type':'application/octet-stream','X-Filename': encodeURIComponent(file.name)}, body: file});
-        $('feedback').textContent = `${result.result === 'already_present' ? '이미 저장된 파일입니다.' : '업로드 완료.'} 해시: ${result.sha256.slice(0,16)}…`;
+        const msg = {already_present: '이미 이 앨범에 있는 파일입니다.', accepted: '전송했습니다 (업로드 전용 앨범).'}[result.result] || '업로드 완료.';
+        $('feedback').textContent = `${msg} 해시: ${result.sha256.slice(0,16)}…`;
         $('file').value = '';
-      } catch(err) { $('feedback').textContent = '업로드 실패: ' + err.message; }
+      } catch(err) { if (err instanceof Unauthorized) showLogin(err.message); else $('feedback').textContent = '업로드 실패: ' + err.message; }
       finally { button.disabled = false; }
     });
     reload();

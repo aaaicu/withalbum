@@ -1,15 +1,36 @@
 openapi: 3.1.0
 info:
   title: WithAlbum Self-Hosted Identity and Authorization API
-  version: 1.4.1-draft
+  version: 1.4.2-draft
   description: >-
     Access-control contract. IMPLEMENTED in the Go server: /api/v1/auth/*,
     /api/v1/me*, /api/v1/admin/users* (login, device sessions, account
-    administration). Everything under /api/v1/folders, /invitations and the
-    asset routes is still TARGET DESIGN: the current server serves its older,
-    unauthenticated PoC folder/asset API (API_v1.2.yaml) on loopback only
-    until album ACLs (M10) and TLS (M15) exist. All resource access is denied
-    by default.
+    administration) and the album routes GET/POST /api/v1/folders,
+    GET /api/v1/folders/{folder_id}, POST /api/v1/folders/{folder_id}/assets,
+    GET /api/v1/folders/{folder_id}/sync and
+    GET /api/v1/folders/{folder_id}/assets/{asset_id}/original|preview.
+    Still TARGET DESIGN (marked "not implemented"): folder deletion,
+    invitations, membership changes, ownership transfer and the asset list
+    (M11/M16). The unauthenticated PoC routes /api/v1/assets/{sha256}/* of
+    API_v1.2.yaml are removed. There is no TLS yet (M15): the server listens
+    on loopback only.
+
+
+    Access. Only the dashboard page (GET /), GET /api/v1/health,
+    /api/v1/auth/login and /api/v1/auth/refresh work without a session;
+    every other path under /api/v1/, including unknown ones, answers 401
+    without a valid session. Album routes are authorized on every request
+    from the owner and memberships stored at that moment, with
+    deny-by-default: a folder the caller neither owns nor is a member of is
+    404 folder_not_found, exactly like a folder that does not exist (a
+    SERVER_ADMIN is no exception: administrators do not see other people's
+    albums); a folder the caller belongs to but whose role does not allow the
+    operation is 403 forbidden. Roles: OWNER (everything), CONTRIBUTOR (read
+    and upload), VIEWER (read), UPLOADER (upload only: metadata of the
+    folder, never its contents). Asset IDs are random and belong to one
+    folder: an asset ID used under another folder is 404 asset_not_found.
+    Uploads re-check the permission inside the database transaction right
+    before the commit, so a permission revoked during an upload is honored.
 
 
     Tokens. Login creates one device and one session. The access token
@@ -322,37 +343,71 @@ paths:
   /api/v1/folders:
     post:
       tags: [Albums]
-      summary: Create a folder; authenticated creator becomes the only owner
-      description: Requires SERVER_ADMIN or can_create_albums=true; membership alone never authorizes creation.
+      summary: Create a folder; the authenticated creator becomes its only owner
+      description: >-
+        Requires SERVER_ADMIN or can_create_albums=true (checked on the
+        request and again inside the transaction); membership never
+        authorizes creation. Cookie sessions need X-CSRF-Token.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: {type: string, minLength: 1, maxLength: 80, description: 'trimmed; 1-80 characters'}
       responses:
-        '201': {description: Created album and assigned owner}
-        '403': {description: No album-creation permission}
+        '201':
+          description: Created; role OWNER
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Folder'}
+        '400': {description: 'invalid_json, invalid_folder_name'}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (no album-creation permission) or csrf_failed'}
+        '503': {description: 'storage_unavailable, busy'}
+        '507': {description: insufficient_storage}
     get:
       tags: [Albums]
-      summary: List only albums owned by or shared with current user
+      summary: List only the folders the caller owns or is a member of
       responses:
-        '200': {description: Filtered album list including effective role only}
+        '200':
+          description: Own and shared folders with the caller's role, oldest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [folders]
+                properties:
+                  folders:
+                    type: array
+                    items: {$ref: '#/components/schemas/Folder'}
+        '401': {description: unauthorized}
   /api/v1/folders/{folder_id}:
+    parameters:
+      - $ref: '#/components/parameters/FolderID'
     get:
       tags: [Albums]
-      summary: Get minimal metadata if owner or member, including UPLOADER
-      parameters:
-        - $ref: '#/components/parameters/FolderID'
+      summary: Minimal metadata for the owner and any member, UPLOADER included
       responses:
-        '200': {description: Album name, role, effective capabilities}
-        '404': {description: Folder not found or not accessible}
+        '200':
+          description: Folder name, own role and what it allows
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Folder'}
+        '401': {description: unauthorized}
+        '404': {description: 'folder_not_found (unknown, or not owner/member)'}
     delete:
       tags: [Albums]
-      summary: Delete or archive album (OWNER only)
-      parameters:
-        - $ref: '#/components/parameters/FolderID'
+      summary: Delete or archive album (OWNER only) - not implemented
       responses:
         '204': {description: Archived/deleted under retention policy}
         '403': {description: Not owner}
   /api/v1/folders/{folder_id}/invitations:
     post:
       tags: [Invitations]
-      summary: Invite a registered user, OWNER only
+      summary: Invite a registered user, OWNER only - not implemented (M11)
       description: Target must be an existing approved server account; cannot auto-create an unapproved account.
       parameters:
         - $ref: '#/components/parameters/FolderID'
@@ -373,13 +428,13 @@ paths:
   /api/v1/invitations:
     get:
       tags: [Invitations]
-      summary: List pending invitations addressed to current account
+      summary: List pending invitations addressed to current account - not implemented (M11)
       responses:
         '200': {description: Own invitations only}
   /api/v1/invitations/{invitation_id}/accept:
     post:
       tags: [Invitations]
-      summary: Accept a valid invitation as its named recipient
+      summary: Accept a valid invitation as its named recipient - not implemented (M11)
       parameters:
         - $ref: '#/components/parameters/InvitationID'
       responses:
@@ -389,7 +444,7 @@ paths:
   /api/v1/folders/{folder_id}/members/{user_id}:
     patch:
       tags: [Albums]
-      summary: Change member role (OWNER only)
+      summary: Change member role (OWNER only) - not implemented (M11)
       parameters:
         - $ref: '#/components/parameters/FolderID'
         - $ref: '#/components/parameters/UserID'
@@ -398,7 +453,7 @@ paths:
         '403': {description: Not owner}
     delete:
       tags: [Albums]
-      summary: Remove member (OWNER only)
+      summary: Remove member (OWNER only) - not implemented (M11)
       parameters:
         - $ref: '#/components/parameters/FolderID'
         - $ref: '#/components/parameters/UserID'
@@ -408,61 +463,139 @@ paths:
   /api/v1/folders/{folder_id}/owner:
     post:
       tags: [Albums]
-      summary: Transfer unique ownership to active user atomically
+      summary: Transfer unique ownership to active user atomically - not implemented (M11)
       parameters:
         - $ref: '#/components/parameters/FolderID'
       responses:
         '200': {description: Ownership transferred and audited}
         '403': {description: Not owner}
   /api/v1/folders/{folder_id}/assets:
+    parameters:
+      - $ref: '#/components/parameters/FolderID'
     get:
       tags: [Assets]
-      summary: List photo assets (OWNER, VIEWER, CONTRIBUTOR)
-      parameters:
-        - $ref: '#/components/parameters/FolderID'
+      summary: List photo assets (OWNER, VIEWER, CONTRIBUTOR) - not implemented, use /sync
       responses:
         '200': {description: Authorized assets, paginated}
         '403': {description: UPLOADER cannot list files}
     post:
       tags: [Assets]
-      summary: Upload asset (OWNER, CONTRIBUTOR, UPLOADER)
+      summary: Upload one original as the request body (OWNER, CONTRIBUTOR, UPLOADER)
       description: >-
-        UPLOADER gets a generic receipt and no cross-user hash/asset metadata.
-        Authorization must be rechecked before final storage commit.
-      parameters:
-        - $ref: '#/components/parameters/FolderID'
+        Whole file in one request, at most 512 MiB. Headers: X-Filename
+        (percent-encoded allowed), X-Device-ID (free-form label, at most 100
+        bytes), X-Content-SHA256 (optional; 422 on mismatch). Cookie sessions
+        need X-CSRF-Token. Success is sent only after the original file and
+        its metadata are durably committed; any other status means nothing
+        was committed and the same bytes can be retried. The permission is
+        checked again right before the commit; if it was revoked meanwhile the
+        upload is refused (403/404) and nothing is recorded.
+
+
+        Callers who can read the folder (OWNER, CONTRIBUTOR) get 201
+        created or 200 already_present (the folder already holds these
+        bytes) with the folder's asset ID. Whether the bytes are stored for
+        another folder is never revealed (both are 201 created, and the
+        folder gets an asset of its own). An UPLOADER always gets the same
+        202 receipt, which only repeats what the client sent; it never says
+        whether the bytes were new or already there.
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: {type: string, format: binary}
       responses:
-        '202': {description: Generic accepted receipt, opaque and idempotent}
-        '403': {description: VIEWER cannot upload}
+        '200':
+          description: already_present (readers only)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UploadResult'}
+        '201':
+          description: created (readers only)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UploadResult'}
+        '202':
+          description: Generic receipt for upload-only callers
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UploadReceipt'}
+        '400': {description: 'empty_file, upload_failed, invalid_device_id'}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (VIEWER, or role lowered during the upload) or csrf_failed'}
+        '404': {description: 'folder_not_found (not owner/member, or membership removed during the upload)'}
+        '413': {description: file_too_large}
+        '422': {description: hash_mismatch}
+        '500': {description: 'temp_failed, temp_close_failed, temp_write_failed, file_sync_failed, storage_failed, metadata_write_failed'}
+        '503':
+          description: 'storage_unavailable, storage_io_error, busy (Retry-After: 1)'
+        '507': {description: insufficient_storage (do not retry automatically)}
   /api/v1/folders/{folder_id}/sync:
     get:
       tags: [Assets]
-      summary: Read incremental change feed (OWNER, VIEWER, CONTRIBUTOR only)
+      summary: Read the incremental change feed (OWNER, VIEWER, CONTRIBUTOR only)
       parameters:
         - $ref: '#/components/parameters/FolderID'
+        - in: query
+          name: cursor
+          schema: {type: integer, minimum: 0, default: 0}
+          description: last seq already applied; at most 100 events per page
       responses:
-        '200': {description: Authorized delta and cursor}
-        '403': {description: UPLOADER cannot read change feed}
+        '200':
+          description: Events after the cursor and the assets they reference
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [folder_id, events, assets, next_cursor, has_more]
+                properties:
+                  folder_id: {type: string}
+                  events:
+                    type: array
+                    items:
+                      type: object
+                      required: [seq, kind, asset_id, folder_id, uploader_device_id, occurred_at]
+                      properties:
+                        seq: {type: integer}
+                        kind: {type: string, enum: [asset_added]}
+                        asset_id: {type: string}
+                        folder_id: {type: string}
+                        uploader_device_id: {type: string}
+                        occurred_at: {type: string}
+                  assets:
+                    type: object
+                    description: by asset id
+                    additionalProperties: {$ref: '#/components/schemas/Asset'}
+                  next_cursor: {type: integer}
+                  has_more: {type: boolean}
+        '400': {description: invalid_cursor}
+        '401': {description: unauthorized}
+        '403': {description: forbidden (UPLOADER)}
+        '404': {description: folder_not_found}
   /api/v1/folders/{folder_id}/assets/{asset_id}/original:
     get:
       tags: [Assets]
-      summary: Download original, requires readable album-asset association
+      summary: Download the original; the asset must be linked to this folder
       parameters:
         - $ref: '#/components/parameters/FolderID'
         - $ref: '#/components/parameters/AssetID'
       responses:
-        '200': {description: Original bytes}
-        '404': {description: Asset not in readable album or nonexistent}
+        '200': {description: 'Original bytes (Content-Type as sniffed at upload, Range supported, Cache-Control: no-store)'}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (UPLOADER; the same answer for any asset id)'}
+        '404': {description: 'folder_not_found, asset_not_found (unknown, or an asset of another folder)'}
   /api/v1/folders/{folder_id}/assets/{asset_id}/preview:
     get:
       tags: [Assets]
-      summary: Download preview, same auth as original download
+      summary: Download the JPEG preview, same access as the original
       parameters:
         - $ref: '#/components/parameters/FolderID'
         - $ref: '#/components/parameters/AssetID'
       responses:
-        '200': {description: Preview bytes}
-        '404': {description: Asset not in readable album or nonexistent}
+        '200': {description: JPEG preview, longer side at most 1600 px}
+        '401': {description: unauthorized}
+        '403': {description: forbidden (UPLOADER)}
+        '404': {description: 'folder_not_found, asset_not_found, preview_not_ready'}
 components:
   parameters:
     FolderID:
@@ -486,6 +619,44 @@ components:
       required: true
       schema: {type: string}
   schemas:
+    Folder:
+      type: object
+      required: [id, name, created_at, role, can_read, can_upload]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        created_at: {type: string}
+        role: {type: string, enum: [OWNER, CONTRIBUTOR, VIEWER, UPLOADER]}
+        can_read: {type: boolean, description: 'may list, sync and download'}
+        can_upload: {type: boolean}
+    Asset:
+      type: object
+      required: [id, sha256, filename, mime_type, bytes, preview_ready, uploaded_at]
+      properties:
+        id: {type: string, description: 'random; valid only under its folder'}
+        sha256: {type: string, description: 'of the original, to verify a download'}
+        filename: {type: string}
+        mime_type: {type: string}
+        bytes: {type: integer}
+        preview_ready: {type: boolean}
+        uploaded_at: {type: string}
+    UploadResult:
+      type: object
+      required: [result, asset_id, folder_id, sha256, preview_ready]
+      properties:
+        result: {type: string, enum: [created, already_present]}
+        asset_id: {type: string}
+        folder_id: {type: string}
+        sha256: {type: string}
+        preview_ready: {type: boolean}
+    UploadReceipt:
+      type: object
+      required: [result, folder_id, sha256, bytes]
+      properties:
+        result: {type: string, enum: [accepted]}
+        folder_id: {type: string}
+        sha256: {type: string, description: 'of the bytes the client sent'}
+        bytes: {type: integer, description: 'size of the bytes the client sent'}
     User:
       type: object
       required: [user_id, login_name, display_name, server_role, can_create_albums]

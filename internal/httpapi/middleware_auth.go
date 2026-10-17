@@ -174,19 +174,6 @@ func (s *Server) RequireSession(next http.Handler) http.Handler {
 	})
 }
 
-// requireAdmin wraps a handler that needs SERVER_ADMIN (after
-// RequireSession). Others get 403.
-func (s *Server) requireAdmin(next http.HandlerFunc) http.Handler {
-	return s.RequireSession(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		p, _ := PrincipalFrom(r.Context())
-		if !authz.Allowed(p, authz.ManageAccounts, nil) {
-			errorReply(w, 403, "forbidden")
-			return
-		}
-		next(w, r)
-	}))
-}
-
 func noStore(w http.ResponseWriter) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Pragma", "no-cache")

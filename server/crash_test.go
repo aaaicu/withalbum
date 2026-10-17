@@ -7,7 +7,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
@@ -30,7 +32,9 @@ import (
 	"github.com/aaaicu/withalbum/internal/auth/password"
 	"github.com/aaaicu/withalbum/internal/blobstore"
 	"github.com/aaaicu/withalbum/internal/httpapi"
+	"github.com/aaaicu/withalbum/internal/meta"
 	"github.com/aaaicu/withalbum/internal/storage"
+	"github.com/aaaicu/withalbum/internal/users"
 )
 
 // fastAuth keeps the dummy password hash computed at startup cheap in tests.
@@ -122,8 +126,10 @@ func testPhoto(t *testing.T, seed int) []byte {
 	return buf.Bytes()
 }
 
-func serve(h http.Handler, method, path string, body []byte) *httptest.ResponseRecorder {
+// serve sends one request with the Bearer token.
+func serve(h http.Handler, token, method, path string, body []byte) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, path, bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 	return w
@@ -162,7 +168,8 @@ type recovered struct {
 // original, nothing left in incoming), an uncommitted upload left no event,
 // a committed one is complete, the client's retry succeeds exactly once,
 // and a second restart finds nothing to repair.
-func checkRecovered(t *testing.T, root, folderID string, body []byte, want recovered) {
+func checkRecovered(t *testing.T, root string, f testFolder, body []byte, want recovered) {
+	folderID := f.id
 	t.Helper()
 	a := mustOpenApp(t, root, nil)
 	r := a.report
@@ -177,27 +184,30 @@ func checkRecovered(t *testing.T, root, folderID string, body []byte, want recov
 		t.Fatalf("orphans holds %d files, want %d", n, want.orphans)
 	}
 	h := a.api.Handler()
-	events := func() int {
+	events := func() []meta.Event {
 		page, err := a.meta.ListEvents(t.Context(), folderID, 0, 10)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return len(page.Events)
+		return page.Events
 	}
-	sha := shaHex(body)
-	if want.committed {
-		if n := events(); n != 1 {
-			t.Fatalf("committed upload: %d events", n)
+	assetPath := func(kind string) string {
+		ev := events()
+		if len(ev) != 1 {
+			t.Fatalf("%d events", len(ev))
 		}
-		if w := serve(h, "GET", "/api/v1/assets/"+sha+"/original", nil); w.Code != 200 || !bytes.Equal(w.Body.Bytes(), body) {
+		return "/api/v1/folders/" + folderID + "/assets/" + ev[0].AssetID + "/" + kind
+	}
+	if want.committed {
+		if w := serve(h, f.token, "GET", assetPath("original"), nil); w.Code != 200 || !bytes.Equal(w.Body.Bytes(), body) {
 			t.Fatalf("committed original: %d", w.Code)
 		}
 	} else {
-		if n := events(); n != 0 {
+		if n := len(events()); n != 0 {
 			t.Fatalf("uncommitted upload left %d events", n)
 		}
-		if w := serve(h, "GET", "/api/v1/assets/"+sha+"/original", nil); w.Code != 404 {
-			t.Fatalf("uncommitted original visible: %d", w.Code)
+		if _, err := a.meta.GetAssetBySHA(t.Context(), shaHex(body)); !errors.Is(err, meta.ErrAssetNotFound) {
+			t.Fatalf("uncommitted asset recorded: %v", err)
 		}
 	}
 	// The client did not get a success, so it retries.
@@ -205,13 +215,10 @@ func checkRecovered(t *testing.T, root, folderID string, body []byte, want recov
 	if want.committed {
 		wantStatus = 200
 	}
-	if w := serve(h, "POST", "/api/v1/folders/"+folderID+"/assets", body); w.Code != wantStatus {
+	if w := serve(h, f.token, "POST", "/api/v1/folders/"+folderID+"/assets", body); w.Code != wantStatus {
 		t.Fatalf("retry: %d %s, want %d", w.Code, w.Body, wantStatus)
 	}
-	if n := events(); n != 1 {
-		t.Fatalf("after retry: %d events, want 1", n)
-	}
-	if w := serve(h, "GET", "/api/v1/assets/"+sha+"/preview", nil); w.Code != 200 {
+	if w := serve(h, f.token, "GET", assetPath("preview"), nil); w.Code != 200 {
 		t.Fatalf("preview after retry: %d", w.Code)
 	}
 	if err := a.Close(); err != nil {
@@ -229,16 +236,56 @@ func shaHex(b []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// newFolder creates a folder through a short-lived app and returns its id.
-func newFolder(t *testing.T, root string) string {
+// newBootstrapFolder creates a folder owned by the (still locked) bootstrap
+// administrator, as earlier versions and the legacy import did.
+func newBootstrapFolder(t *testing.T, root string) string {
 	t.Helper()
 	a := mustOpenApp(t, root, nil)
 	defer a.Close()
-	f, err := a.meta.CreateFolder(t.Context(), "crash")
+	owner := a.meta.(interface{ BootstrapOwnerID() string }).BootstrapOwnerID()
+	f, err := a.meta.CreateFolder(t.Context(), meta.NewFolder{Name: "legacy", OwnerID: owner})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return f.ID
+}
+
+// testFolder is a folder and an access token of its owner.
+type testFolder struct{ id, token string }
+
+const testAdminPassword = "crash test password"
+
+// newFolder takes over the bootstrap administrator through a short-lived
+// app, logs it in (the session lives in the database, so the token keeps
+// working after restarts and in a child process) and creates a folder.
+func newFolder(t *testing.T, root string) testFolder {
+	t.Helper()
+	a := mustOpenApp(t, root, nil)
+	defer a.Close()
+	db := a.meta.(interface{ DB() *sql.DB }).DB()
+	hash, err := password.Hash(testAdminPassword, fastAuth.PasswordParams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin, err := users.New(db).ClaimBootstrap(t.Context(), users.Claim{LoginName: "root", DisplayName: "Root", PasswordHash: hash}, users.Console)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("POST", "/api/v1/auth/login", strings.NewReader(`{"login_name":"root","password":"`+testAdminPassword+`","device_name":"test","platform":"ios"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	a.api.Handler().ServeHTTP(w, req)
+	var tok struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &tok); err != nil || w.Code != 200 {
+		t.Fatalf("login %d %s", w.Code, w.Body)
+	}
+	f, err := a.meta.CreateFolder(t.Context(), meta.NewFolder{Name: "crash", OwnerID: admin.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return testFolder{id: f.ID, token: tok.AccessToken}
 }
 
 // crashPoints lists, for each fault point, what a crash right there leaves.
@@ -312,12 +359,12 @@ func TestUploadFaultRecovery(t *testing.T) {
 	for i, cp := range crashPoints {
 		t.Run(cp.point, func(t *testing.T) {
 			root := newRoot(t)
-			folderID := newFolder(t, root)
+			folder := newFolder(t, root)
 			snap := filepath.Join(t.TempDir(), "image")
 			faults := &snapshotAt{t: t, point: cp.point, src: root, dst: snap}
 			a := mustOpenApp(t, root, faults)
 			body := testPhoto(t, i)
-			w := serve(a.api.Handler(), "POST", "/api/v1/folders/"+folderID+"/assets", body)
+			w := serve(a.api.Handler(), folder.token, "POST", "/api/v1/folders/"+folder.id+"/assets", body)
 			if w.Code < 500 {
 				t.Fatalf("upload with a fault at %s: %d %s, want 5xx", cp.point, w.Code, w.Body)
 			}
@@ -327,11 +374,11 @@ func TestUploadFaultRecovery(t *testing.T) {
 			if err := a.Close(); err != nil {
 				t.Fatal(err)
 			}
-			t.Run("crash image", func(t *testing.T) { checkRecovered(t, snap, folderID, body, cp.want) })
+			t.Run("crash image", func(t *testing.T) { checkRecovered(t, snap, folder, body, cp.want) })
 			// The live process cleaned its own temp file before replying.
 			live := cp.want
 			live.incomingRemoved = 0
-			t.Run("live root", func(t *testing.T) { checkRecovered(t, root, folderID, body, live) })
+			t.Run("live root", func(t *testing.T) { checkRecovered(t, root, folder, body, live) })
 		})
 	}
 }
@@ -340,10 +387,10 @@ func TestUploadFaultRecovery(t *testing.T) {
 // original; preview_ready is false.
 func TestPreviewFailureDoesNotFailUpload(t *testing.T) {
 	root := newRoot(t)
-	folderID := newFolder(t, root)
+	folder := newFolder(t, root)
 	a := mustOpenApp(t, root, failAt(httpapi.FaultPreview))
 	defer a.Close()
-	w := serve(a.api.Handler(), "POST", "/api/v1/folders/"+folderID+"/assets", testPhoto(t, 99))
+	w := serve(a.api.Handler(), folder.token, "POST", "/api/v1/folders/"+folder.id+"/assets", testPhoto(t, 99))
 	if w.Code != 201 || !strings.Contains(w.Body.String(), `"preview_ready":false`) {
 		t.Fatalf("upload with failed preview: %d %s", w.Code, w.Body)
 	}
@@ -383,10 +430,10 @@ func TestStartupRefusesSecondInstance(t *testing.T) {
 // starts the server with an integrity warning in /api/v1/health.
 func TestStartupReportsMissingOriginal(t *testing.T) {
 	root := newRoot(t)
-	folderID := newFolder(t, root)
+	folder := newFolder(t, root)
 	a := mustOpenApp(t, root, nil)
 	body := testPhoto(t, 7)
-	if w := serve(a.api.Handler(), "POST", "/api/v1/folders/"+folderID+"/assets", body); w.Code != 201 {
+	if w := serve(a.api.Handler(), folder.token, "POST", "/api/v1/folders/"+folder.id+"/assets", body); w.Code != 201 {
 		t.Fatalf("upload %d", w.Code)
 	}
 	a.Close()
@@ -398,7 +445,7 @@ func TestStartupReportsMissingOriginal(t *testing.T) {
 	if a.report.Missing != 1 || a.report.Healthy() {
 		t.Fatalf("report %s", a.report.Summary())
 	}
-	if w := serve(a.api.Handler(), "GET", "/api/v1/health", nil); !strings.Contains(w.Body.String(), `"integrity":"warning"`) {
+	if w := serve(a.api.Handler(), "", "GET", "/api/v1/health", nil); !strings.Contains(w.Body.String(), `"integrity":"warning"`) {
 		t.Fatalf("health %s", w.Body)
 	}
 }
@@ -433,18 +480,18 @@ func TestSIGKILLDuringUpload(t *testing.T) {
 	for i, cp := range points {
 		t.Run(cp.point, func(t *testing.T) {
 			root := newRoot(t)
-			folderID := newFolder(t, root)
+			folder := newFolder(t, root)
 			body := testPhoto(t, 100+i)
 			if cp.point == "mid_body" {
 				body = append(body, bytes.Repeat([]byte{0xAB}, 256<<10)...)
 			}
-			killDuringUpload(t, root, folderID, cp.point, body)
-			checkRecovered(t, root, folderID, body, cp.want)
+			killDuringUpload(t, root, folder, cp.point, body)
+			checkRecovered(t, root, folder, body, cp.want)
 		})
 	}
 }
 
-func killDuringUpload(t *testing.T, root, folderID, point string, body []byte) {
+func killDuringUpload(t *testing.T, root string, folder testFolder, point string, body []byte) {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=^$")
 	cmd.Env = append(os.Environ(), crashChildEnv+"="+point, "WITHALBUM_ROOT="+root, "WITHALBUM_VOLUME_ID=")
@@ -495,10 +542,11 @@ func killDuringUpload(t *testing.T, root, folderID, point string, body []byte) {
 	addr := waitLine("LISTEN ")
 
 	pr, pw := io.Pipe()
-	req, err := http.NewRequest("POST", "http://"+addr+"/api/v1/folders/"+folderID+"/assets", pr)
+	req, err := http.NewRequest("POST", "http://"+addr+"/api/v1/folders/"+folder.id+"/assets", pr)
 	if err != nil {
 		t.Fatal(err)
 	}
+	req.Header.Set("Authorization", "Bearer "+folder.token)
 	var wg sync.WaitGroup
 	var status int
 	var reqErr error
