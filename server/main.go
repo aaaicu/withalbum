@@ -16,7 +16,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -129,15 +128,6 @@ func openMetadata(ctx context.Context, vol *storage.Volume) (meta.MetadataStore,
 	return store, nil
 }
 
-// storageRoot returns the absolute WITHALBUM_ROOT (default ./withalbum-data).
-func storageRoot() (string, error) {
-	root := os.Getenv("WITHALBUM_ROOT")
-	if root == "" {
-		root = "./withalbum-data"
-	}
-	return filepath.Abs(root)
-}
-
 // runMigrateLegacy implements "withalbum-server migrate-legacy [-apply] [-json]"
 // and returns the process exit code: 0 success, 1 failure, 2 usage error.
 func runMigrateLegacy(args []string, stdout, stderr io.Writer) int {
@@ -163,7 +153,7 @@ func runMigrateLegacy(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "migrate-legacy: %v\n", err)
 		return 1
 	}
-	vol, err := storage.Open(root, storage.OpenOptions{ExpectedVolumeID: os.Getenv("WITHALBUM_VOLUME_ID")})
+	vol, err := storage.Open(root, storage.OpenOptions{ExpectedVolumeID: expectedVolumeID()})
 	if err != nil {
 		fmt.Fprintf(stderr, "migrate-legacy: STORAGE: %s (%v)\n", openStorageHint(root, err), err)
 		return 1
@@ -366,10 +356,11 @@ func main() {
 		fmt.Println("withalbum-server " + version)
 		return
 	}
-	root, err := storageRoot()
+	target, err := resolveStorage()
 	if err != nil {
 		log.Fatal(err)
 	}
+	root := target.Root
 	if *initStorage {
 		m, err := storage.Init(root)
 		if err != nil {
@@ -404,62 +395,122 @@ func main() {
 	if len(converters) == 0 {
 		log.Printf("previews: no external converter (sips, ffmpeg); HEIC and video originals are stored without a preview")
 	}
-	a, err := openApp(context.Background(), root, appOptions{VolumeID: os.Getenv("WITHALBUM_VOLUME_ID"), MinFreeBytes: minFree, Converters: converters})
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	opts := appOptions{VolumeID: target.VolumeID, MinFreeBytes: minFree, Converters: converters}
+	a, err := openApp(ctx, root, opts)
+	// Setup mode (server/setup.go) when the storage can still be chosen, or
+	// when it has no administrator, and only on the plain loopback listener.
+	setupMode := false
 	if err != nil {
-		log.Fatal(err)
-	}
-	defer a.Close()
-	lan, err := a.listenAllowed(context.Background(), lc)
-	if err != nil {
-		a.Close()
-		log.Fatalf("SECURITY: %v", err)
-	}
-	if free, err := a.vol.FreeBytes(); err != nil {
-		log.Printf("free space: unknown (%v); uploads are not pre-checked, a full disk still answers 507", err)
-	} else if free <= uint64(minFree) {
-		log.Printf("WARNING: only %d bytes free, at or below the reserve WITHALBUM_MIN_FREE_BYTES=%d: uploads are refused with 507", free, minFree)
+		if !storageSetupPossible(target, err) {
+			if target.Source == sourceConfig {
+				if p, perr := configPath(); perr == nil {
+					log.Fatalf("%v\nThis storage root was registered by the setup screen and is kept in %s. If it is on an external disk, connect the disk and start again; to use another storage, set WITHALBUM_ROOT or remove that file.", err, p)
+				}
+			}
+			log.Fatal(err)
+		}
+		if problem := setupListenProblem(lc); problem != "" {
+			log.Fatalf("%v\nSETUP: %s", err, problem)
+		}
+		log.Printf("setup: no registered storage yet; starting setup mode (%v)", err)
+		a, setupMode = nil, true
 	} else {
-		log.Printf("free space: %d bytes, reserve %d", free, minFree)
-	}
-	var tlsConfig *tls.Config
-	if lc.TLS {
-		id, err := tlsid.LoadOrCreate(a.vol.Root(), certHosts(lc.Addr), time.Now())
+		claimed, err := a.auth.Users.Initialized(ctx)
 		if err != nil {
 			a.Close()
-			log.Fatalf("TLS: %v (file %s; it must be a regular file with mode 0600. Never delete it casually: a new key means pairing every device again)", err, tlsid.Path(a.vol.Root()))
+			log.Fatalf("cannot read the administrator state: %v", err)
 		}
-		switch {
-		case id.Created:
-			log.Printf("TLS: created a new key pair in %s (mode 0600). Pair devices with the fingerprint below.", tlsid.Path(a.vol.Root()))
-		case id.Renewed:
-			log.Printf("TLS: re-issued the certificate with the same key; the pin did not change.")
+		if !claimed {
+			if problem := setupListenProblem(lc); problem == "" {
+				setupMode = true
+				log.Printf("setup: the storage %s has no administrator yet; starting setup mode", a.vol.Root())
+			} else {
+				log.Printf("NOTE: no administrator has been set up yet; %s", problem)
+			}
 		}
-		urls := serverURLs(lc.Addr, net.InterfaceAddrs)
-		writeFingerprints(log.Writer(), id, urls)
-		a.api.SetTLSInfo(tlsInfo(id, urls))
-		tlsConfig = tlsid.ServerConfig(id)
 	}
-	handler := a.api.Handler()
-	if !lc.TLS {
-		handler = loopbackHostOnly(handler)
+	// normal starts the background work of an opened storage.
+	normal := func(a *app) {
+		go a.maintain(ctx, maintenanceInterval)
+		go a.api.RunPreviews(ctx)
 	}
+	var (
+		handler   http.Handler
+		tlsConfig *tls.Config
+		lan       bool
+		setup     *setupRun
+		code      string
+		codeEnd   time.Time
+	)
+	if setupMode {
+		sc, display, err := httpapi.NewSetupCode(time.Now())
+		if err != nil {
+			log.Fatalf("setup code: %v", err)
+		}
+		setup, _ = newSetupRun(target, opts, a, sc, normal)
+		handler, code, codeEnd = setup.handler, display, sc.Expires()
+	} else {
+		if lan, err = a.listenAllowed(ctx, lc); err != nil {
+			a.Close()
+			log.Fatalf("SECURITY: %v", err)
+		}
+		if free, err := a.vol.FreeBytes(); err != nil {
+			log.Printf("free space: unknown (%v); uploads are not pre-checked, a full disk still answers 507", err)
+		} else if free <= uint64(minFree) {
+			log.Printf("WARNING: only %d bytes free, at or below the reserve WITHALBUM_MIN_FREE_BYTES=%d: uploads are refused with 507", free, minFree)
+		} else {
+			log.Printf("free space: %d bytes, reserve %d", free, minFree)
+		}
+		if lc.TLS {
+			id, err := tlsid.LoadOrCreate(a.vol.Root(), certHosts(lc.Addr), time.Now())
+			if err != nil {
+				a.Close()
+				log.Fatalf("TLS: %v (file %s; it must be a regular file with mode 0600. Never delete it casually: a new key means pairing every device again)", err, tlsid.Path(a.vol.Root()))
+			}
+			switch {
+			case id.Created:
+				log.Printf("TLS: created a new key pair in %s (mode 0600). Pair devices with the fingerprint below.", tlsid.Path(a.vol.Root()))
+			case id.Renewed:
+				log.Printf("TLS: re-issued the certificate with the same key; the pin did not change.")
+			}
+			urls := serverURLs(lc.Addr, net.InterfaceAddrs)
+			writeFingerprints(log.Writer(), id, urls)
+			a.api.SetTLSInfo(tlsInfo(id, urls))
+			tlsConfig = tlsid.ServerConfig(id)
+		}
+		handler = a.api.Handler()
+		if !lc.TLS {
+			handler = loopbackHostOnly(handler)
+		}
+	}
+	// closeApp releases the opened storage (in setup mode: if registered).
+	closeApp := func() {
+		if setup != nil {
+			a = setup.current()
+		}
+		if a != nil {
+			a.Close()
+		}
+	}
+	defer closeApp()
 	server := newHTTPServer(handler, tlsConfig)
 	ln, err := net.Listen("tcp", lc.Addr)
 	if err != nil {
-		a.Close()
+		closeApp()
 		log.Fatal(err)
 	}
 	// "localhost" is resolved by the system; refuse if it did not bind to a
 	// loopback address (for example an altered hosts file).
 	if err := checkBoundAddr(ln.Addr(), lan); err != nil {
 		ln.Close()
-		a.Close()
+		closeApp()
 		log.Fatalf("SECURITY: %v", err)
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	go a.maintain(ctx, maintenanceInterval)
-	go a.api.RunPreviews(ctx)
+	if !setupMode {
+		normal(a)
+	}
 	go func() {
 		<-ctx.Done()
 		shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -469,6 +520,9 @@ func main() {
 		}
 	}()
 	switch {
+	case setupMode:
+		log.Printf("EXPERIMENTAL / SETUP MODE, LOOPBACK ONLY, PLAIN HTTP: listen=%s storage=%s", ln.Addr(), root)
+		log.Print(httpapi.SetupBanner("http://"+ln.Addr().String()+"/setup", code, codeEnd))
 	case lan:
 		log.Printf("EXPERIMENTAL / LAN, TLS ONLY: listen=%s root=%s volume_id=%s. Do not forward this port from the internet.", ln.Addr(), a.vol.Root(), a.vol.ID())
 		if scope, _ := scopeOf(lc.Addr); scope == scopeWildcard {
@@ -485,7 +539,7 @@ func main() {
 		err = server.Serve(ln)
 	}
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
-		a.Close()
+		closeApp()
 		log.Fatal(err)
 	}
 }

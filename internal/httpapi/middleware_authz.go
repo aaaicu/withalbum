@@ -43,7 +43,13 @@ type RoutePolicy struct {
 	Action  authz.Action // AccessServer and AccessAlbum only
 }
 
-// routePolicies lists every route. Patterns without a method match any
+// routePolicies lists every route of normal mode. The setup screen (M24)
+// has its own table (setupRoutePolicies in setup.go), served only by the
+// setup handler on the plain loopback listener before an administrator
+// exists; none of its routes is ever registered here, so in normal mode and
+// on every TLS or LAN listener they are 404.
+//
+// Patterns without a method match any
 // method; "/api/v1/" catches every other API path, so an unknown API path is
 // 401 without a session and 404 with one.
 var routePolicies = []RoutePolicy{
