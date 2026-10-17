@@ -21,29 +21,59 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/aaaicu/withalbum/internal/auth/password"
 	"github.com/aaaicu/withalbum/internal/blobstore"
 	"github.com/aaaicu/withalbum/internal/httpapi"
 	"github.com/aaaicu/withalbum/internal/meta"
+	"github.com/aaaicu/withalbum/internal/meta/sqlitestore"
 	"github.com/aaaicu/withalbum/internal/storage"
+	"github.com/aaaicu/withalbum/internal/users"
 )
 
+// storeOpener opens the metadata store of a fresh volume.
+type storeOpener func(t *testing.T, vol *storage.Volume) *sqlitestore.Store
+
 // contractEnv is one server under test on a fresh, initialized volume.
+// Handler sends every request as the server administrator that took over
+// the bootstrap account (so it owns every folder it creates), unless the
+// request already carries an Authorization header; Raw adds nothing.
 type contractEnv struct {
 	Handler http.Handler
+	Raw     http.Handler
+	Token   string
 	Root    string
 	Volume  *storage.Volume
-	Meta    meta.MetadataStore
+	Meta    *sqlitestore.Store
 }
 
 // newContractEnv builds a server on a fresh t.TempDir() volume with the
 // metadata store returned by newStore.
-func newContractEnv(t *testing.T, newStore func(t *testing.T, vol *storage.Volume) meta.MetadataStore) contractEnv {
+func newContractEnv(t *testing.T, newStore storeOpener) contractEnv {
 	t.Helper()
 	return newContractEnvWith(t, newStore, nil)
 }
 
+// loginToken logs in through h and returns the Bearer access token.
+func loginToken(t *testing.T, h http.Handler, login, pw string) string {
+	t.Helper()
+	r := do(t, h, "POST", "/api/v1/auth/login", []byte(`{"login_name":`+mustJSON(t, login)+`,"password":`+mustJSON(t, pw)+
+		`,"device_name":"Test device","platform":"ios"}`), map[string]string{"Content-Type": "application/json"})
+	m := wantJSON(t, "login "+login, r, 200)
+	return m["access_token"].(string)
+}
+
+// asUser sends every request with token unless it has an Authorization header.
+func asUser(h http.Handler, token string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "" {
+			r.Header.Set("Authorization", "Bearer "+token)
+		}
+		h.ServeHTTP(w, r)
+	})
+}
+
 // newContractEnvWith is newContractEnv with a hook to adjust the Config.
-func newContractEnvWith(t *testing.T, newStore func(t *testing.T, vol *storage.Volume) meta.MetadataStore, adjust func(*httpapi.Config)) contractEnv {
+func newContractEnvWith(t *testing.T, newStore storeOpener, adjust func(*httpapi.Config)) contractEnv {
 	t.Helper()
 	root := t.TempDir()
 	if _, err := storage.Init(root); err != nil {
@@ -59,18 +89,27 @@ func newContractEnvWith(t *testing.T, newStore func(t *testing.T, vol *storage.V
 	}
 	store := newStore(t, vol)
 	t.Cleanup(func() { store.Close() })
-	cfg := httpapi.Config{Volume: vol, Meta: store, Blobs: blobs, Version: "test"}
+	auth, err := httpapi.NewAuth(store.DB(), httpapi.AuthOptions{PasswordParams: fastParams})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash, _ := password.Hash(adminPassword, fastParams)
+	if _, err := users.New(store.DB()).ClaimBootstrap(t.Context(), users.Claim{LoginName: "root", DisplayName: "Root", PasswordHash: hash}, users.Console); err != nil {
+		t.Fatal(err)
+	}
+	cfg := httpapi.Config{Volume: vol, Meta: store, Blobs: blobs, Version: "test", Auth: auth}
 	if adjust != nil {
 		adjust(&cfg)
 	}
-	api := httpapi.New(cfg)
-	return contractEnv{Handler: api.Handler(), Root: vol.Root(), Volume: vol, Meta: store}
+	raw := httpapi.New(cfg).Handler()
+	token := loginToken(t, raw, "root", adminPassword)
+	return contractEnv{Handler: asUser(raw, token), Raw: raw, Token: token, Root: vol.Root(), Volume: vol, Meta: store}
 }
 
 // runContract pins the observable HTTP behavior (status codes, JSON keys,
 // error codes, headers) for one metadata store implementation. Every
 // meta.MetadataStore must pass it unchanged.
-func runContract(t *testing.T, newStore func(t *testing.T, vol *storage.Volume) meta.MetadataStore) {
+func runContract(t *testing.T, newStore storeOpener) {
 	newEnv := func(t *testing.T) contractEnv { return newContractEnv(t, newStore) }
 	t.Run("Health", func(t *testing.T) { contractHealth(t, newEnv(t)) })
 	t.Run("Dashboard", func(t *testing.T) { contractDashboard(t, newEnv(t)) })
@@ -255,8 +294,8 @@ func contractFolders(t *testing.T, env contractEnv) {
 	}
 
 	f := createFolder(t, h, "  family  ")
-	wantKeys(t, "folder", f, "id", "name", "created_at")
-	if f["name"] != "family" {
+	wantKeys(t, "folder", f, folderKeys...)
+	if f["name"] != "family" || f["role"] != "OWNER" || f["can_read"] != true || f["can_upload"] != true {
 		t.Fatalf("name not trimmed: %v", f["name"])
 	}
 	if id, _ := f["id"].(string); len(id) != 32 {
@@ -279,9 +318,16 @@ func contractFolders(t *testing.T, env contractEnv) {
 		t.Fatalf("folders = %d, want 2", len(list))
 	}
 	for _, item := range list {
-		wantKeys(t, "listed folder", item.(map[string]any), "id", "name", "created_at")
+		wantKeys(t, "listed folder", item.(map[string]any), folderKeys...)
 	}
+	g := wantJSON(t, "get folder", do(t, h, "GET", "/api/v1/folders/"+f["id"].(string), nil, nil), 200)
+	if fmt.Sprint(g) != fmt.Sprint(f) {
+		t.Fatalf("get folder %v, want %v", g, f)
+	}
+	wantError(t, "unknown folder", do(t, h, "GET", "/api/v1/folders/"+strings.Repeat("0", 32), nil, nil), 404, "folder_not_found")
 }
+
+var folderKeys = []string{"id", "name", "created_at", "role", "can_read", "can_upload"}
 
 func contractUpload(t *testing.T, env contractEnv) {
 	h := env.Handler
@@ -293,21 +339,32 @@ func contractUpload(t *testing.T, env contractEnv) {
 
 	wantError(t, "unknown folder", uploadTo(t, h, strings.Repeat("0", 32), pic, hdr), 404, "folder_not_found")
 
+	ids := map[string]string{} // folder -> asset id
 	check := func(what string, r reply, status int, result string, preview bool, folderID string) {
 		t.Helper()
 		m := wantJSON(t, what, r, status)
 		wantKeys(t, what, m, "result", "asset_id", "folder_id", "sha256", "preview_ready")
-		if m["result"] != result || m["asset_id"] != sha || m["sha256"] != sha || m["folder_id"] != folderID || m["preview_ready"] != preview {
+		if m["result"] != result || m["sha256"] != sha || m["folder_id"] != folderID || m["preview_ready"] != preview {
 			t.Fatalf("%s: %v", what, m)
 		}
+		id, _ := m["asset_id"].(string)
+		if len(id) != 32 || id == sha[:32] || (ids[folderID] != "" && ids[folderID] != id) {
+			t.Fatalf("%s: asset_id %q (folder had %q)", what, id, ids[folderID])
+		}
+		ids[folderID] = id
 	}
 	check("first", uploadTo(t, h, fid, pic, hdr), 201, "created", true, fid)
 	check("repeat", uploadTo(t, h, fid, pic, hdr), 200, "already_present", true, fid)
-	check("other folder", uploadTo(t, h, other, pic, hdr), 201, "linked", true, other)
+	// Bytes stored for another folder: the answer is the same as for new
+	// bytes, and the folder gets an asset of its own.
+	check("other folder", uploadTo(t, h, other, pic, hdr), 201, "created", true, other)
 	check("repeat other", uploadTo(t, h, other, pic, nil), 200, "already_present", true, other)
+	if ids[fid] == ids[other] {
+		t.Fatal("two folders share an asset id")
+	}
 	// A matching declared hash (any case, surrounding space) is accepted.
 	third := createFolder(t, h, "c")["id"].(string)
-	check("declared hash", uploadTo(t, h, third, pic, map[string]string{"X-Content-SHA256": " " + strings.ToUpper(sha) + " "}), 201, "linked", true, third)
+	check("declared hash", uploadTo(t, h, third, pic, map[string]string{"X-Content-SHA256": " " + strings.ToUpper(sha) + " "}), 201, "created", true, third)
 
 	wantError(t, "empty", uploadTo(t, h, fid, []byte{}, nil), 400, "empty_file")
 	wantError(t, "hash mismatch", uploadTo(t, h, fid, []byte("hello"), map[string]string{"X-Content-SHA256": strings.Repeat("0", 64)}), 422, "hash_mismatch")
@@ -338,13 +395,13 @@ func contractUploadFilenames(t *testing.T, env contractEnv) {
 		if tc.header != "" {
 			hdr["X-Filename"] = tc.header
 		}
-		wantJSON(t, "upload "+tc.header, uploadTo(t, h, fid, body, hdr), 201)
+		id := wantJSON(t, "upload "+tc.header, uploadTo(t, h, fid, body, hdr), 201)["asset_id"].(string)
 		want := tc.want
 		if want == "" {
 			want = shaHex(body)
 		}
 		assets := syncPage(t, h, fid, "")["assets"].(map[string]any)
-		a := assets[shaHex(body)].(map[string]any)
+		a := assets[id].(map[string]any)
 		if a["filename"] != want {
 			t.Fatalf("filename %q -> %v, want %q", tc.header, a["filename"], want)
 		}
@@ -374,7 +431,7 @@ func contractSync(t *testing.T, env contractEnv) {
 	}
 
 	pic := jpegBytes(t, 3, 2)
-	wantJSON(t, "upload", uploadTo(t, h, fid, pic, map[string]string{"X-Filename": "p.jpg", "X-Device-ID": " dev-1 "}), 201)
+	picID := wantJSON(t, "upload", uploadTo(t, h, fid, pic, map[string]string{"X-Filename": "p.jpg", "X-Device-ID": " dev-1 "}), 201)["asset_id"].(string)
 	wantJSON(t, "upload", uploadTo(t, h, fid, pic, nil), 200) // already present: no new event
 	wantJSON(t, "upload", uploadTo(t, h, fid, []byte("second"), nil), 201)
 
@@ -385,7 +442,7 @@ func contractSync(t *testing.T, env contractEnv) {
 	}
 	e := events[0].(map[string]any)
 	wantKeys(t, "event", e, "seq", "kind", "asset_id", "folder_id", "uploader_device_id", "occurred_at")
-	if e["seq"] != float64(1) || e["kind"] != "asset_added" || e["asset_id"] != shaHex(pic) || e["folder_id"] != fid || e["uploader_device_id"] != "dev-1" {
+	if e["seq"] != float64(1) || e["kind"] != "asset_added" || e["asset_id"] != picID || e["folder_id"] != fid || e["uploader_device_id"] != "dev-1" {
 		t.Fatalf("event %v", e)
 	}
 	if events[1].(map[string]any)["seq"] != float64(2) {
@@ -395,9 +452,9 @@ func contractSync(t *testing.T, env contractEnv) {
 	if len(assets) != 2 {
 		t.Fatalf("assets %v", assets)
 	}
-	a := assets[shaHex(pic)].(map[string]any)
-	wantKeys(t, "asset", a, "id", "filename", "mime_type", "bytes", "preview_ready", "uploaded_at")
-	if a["id"] != shaHex(pic) || a["filename"] != "p.jpg" || a["mime_type"] != "image/jpeg" || a["bytes"] != float64(len(pic)) || a["preview_ready"] != true {
+	a := assets[picID].(map[string]any)
+	wantKeys(t, "asset", a, "id", "sha256", "filename", "mime_type", "bytes", "preview_ready", "uploaded_at")
+	if a["id"] != picID || a["sha256"] != shaHex(pic) || a["filename"] != "p.jpg" || a["mime_type"] != "image/jpeg" || a["bytes"] != float64(len(pic)) || a["preview_ready"] != true {
 		t.Fatalf("asset %v", a)
 	}
 
@@ -431,25 +488,40 @@ func contractSyncPaging(t *testing.T, env contractEnv) {
 func contractDownload(t *testing.T, env contractEnv) {
 	h := env.Handler
 	fid := createFolder(t, h, "d")["id"].(string)
+	other := createFolder(t, h, "e")["id"].(string)
 	pic := jpegBytes(t, 2000, 1000)
 	text := []byte("not an image")
-	wantJSON(t, "upload", uploadTo(t, h, fid, pic, nil), 201)
-	wantJSON(t, "upload", uploadTo(t, h, fid, text, nil), 201)
+	picID := wantJSON(t, "upload", uploadTo(t, h, fid, pic, nil), 201)["asset_id"].(string)
+	textID := wantJSON(t, "upload", uploadTo(t, h, fid, text, nil), 201)["asset_id"].(string)
+	otherID := wantJSON(t, "upload", uploadTo(t, h, other, []byte("elsewhere"), nil), 201)["asset_id"].(string)
+	path := func(folder, asset, kind string) string {
+		return "/api/v1/folders/" + folder + "/assets/" + asset + "/" + kind
+	}
 
-	wantError(t, "short id", do(t, h, "GET", "/api/v1/assets/abc/original", nil, nil), 400, "invalid_asset_id")
-	wantError(t, "non-hex id", do(t, h, "GET", "/api/v1/assets/"+strings.Repeat("z", 64)+"/preview", nil, nil), 400, "invalid_asset_id")
-	wantError(t, "unknown", do(t, h, "GET", "/api/v1/assets/"+strings.Repeat("a", 64)+"/original", nil, nil), 404, "asset_not_found")
-	wantError(t, "no preview", do(t, h, "GET", "/api/v1/assets/"+shaHex(text)+"/preview", nil, nil), 404, "preview_not_ready")
+	wantError(t, "short id", do(t, h, "GET", path(fid, "abc", "original"), nil, nil), 404, "asset_not_found")
+	wantError(t, "unknown", do(t, h, "GET", path(fid, strings.Repeat("a", 32), "original"), nil, nil), 404, "asset_not_found")
+	wantError(t, "sha as id", do(t, h, "GET", path(fid, shaHex(pic), "original"), nil, nil), 404, "asset_not_found")
+	wantError(t, "asset of another folder", do(t, h, "GET", path(fid, otherID, "original"), nil, nil), 404, "asset_not_found")
+	wantError(t, "asset under another folder", do(t, h, "GET", path(other, picID, "preview"), nil, nil), 404, "asset_not_found")
+	wantError(t, "unknown folder", do(t, h, "GET", path(strings.Repeat("0", 32), picID, "original"), nil, nil), 404, "folder_not_found")
+	wantError(t, "no preview", do(t, h, "GET", path(fid, textID, "preview"), nil, nil), 404, "preview_not_ready")
+	// The PoC routes by SHA-256 are gone.
+	for _, kind := range []string{"original", "preview"} {
+		wantError(t, "legacy route", do(t, h, "GET", "/api/v1/assets/"+shaHex(pic)+"/"+kind, nil, nil), 404, "not_found")
+	}
 
-	r := do(t, h, "GET", "/api/v1/assets/"+shaHex(pic)+"/original", nil, nil)
+	r := do(t, h, "GET", path(fid, picID, "original"), nil, nil)
 	if r.Status != 200 || !bytes.Equal(r.Body, pic) || r.Header.Get("Content-Type") != "image/jpeg" || r.Header.Get("X-Content-Type-Options") != "nosniff" {
 		t.Fatalf("original %d %q", r.Status, r.Header.Get("Content-Type"))
 	}
-	r = do(t, h, "GET", "/api/v1/assets/"+shaHex(text)+"/original", nil, nil)
+	if r.Header.Get("Cache-Control") != "no-store" {
+		t.Fatalf("original Cache-Control %q", r.Header.Get("Cache-Control"))
+	}
+	r = do(t, h, "GET", path(fid, textID, "original"), nil, nil)
 	if r.Status != 200 || !bytes.Equal(r.Body, text) || r.Header.Get("Content-Type") != "text/plain; charset=utf-8" {
 		t.Fatalf("text original %d %q", r.Status, r.Header.Get("Content-Type"))
 	}
-	r = do(t, h, "GET", "/api/v1/assets/"+shaHex(pic)+"/preview", nil, nil)
+	r = do(t, h, "GET", path(fid, picID, "preview"), nil, nil)
 	if r.Status != 200 || r.Header.Get("Content-Type") != "image/jpeg" || r.Header.Get("X-Content-Type-Options") != "nosniff" {
 		t.Fatalf("preview %d %q", r.Status, r.Header.Get("Content-Type"))
 	}
@@ -514,7 +586,7 @@ func contractConcurrentUploads(t *testing.T, env contractEnv) {
 		}(folders[i%len(folders)])
 	}
 	wg.Wait()
-	want := map[string]int{"201 created": 1, "201 linked": 1, "200 already_present": perFolder*len(folders) - 2}
+	want := map[string]int{"201 created": 2, "200 already_present": perFolder*len(folders) - 2}
 	if fmt.Sprint(results) != fmt.Sprint(want) {
 		t.Fatalf("results %v, want %v", results, want)
 	}
@@ -545,7 +617,7 @@ func wantNoBlobs(t *testing.T, what, root string) {
 
 // contractInsufficientStorage: uploads that would leave less than
 // MinFreeBytes are refused with 507 before anything reaches the pool.
-func contractInsufficientStorage(t *testing.T, newStore func(t *testing.T, vol *storage.Volume) meta.MetadataStore) {
+func contractInsufficientStorage(t *testing.T, newStore storeOpener) {
 	var mu sync.Mutex
 	free := uint64(0)
 	setFree := func(n uint64) { mu.Lock(); free = n; mu.Unlock() }
@@ -619,7 +691,7 @@ func errFn(err error) func() error { return func() error { return err } }
 // contractWriteErrors: a full disk, an I/O error, a busy database or a lost
 // volume at each step of the upload gets its own status, never a success,
 // never an event; the retry then succeeds exactly once.
-func contractWriteErrors(t *testing.T, newStore func(t *testing.T, vol *storage.Volume) meta.MetadataStore) {
+func contractWriteErrors(t *testing.T, newStore storeOpener) {
 	faults := &faultMap{}
 	env := newContractEnvWith(t, newStore, func(c *httpapi.Config) { c.Faults = faults })
 	h := env.Handler
@@ -689,7 +761,7 @@ func contractRestoreMissingOriginal(t *testing.T, env contractEnv) {
 		t.Fatal(err)
 	}
 	m := wantJSON(t, "re-upload", uploadTo(t, h, b, body, nil), 201)
-	if m["result"] != "linked" {
+	if m["result"] != "created" {
 		t.Fatalf("re-upload %v", m)
 	}
 	if got, err := os.ReadFile(pool); err != nil || !bytes.Equal(got, body) {

@@ -2,6 +2,7 @@ package legacyimport
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -12,8 +13,6 @@ import (
 	"image/jpeg"
 	"io"
 	"io/fs"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sort"
@@ -23,7 +22,6 @@ import (
 
 	"github.com/aaaicu/withalbum/internal/blobstore"
 	"github.com/aaaicu/withalbum/internal/db"
-	"github.com/aaaicu/withalbum/internal/httpapi"
 	"github.com/aaaicu/withalbum/internal/meta"
 	"github.com/aaaicu/withalbum/internal/meta/jsonstore"
 	"github.com/aaaicu/withalbum/internal/meta/sqlitestore"
@@ -64,33 +62,44 @@ func shaOf(b []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func call(t *testing.T, h http.Handler, method, path string, body []byte, header map[string]string) *httptest.ResponseRecorder {
-	t.Helper()
-	req := httptest.NewRequest(method, path, bytes.NewReader(body))
-	for k, v := range header {
-		req.Header.Set(k, v)
-	}
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	return rec
-}
-
-func serve(t *testing.T, vol *storage.Volume, store meta.MetadataStore) http.Handler {
-	t.Helper()
-	blobs, err := blobstore.New(vol)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return httpapi.New(httpapi.Config{Volume: vol, Meta: store, Blobs: blobs, Version: "test"}).Handler()
-}
-
 // legacy is a storage root populated through the PoC code path: the
-// state.json store (jsonstore) behind the real HTTP handlers.
+// state.json store (jsonstore) and the blob store, used the way the PoC
+// upload handler used them.
 type legacy struct {
 	vol     *storage.Volume
 	root    string
 	folders []string // folder ids
 	shas    []string // every uploaded original
+}
+
+// legacyUpload stores body like the PoC upload handler did and returns the
+// commit result.
+func legacyUpload(t *testing.T, js *jsonstore.Store, blobs *blobstore.Store, folderID string, body []byte, filename, device string) string {
+	t.Helper()
+	staged, err := blobs.Stage(bytes.NewReader(body), 1<<30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer staged.Remove()
+	sha := staged.SHA256
+	preview := false
+	if existing, err := js.GetAssetBySHA(t.Context(), sha); err == nil {
+		preview = existing.PreviewReady
+	} else {
+		if err := blobs.Promote(staged, sha); err != nil {
+			t.Fatal(err)
+		}
+		preview = blobs.MakePreview(sha) == nil
+	}
+	if filename == "" {
+		filename = sha
+	}
+	res, err := js.CommitUpload(t.Context(), meta.CommitRequest{FolderID: folderID, DeviceID: device,
+		Asset: meta.Asset{ID: sha, Filename: filename, MimeType: staged.MimeType, Bytes: staged.Size, PreviewReady: preview}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res.Result
 }
 
 func buildLegacy(t *testing.T) *legacy {
@@ -101,15 +110,14 @@ func buildLegacy(t *testing.T) *legacy {
 		t.Fatal(err)
 	}
 	defer js.Close()
-	h := serve(t, vol, js)
+	blobs, err := blobstore.New(vol)
+	if err != nil {
+		t.Fatal(err)
+	}
 	l := &legacy{vol: vol, root: vol.Root()}
 	for _, name := range []string{"family", "trip", "empty"} {
-		rec := call(t, h, "POST", "/api/v1/folders", []byte(`{"name":"`+name+`"}`), nil)
-		if rec.Code != 201 {
-			t.Fatalf("create folder: %d %s", rec.Code, rec.Body)
-		}
-		var f meta.Folder
-		if err := json.Unmarshal(rec.Body.Bytes(), &f); err != nil {
+		f, err := js.CreateFolder(t.Context(), name)
+		if err != nil {
 			t.Fatal(err)
 		}
 		l.folders = append(l.folders, f.ID)
@@ -118,22 +126,21 @@ func buildLegacy(t *testing.T) *legacy {
 	jpg1, jpg2, jpg3 := sampleJPEG(t, 40, 30, 1), sampleJPEG(t, 20, 50, 2), sampleJPEG(t, 33, 33, 3)
 	text := []byte("plain sample text, no preview\n")
 	uploads := []struct {
-		folder int
-		body   []byte
-		header map[string]string
-		code   int
+		folder           int
+		body             []byte
+		filename, device string
+		result           string
 	}{
-		{0, jpg1, map[string]string{"X-Filename": "beach.jpg", "X-Device-ID": "phone-a"}, 201},
-		{0, jpg2, map[string]string{"X-Filename": "%EA%B0%80%EC%A1%B1.jpg", "X-Device-ID": "phone-b"}, 201},
-		{0, text, map[string]string{"X-Filename": "notes.txt"}, 201},
-		{0, jpg1, map[string]string{"X-Filename": "again.jpg", "X-Device-ID": "phone-a"}, 200}, // already_present: no event
-		{1, jpg1, map[string]string{"X-Filename": "beach-copy.jpg", "X-Device-ID": "tablet"}, 201},
-		{1, jpg3, map[string]string{"X-Filename": "mountain.jpg", "X-Device-ID": "tablet"}, 201},
+		{0, jpg1, "beach.jpg", "phone-a", meta.ResultCreated},
+		{0, jpg2, "가족.jpg", "phone-b", meta.ResultCreated},
+		{0, text, "notes.txt", "", meta.ResultCreated},
+		{0, jpg1, "again.jpg", "phone-a", meta.ResultAlreadyPresent}, // no event
+		{1, jpg1, "beach-copy.jpg", "tablet", meta.ResultLinked},
+		{1, jpg3, "mountain.jpg", "tablet", meta.ResultCreated},
 	}
 	for i, u := range uploads {
-		rec := call(t, h, "POST", "/api/v1/folders/"+l.folders[u.folder]+"/assets", u.body, u.header)
-		if rec.Code != u.code {
-			t.Fatalf("upload %d: %d %s", i, rec.Code, rec.Body)
+		if got := legacyUpload(t, js, blobs, l.folders[u.folder], u.body, u.filename, u.device); got != u.result {
+			t.Fatalf("upload %d: %s, want %s", i, got, u.result)
 		}
 	}
 	l.shas = []string{shaOf(jpg1), shaOf(jpg2), shaOf(text), shaOf(jpg3)}
@@ -151,30 +158,56 @@ func (l *legacy) state(t *testing.T) []byte {
 	return b
 }
 
-// observe records everything a client can see through the HTTP API.
-func observe(t *testing.T, h http.Handler, l *legacy) map[string]string {
+// view is what both the PoC store and the SQLite store can show.
+type view interface {
+	ListFolders(ctx context.Context) ([]meta.Folder, error)
+	ListEvents(ctx context.Context, folderID string, cursor int64, limit int) (meta.EventPage, error)
+	GetAssetBySHA(ctx context.Context, sha string) (meta.Asset, error)
+}
+
+// observe records everything the stores expose about the legacy data, with
+// asset identifiers replaced by the hash of their bytes (the PoC used the
+// hash as ID; the import assigns random IDs), plus the blob files.
+func observe(t *testing.T, v view, l *legacy) map[string]string {
 	t.Helper()
 	out := map[string]string{}
-	rec := call(t, h, "GET", "/api/v1/folders", nil, nil)
-	var folders struct{ Folders []meta.Folder }
-	if err := json.Unmarshal(rec.Body.Bytes(), &folders); err != nil {
+	folders, err := v.ListFolders(t.Context())
+	if err != nil {
 		t.Fatal(err)
 	}
-	sort.Slice(folders.Folders, func(i, j int) bool { return folders.Folders[i].ID < folders.Folders[j].ID })
-	b, _ := json.Marshal(folders.Folders)
-	out["folders"] = fmt.Sprint(rec.Code, " ", string(b))
+	sort.Slice(folders, func(i, j int) bool { return folders[i].ID < folders[j].ID })
+	out["folders"] = fmt.Sprint(folders)
+	shaOfAsset := func(a meta.Asset) string {
+		if a.SHA256 != "" {
+			return a.SHA256
+		}
+		return a.ID // PoC store
+	}
+	norm := func(a meta.Asset) meta.Asset {
+		a.ID, a.SHA256 = shaOfAsset(a), ""
+		return a
+	}
 	for _, fid := range l.folders {
 		for cursor := 0; cursor <= 5; cursor++ {
-			path := fmt.Sprintf("/api/v1/folders/%s/sync?cursor=%d", fid, cursor)
-			rec := call(t, h, "GET", path, nil, nil)
-			out[path] = fmt.Sprint(rec.Code, " ", rec.Body.String())
+			p, err := v.ListEvents(t.Context(), fid, int64(cursor), 100)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var parts []string
+			for _, e := range p.Events {
+				a := p.Assets[e.AssetID]
+				e.AssetID = shaOfAsset(a)
+				parts = append(parts, fmt.Sprintf("%+v %+v", e, norm(a)))
+			}
+			out[fmt.Sprintf("events %s %d", fid, cursor)] = fmt.Sprint(parts, p.NextCursor, p.HasMore)
 		}
 	}
 	for _, sha := range l.shas {
-		for _, kind := range []string{"original", "preview"} {
-			path := "/api/v1/assets/" + sha + "/" + kind
-			rec := call(t, h, "GET", path, nil, nil)
-			out[path] = fmt.Sprint(rec.Code, " ", rec.Header().Get("Content-Type"), " ", shaOf(rec.Body.Bytes()))
+		a, err := v.GetAssetBySHA(t.Context(), sha)
+		out["asset "+sha] = fmt.Sprintf("%+v %v", norm(a), err)
+		for _, rel := range []string{blobstore.PoolRelPath(sha), blobstore.PreviewRelPath(sha)} {
+			b, err := os.ReadFile(filepath.Join(l.root, filepath.FromSlash(rel)))
+			out[rel] = fmt.Sprint(shaOf(b), " ", err == nil)
 		}
 	}
 	return out
@@ -187,17 +220,17 @@ func observeLegacy(t *testing.T, l *legacy) map[string]string {
 		t.Fatal(err)
 	}
 	defer js.Close()
-	return observe(t, serve(t, l.vol, js), l)
+	return observe(t, js, l)
 }
 
-func openImported(t *testing.T, l *legacy) (*sqlitestore.Store, http.Handler) {
+func openImported(t *testing.T, l *legacy) *sqlitestore.Store {
 	t.Helper()
 	s, err := sqlitestore.Open(t.Context(), l.vol)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.Close() })
-	return s, serve(t, l.vol, s)
+	return s
 }
 
 func sameObservation(t *testing.T, want, got map[string]string) {
@@ -322,18 +355,41 @@ func TestGoldenImport(t *testing.T) {
 		t.Fatalf("database mode: %v %v", info, err)
 	}
 
-	store, h := openImported(t, l)
-	sameObservation(t, before, observe(t, h, l))
+	store := openImported(t, l)
+	sameObservation(t, before, observe(t, store, l))
 	ok, err := store.HasLegacyImport(t.Context(), shaOf(src))
 	if err != nil || !ok {
 		t.Fatalf("legacy_imports row missing: %v", err)
 	}
-	// Sequences continue where state.json left them.
-	rec := call(t, h, "POST", "/api/v1/folders/"+l.folders[0]+"/assets", sampleJPEG(t, 10, 10, 9), map[string]string{"X-Device-ID": "phone-a"})
-	if rec.Code != 201 {
-		t.Fatalf("upload after import: %d %s", rec.Code, rec.Body)
+	// The imported folders belong to the bootstrap administrator, who keeps
+	// them after taking the account over (admin init keeps the user_id).
+	owned, err := store.ListFoldersFor(t.Context(), store.BootstrapOwnerID())
+	if err != nil || len(owned) != 3 {
+		t.Fatalf("folders of the bootstrap administrator: %+v %v", owned, err)
 	}
-	page, err := store.ListEvents(t.Context(), l.folders[0], 3, 10)
+	for _, fa := range owned {
+		if fa.Access.OwnerID != store.BootstrapOwnerID() {
+			t.Fatalf("folder %s owner %s", fa.Folder.ID, fa.Access.OwnerID)
+		}
+	}
+	// Legacy assets are reachable only through their folders.
+	page, err := store.ListEvents(t.Context(), l.folders[1], 0, 10)
+	if err != nil || len(page.Events) != 2 {
+		t.Fatalf("trip events %+v %v", page, err)
+	}
+	if _, err := store.GetFolderAsset(t.Context(), l.folders[1], page.Events[0].AssetID); err != nil {
+		t.Fatalf("legacy asset in its folder: %v", err)
+	}
+	if _, err := store.GetFolderAsset(t.Context(), l.folders[2], page.Events[0].AssetID); !errors.Is(err, meta.ErrAssetNotFound) {
+		t.Fatalf("legacy asset through another folder: %v", err)
+	}
+	// Sequences continue where state.json left them.
+	next := sampleJPEG(t, 10, 10, 9)
+	if _, err := store.CommitUpload(t.Context(), meta.CommitRequest{FolderID: l.folders[0], DeviceID: "phone-a",
+		Asset: meta.Asset{SHA256: shaOf(next), Filename: "n.jpg", MimeType: "image/jpeg", Bytes: int64(len(next))}}); err != nil {
+		t.Fatalf("upload after import: %v", err)
+	}
+	page, err = store.ListEvents(t.Context(), l.folders[0], 3, 10)
 	if err != nil || len(page.Events) != 1 || page.Events[0].Seq != 4 {
 		t.Fatalf("event after import: %+v %v", page, err)
 	}
@@ -658,8 +714,8 @@ func TestCrashAtEveryPointIsRecoverable(t *testing.T) {
 			if b, _ := os.ReadFile(matches[0]); !bytes.Equal(b, src) {
 				t.Fatal("migrated state.json differs from the original")
 			}
-			store, h := openImported(t, l)
-			sameObservation(t, before, observe(t, h, l))
+			store := openImported(t, l)
+			sameObservation(t, before, observe(t, store, l))
 			ok, err := store.HasLegacyImport(t.Context(), shaOf(src))
 			if err != nil || !ok {
 				t.Fatalf("legacy import row: %v %v", ok, err)
@@ -735,8 +791,7 @@ func TestFailuresDiscardTemporaryDatabase(t *testing.T) {
 			if r, err := apply(t, l.vol, nil); err != nil {
 				t.Fatalf("re-run: %v (%v)", err, r.Problems)
 			}
-			_, h := openImported(t, l)
-			sameObservation(t, before, observe(t, h, l))
+			sameObservation(t, before, observe(t, openImported(t, l), l))
 		})
 	}
 }
@@ -789,7 +844,7 @@ func TestWarningsDoNotBlockAndLoseNothing(t *testing.T) {
 	if !strings.Contains(w, orphanSHA) || !strings.Contains(w, "not linked to any folder") {
 		t.Fatalf("warnings: %q", r.Warnings)
 	}
-	store, _ := openImported(t, l)
+	store := openImported(t, l)
 	if a, err := store.GetAssetBySHA(t.Context(), unlinkedSHA); err != nil || a.Filename != "u.txt" {
 		t.Fatalf("unlinked asset: %+v %v", a, err)
 	}

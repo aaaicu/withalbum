@@ -1,7 +1,7 @@
 # 위드앨범(WithAlbum) 계정·오너·초대·권한 설계 v1.4
 
 - 기준: 2026-10-17
-- 상태: **P0 확정 설계 / 정책 함수·계정 코어·HTTP 로그인·기기 세션·계정 관리 API 구현**. 폴더/자산 API에 실제 ACL 적용 전(M10).
+- 상태: **P0 확정 설계 / 정책 함수·계정 코어·HTTP 로그인·기기 세션·계정 관리 API·앨범 ACL(폴더·업로드·동기화·다운로드) 구현**. 초대·역할 변경·소유권 이전 API 전(M11).
 - 적용 대상: `SELF_HOSTED` Mac mini 우선 (동일 Go 서버 코어를 Linux/Raspberry Pi에도 적용).
 - Google Drive 지원: 아래 **[Drive 별도 제한]**을 반드시 확인. 네이티브 ACL과 동일하지 않다.
 
@@ -155,9 +155,18 @@ Drive의 개인 My Drive ACL 역할은 `owner`, `writer`, `commenter`, `reader` 
   - 감사: 로그인 성공/실패(사유·IP, 비밀번호 제외), 제한 시작(차단 1회당 1행), 로그아웃, 기기 해지, refresh 재사용, 비밀번호 변경·재설정(폐기된 세션 수), 계정 생성·비활성·권한 변경(HTTP 관리자 행위자 포함).
   - 세션 회수: 콘솔·관리자 비밀번호 재설정은 모든 세션, 본인 비밀번호 변경(`POST /me/password`)은 현재 세션 외 전부, 계정 비활성화는 모든 세션을 같은 트랜잭션에서 폐기(`session.RevokeUserTx`). 재활성화해도 이전 세션은 살아나지 않는다.
   - 관리자 API: `GET/POST /admin/users`, `GET/PATCH /admin/users/{id}`(status), `PATCH /admin/users/{id}/permissions`(server_role·can_create_albums 한 트랜잭션). SERVER_ADMIN 아니면 403. 최초 관리자는 여전히 콘솔 `admin init`만.
-- **미구현:** 폴더/업로드/다운로드 핸들러에 미들웨어 접목(M10, 그 전까지 loopback 전용), 초대 워크플로우, TLS, 앱 UX, Drive 계정 연동, 로그인 성공 시 Argon2id 파라미터 재해시, 오래된 세션 행 정리, 관리자에 의한 타인 기기 목록/해지.
+- **앨범 ACL 구현(HTTP, 테스트·로컬 바이너리 스모크 검증, loopback 전용):**
+  - 라우트 정책 표(`internal/httpapi/middleware_authz.go` `routePolicies`): 모든 라우트가 public / session / server(액션) / album(액션) 중 하나로 선언된다. 선언 없는 라우트를 등록하거나 선언된 라우트를 등록하지 않으면 핸들러 구성 시 panic. 공개는 대시보드 페이지(정적), `GET /api/v1/health`, `POST /api/v1/auth/login|refresh` 4개뿐이고, 그 밖의 `/api/v1/*`(알 수 없는 경로 포함)는 세션 없이 401.
+  - album 라우트: 세션 → 요청마다 DB에서 `folders.owner_user_id`와 `folder_members`(`GetFolderAccess`) → `authz.Allowed`. 판정 순서와 응답(D12): 폴더 없음·보관됨·소유/멤버 아님 → **404 `folder_not_found`**(SERVER_ADMIN도 동일, 존재 여부 비노출) → 멤버지만 역할이 액션을 허용하지 않음 → **403 `forbidden`** → 자산 조회. UPLOADER의 읽기 시도는 자산 ID가 있든 없든 같은 403이라 존재를 추론할 수 없다.
+  - 폴더 목록은 소유·멤버 폴더만(`ListFoldersFor`), 각 항목은 이름·`role`·`can_read`·`can_upload`만. 폴더 생성은 SERVER_ADMIN 또는 `can_create_albums`, 쓰기 트랜잭션 안에서 다시 확인하고 생성자를 유일 OWNER로 기록.
+  - 자산: 공개 ID는 랜덤 `assets.asset_id`이고 **폴더마다 새 자산**을 만든다(같은 바이트는 blob만 공유). 그래서 한 폴더의 파일명·업로더·ID가 다른 폴더에 나타나지 않고, 다른 폴더의 자산 ID는 `GetFolderAsset`(folder_assets 연결, `removed_at IS NULL`)에서 404. 이관 데이터의 자산은 여러 폴더에 연결될 수 있지만 다운로드는 항상 경로의 폴더 연결로 검증한다.
+  - 업로드: 요청 진입 시 판정 + **커밋 직전 재확인**(`meta.CommitRequest.Authorize`, `BEGIN IMMEDIATE` 쓰기 트랜잭션 안에서 계정 상태·잠금 여부·세션/기기 해지·소유자·멤버십을 다시 읽음; 계정·멤버십 변경도 같은 DB 쓰기이므로 그 사이 바뀔 수 없다). 회수되면 403/404, 자산·연결·이벤트 기록 없음. 결과가 `already_present`여도 재확인한다.
+  - UPLOADER 응답: 신규·다른 폴더에 이미 있는 바이트·이 폴더에 이미 있는 바이트 모두 같은 `202 {"result":"accepted","folder_id","sha256","bytes"}`(클라이언트가 보낸 것만 되돌림). 읽기 권한자에게도 "다른 폴더에 있음"(`linked`)은 `created`로 합쳐 전역 존재를 알리지 않는다. 이미 있는 바이트도 pool 파일 재해시·프리뷰 재생성을 똑같이 수행한다. **남은 한계:** 지연 시간 차이(로컬 측정 수 ms, 새 디렉터리 항목·DB 행 fsync 유무)는 완전히 없애지 못했다.
+  - 권한 회수 즉시 반영: 역할 하향·멤버 제거·앨범 생성 권한 회수는 다음 요청에서 403/404, 계정 비활성·기기 해지는 401.
+  - 멤버십을 만드는 초대 API는 아직 없다(M11). 테스트는 `folder_members`에 직접 넣어 검증한다.
+- **미구현:** 초대 워크플로우·역할 변경·추방·소유권 이전(M11), TLS, 앱 UX, Drive 계정 연동, 로그인 성공 시 Argon2id 파라미터 재해시, 오래된 세션 행 정리, 관리자에 의한 타인 기기 목록/해지.
 - 구현 순서: SQLite 트랜잭션 및 마이그레이션 → 최초 관리자 생성/로그인 → 권한 미들웨어 → 폴더 오너/멤버 권한 → 초대/수락/회수 → 전체 통합 테스트 → Mac LAN 테스트.
-- **중요:** 현재 PoC는 인증이 없어서 `127.0.0.1`만 바인딩되며 사용자 데이터나 외부 접근에 사용하면 안 된다.
+- **중요:** TLS가 없어서(M15) 서버는 `127.0.0.1`만 바인딩되며 사용자 데이터나 외부 접근에 사용하면 안 된다.
 
 ## 공식 기술 근거
 

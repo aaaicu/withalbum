@@ -1,6 +1,13 @@
-// Package jsonstore is the PoC meta.MetadataStore that keeps all metadata in
-// memory and rewrites .system/state.json (temp file, fsync, rename) on every
-// change. A single mutex serializes all access.
+// Package jsonstore is the frozen PoC metadata store that keeps all metadata
+// in memory and rewrites .system/state.json (temp file, fsync, rename) on
+// every change. A single mutex serializes all access.
+//
+// The server never uses it: state.json is only read by the one-time import
+// (internal/legacyimport). It remains so that tests can produce state.json
+// files exactly as earlier versions wrote them. It has no accounts, owners
+// or memberships and therefore no longer is the PoC method of the same name. In
+// its data an asset's ID is the SHA-256 of the bytes, and CommitUpload takes
+// the hash from CommitRequest.Asset.ID.
 package jsonstore
 
 import (
@@ -30,14 +37,12 @@ type diskState struct {
 	NextSeq map[string]int64                `json:"next_seq"`
 }
 
-// Store implements meta.MetadataStore.
+// Store is the PoC state.json store.
 type Store struct {
 	mu    sync.Mutex
 	path  string
 	state diskState
 }
-
-var _ meta.MetadataStore = (*Store)(nil)
 
 // Open loads state.json from a verified volume. It creates only .system inside
 // the volume root; a missing state file means an empty store.
@@ -80,7 +85,7 @@ func Open(vol *storage.Volume) (*Store, error) {
 	return s, nil
 }
 
-// Close implements meta.MetadataStore. Every change is already on disk.
+// Close is the PoC method of the same name. Every change is already on disk.
 func (s *Store) Close() error { return nil }
 
 func (s *Store) saveLocked() error {
@@ -115,7 +120,7 @@ func newID() (string, error) {
 
 func now() string { return time.Now().UTC().Format(time.RFC3339Nano) }
 
-// CreateFolder implements meta.MetadataStore.
+// CreateFolder is the PoC method of the same name.
 func (s *Store) CreateFolder(_ context.Context, name string) (meta.Folder, error) {
 	id, err := newID()
 	if err != nil {
@@ -134,7 +139,7 @@ func (s *Store) CreateFolder(_ context.Context, name string) (meta.Folder, error
 	return folder, nil
 }
 
-// ListFolders implements meta.MetadataStore.
+// ListFolders is the PoC method of the same name.
 func (s *Store) ListFolders(context.Context) ([]meta.Folder, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -145,7 +150,7 @@ func (s *Store) ListFolders(context.Context) ([]meta.Folder, error) {
 	return result, nil
 }
 
-// GetFolder implements meta.MetadataStore.
+// GetFolder is the PoC method of the same name.
 func (s *Store) GetFolder(_ context.Context, id string) (meta.Folder, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -156,7 +161,7 @@ func (s *Store) GetFolder(_ context.Context, id string) (meta.Folder, error) {
 	return f, nil
 }
 
-// GetAssetBySHA implements meta.MetadataStore.
+// GetAssetBySHA is the PoC method of the same name.
 func (s *Store) GetAssetBySHA(_ context.Context, sha string) (meta.Asset, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -167,7 +172,7 @@ func (s *Store) GetAssetBySHA(_ context.Context, sha string) (meta.Asset, error)
 	return a, nil
 }
 
-// CommitUpload implements meta.MetadataStore. On a failed save the in-memory
+// CommitUpload is the PoC method of the same name. On a failed save the in-memory
 // state is rolled back so memory and state.json stay identical.
 func (s *Store) CommitUpload(_ context.Context, req meta.CommitRequest) (meta.CommitResult, error) {
 	folderID, sha := req.FolderID, req.Asset.ID
@@ -215,7 +220,7 @@ func (s *Store) CommitUpload(_ context.Context, req meta.CommitRequest) (meta.Co
 	return meta.CommitResult{Result: result, Asset: asset}, nil
 }
 
-// ListEvents implements meta.MetadataStore.
+// ListEvents is the PoC method of the same name.
 func (s *Store) ListEvents(_ context.Context, folderID string, cursor int64, limit int) (meta.EventPage, error) {
 	if limit <= 0 {
 		return meta.EventPage{}, meta.ErrInvalidLimit

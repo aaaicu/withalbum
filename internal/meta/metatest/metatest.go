@@ -10,13 +10,21 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aaaicu/withalbum/internal/authz"
 	"github.com/aaaicu/withalbum/internal/meta"
 )
 
+// Store is a store under test with an active account that may own folders.
+type Store struct {
+	meta.MetadataStore
+	OwnerID string
+}
+
 // Run checks the meta.MetadataStore contract. open must return a new, empty
-// store each time it is called; Run closes it.
-func Run(t *testing.T, open func(t *testing.T) meta.MetadataStore) {
-	newStore := func(t *testing.T) meta.MetadataStore {
+// store each time it is called, and the user_id of an active account; Run
+// closes the store.
+func Run(t *testing.T, open func(t *testing.T) Store) {
+	newStore := func(t *testing.T) Store {
 		s := open(t)
 		t.Cleanup(func() {
 			if err := s.Close(); err != nil {
@@ -30,11 +38,56 @@ func Run(t *testing.T, open func(t *testing.T) meta.MetadataStore) {
 	t.Run("ListEvents", func(t *testing.T) { testListEvents(t, newStore(t)) })
 	t.Run("ConcurrentCommits", func(t *testing.T) { testConcurrentCommits(t, newStore(t)) })
 	t.Run("BeforeCommit", func(t *testing.T) { testBeforeCommit(t, newStore(t)) })
+	t.Run("Authorize", func(t *testing.T) { testAuthorize(t, newStore(t)) })
+}
+
+// testAuthorize: the hook sees the stored principal and access, is called
+// for every outcome, and a refusal writes nothing.
+func testAuthorize(t *testing.T, s Store) {
+	ctx := context.Background()
+	refuse := errors.New("no longer allowed")
+	var seen []authz.Principal
+	deny := func(p authz.Principal, a authz.AlbumAccess) error { seen = append(seen, p); return refuse }
+	if _, err := s.CreateFolder(ctx, meta.NewFolder{Name: "x", OwnerID: s.OwnerID, Authorize: deny}); !errors.Is(err, refuse) {
+		t.Fatalf("CreateFolder = %v, want the Authorize error", err)
+	}
+	if list, _ := s.ListFolders(ctx); len(list) != 0 {
+		t.Fatalf("folder created despite refusal: %v", list)
+	}
+	if len(seen) != 1 || seen[0].UserID != s.OwnerID || !seen[0].Active {
+		t.Fatalf("Authorize saw %+v", seen)
+	}
+	f := mustFolder(t, s, "f")
+	var gotAccess authz.AlbumAccess
+	allow := func(p authz.Principal, a authz.AlbumAccess) error { gotAccess = a; return nil }
+	mustCommit(t, s, meta.CommitRequest{FolderID: f.ID, UserID: s.OwnerID, Asset: asset(0, "a.jpg"), Authorize: allow}, meta.ResultCreated)
+	if gotAccess.OwnerID != s.OwnerID || gotAccess.HasMembership {
+		t.Fatalf("Authorize access %+v", gotAccess)
+	}
+	if _, err := s.CommitUpload(ctx, meta.CommitRequest{FolderID: f.ID, UserID: s.OwnerID, Asset: asset(1, "b.jpg"), Authorize: deny}); !errors.Is(err, refuse) {
+		t.Fatalf("CommitUpload = %v, want the Authorize error", err)
+	}
+	// Refused even when nothing would have been written.
+	if _, err := s.CommitUpload(ctx, meta.CommitRequest{FolderID: f.ID, UserID: s.OwnerID, Asset: asset(0, "a.jpg"), Authorize: deny}); !errors.Is(err, refuse) {
+		t.Fatalf("CommitUpload (already present) = %v, want the Authorize error", err)
+	}
+	if p := mustEvents(t, s, f.ID, 0, 10); len(p.Events) != 1 {
+		t.Fatalf("events after refusals: %+v", p.Events)
+	}
+	unknown := func(p authz.Principal, a authz.AlbumAccess) error {
+		if p != (authz.Principal{}) {
+			t.Errorf("unknown user principal %+v", p)
+		}
+		return refuse
+	}
+	if _, err := s.CommitUpload(ctx, meta.CommitRequest{FolderID: f.ID, UserID: "nobody", Asset: asset(2, "c.jpg"), Authorize: unknown}); !errors.Is(err, refuse) {
+		t.Fatalf("CommitUpload (unknown user) = %v", err)
+	}
 }
 
 // testBeforeCommit: a failing BeforeCommit hook leaves no trace, its error
 // is returned wrapped, and it is not called for ResultAlreadyPresent.
-func testBeforeCommit(t *testing.T, s meta.MetadataStore) {
+func testBeforeCommit(t *testing.T, s Store) {
 	ctx := context.Background()
 	f := mustFolder(t, s, "hooked")
 	refuse := errors.New("volume lost")
@@ -67,31 +120,31 @@ func testBeforeCommit(t *testing.T, s meta.MetadataStore) {
 func sha(n int) string { return fmt.Sprintf("%064x", n+1) }
 
 func asset(n int, name string) meta.Asset {
-	return meta.Asset{ID: sha(n), Filename: name, MimeType: "image/jpeg", Bytes: int64(100 + n), PreviewReady: n%2 == 0}
+	return meta.Asset{SHA256: sha(n), Filename: name, MimeType: "image/jpeg", Bytes: int64(100 + n), PreviewReady: n%2 == 0}
 }
 
-func mustFolder(t *testing.T, s meta.MetadataStore, name string) meta.Folder {
+func mustFolder(t *testing.T, s Store, name string) meta.Folder {
 	t.Helper()
-	f, err := s.CreateFolder(context.Background(), name)
+	f, err := s.CreateFolder(context.Background(), meta.NewFolder{Name: name, OwnerID: s.OwnerID})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return f
 }
 
-func mustCommit(t *testing.T, s meta.MetadataStore, req meta.CommitRequest, want string) meta.CommitResult {
+func mustCommit(t *testing.T, s Store, req meta.CommitRequest, want string) meta.CommitResult {
 	t.Helper()
 	res, err := s.CommitUpload(context.Background(), req)
 	if err != nil {
-		t.Fatalf("CommitUpload(%s, %s): %v", req.FolderID, req.Asset.ID, err)
+		t.Fatalf("CommitUpload(%s, %s): %v", req.FolderID, req.Asset.SHA256, err)
 	}
 	if res.Result != want {
-		t.Fatalf("CommitUpload(%s, %s) = %q, want %q", req.FolderID, req.Asset.ID, res.Result, want)
+		t.Fatalf("CommitUpload(%s, %s) = %q, want %q", req.FolderID, req.Asset.SHA256, res.Result, want)
 	}
 	return res
 }
 
-func mustEvents(t *testing.T, s meta.MetadataStore, folderID string, cursor int64, limit int) meta.EventPage {
+func mustEvents(t *testing.T, s Store, folderID string, cursor int64, limit int) meta.EventPage {
 	t.Helper()
 	p, err := s.ListEvents(context.Background(), folderID, cursor, limit)
 	if err != nil {
@@ -110,7 +163,7 @@ func validTime(t *testing.T, what, ts string) {
 	}
 }
 
-func testFolders(t *testing.T, s meta.MetadataStore) {
+func testFolders(t *testing.T, s Store) {
 	ctx := context.Background()
 	list, err := s.ListFolders(ctx)
 	if err != nil || list == nil || len(list) != 0 {
@@ -140,9 +193,25 @@ func testFolders(t *testing.T, s meta.MetadataStore) {
 	if !seen[a] || !seen[b] {
 		t.Fatalf("ListFolders = %v, want %v and %v", list, a, b)
 	}
+	// The owner sees both, with the owner relation; nobody else sees any.
+	mine, err := s.ListFoldersFor(ctx, s.OwnerID)
+	if err != nil || len(mine) != 2 || !seen[mine[0].Folder] || !seen[mine[1].Folder] || mine[0].Folder == mine[1].Folder ||
+		mine[0].Access != (authz.AlbumAccess{OwnerID: s.OwnerID}) || mine[1].Access != mine[0].Access {
+		t.Fatalf("ListFoldersFor(owner) = %+v, %v", mine, err)
+	}
+	if other, err := s.ListFoldersFor(ctx, "someone-else"); err != nil || other == nil || len(other) != 0 {
+		t.Fatalf("ListFoldersFor(other) = %#v, %v", other, err)
+	}
+	fa, err := s.GetFolderAccess(ctx, a.ID, "someone-else")
+	if err != nil || fa.Folder != a || fa.Access != (authz.AlbumAccess{OwnerID: s.OwnerID}) {
+		t.Fatalf("GetFolderAccess(other) = %+v, %v", fa, err)
+	}
+	if _, err := s.GetFolderAccess(ctx, "missing", s.OwnerID); !errors.Is(err, meta.ErrFolderNotFound) {
+		t.Fatalf("GetFolderAccess(missing) err = %v", err)
+	}
 }
 
-func testCommitUpload(t *testing.T, s meta.MetadataStore) {
+func testCommitUpload(t *testing.T, s Store) {
 	ctx := context.Background()
 	if _, err := s.CommitUpload(ctx, meta.CommitRequest{FolderID: "missing", Asset: asset(0, "a.jpg")}); !errors.Is(err, meta.ErrFolderNotFound) {
 		t.Fatalf("commit to missing folder err = %v", err)
@@ -154,15 +223,25 @@ func testCommitUpload(t *testing.T, s meta.MetadataStore) {
 	f1 := mustFolder(t, s, "one")
 	f2 := mustFolder(t, s, "two")
 	in := asset(0, "a.jpg")
-	res := mustCommit(t, s, meta.CommitRequest{FolderID: f1.ID, DeviceID: "dev-1", Asset: in}, meta.ResultCreated)
+	res := mustCommit(t, s, meta.CommitRequest{FolderID: f1.ID, DeviceID: "dev-1", UserID: s.OwnerID, Asset: in}, meta.ResultCreated)
 	validTime(t, "uploaded_at", res.Asset.UploadedAt)
 	stored := in
+	stored.ID = res.Asset.ID
 	stored.UploadedAt = res.Asset.UploadedAt
-	if res.Asset != stored {
-		t.Fatalf("created asset %+v, want %+v", res.Asset, stored)
+	if res.Asset != stored || stored.ID == "" || stored.ID == sha(0) {
+		t.Fatalf("created asset %+v, want %+v with a random ID", res.Asset, stored)
 	}
 	if got, err := s.GetAssetBySHA(ctx, sha(0)); err != nil || got != stored {
 		t.Fatalf("GetAssetBySHA = %+v, %v", got, err)
+	}
+	if got, err := s.GetFolderAsset(ctx, f1.ID, stored.ID); err != nil || got != stored {
+		t.Fatalf("GetFolderAsset = %+v, %v", got, err)
+	}
+	// Not reachable through another folder (IDOR) or by its hash.
+	for _, q := range [][2]string{{f2.ID, stored.ID}, {f1.ID, sha(0)}, {f1.ID, "missing"}} {
+		if _, err := s.GetFolderAsset(ctx, q[0], q[1]); !errors.Is(err, meta.ErrAssetNotFound) {
+			t.Fatalf("GetFolderAsset(%s, %s) err = %v", q[0], q[1], err)
+		}
 	}
 
 	// Same folder again: nothing changes, the stored asset is returned.
@@ -172,13 +251,17 @@ func testCommitUpload(t *testing.T, s meta.MetadataStore) {
 	if res.Asset != stored {
 		t.Fatalf("already_present asset %+v, want %+v", res.Asset, stored)
 	}
-	// Another folder: linked to the existing asset, which is not overwritten.
+	// Another folder: same blob, but an asset of its own with its own name.
 	res = mustCommit(t, s, meta.CommitRequest{FolderID: f2.ID, DeviceID: "dev-2", Asset: again}, meta.ResultLinked)
-	if res.Asset != stored {
-		t.Fatalf("linked asset %+v, want %+v", res.Asset, stored)
+	if res.Asset.ID == stored.ID || res.Asset.SHA256 != sha(0) || res.Asset.Filename != "renamed.jpg" || res.Asset.Bytes != in.Bytes {
+		t.Fatalf("linked asset %+v", res.Asset)
 	}
+	second := res.Asset
 	if got, _ := s.GetAssetBySHA(ctx, sha(0)); got != stored {
-		t.Fatalf("asset overwritten: %+v", got)
+		t.Fatalf("GetAssetBySHA after link: %+v, want the oldest %+v", got, stored)
+	}
+	if _, err := s.GetFolderAsset(ctx, f1.ID, second.ID); !errors.Is(err, meta.ErrAssetNotFound) {
+		t.Fatalf("f2 asset visible in f1: %v", err)
 	}
 
 	p := mustEvents(t, s, f1.ID, 0, 10)
@@ -186,17 +269,20 @@ func testCommitUpload(t *testing.T, s meta.MetadataStore) {
 		t.Fatalf("f1 events %+v", p.Events)
 	}
 	e := p.Events[0]
-	if e.Seq != 1 || e.Kind != meta.EventAssetAdded || e.AssetID != sha(0) || e.FolderID != f1.ID || e.UploaderDeviceID != "dev-1" {
+	if e.Seq != 1 || e.Kind != meta.EventAssetAdded || e.AssetID != stored.ID || e.FolderID != f1.ID || e.UploaderDeviceID != "dev-1" {
 		t.Fatalf("event %+v", e)
+	}
+	if p.Assets[stored.ID] != stored || len(p.Assets) != 1 {
+		t.Fatalf("f1 assets %+v", p.Assets)
 	}
 	validTime(t, "occurred_at", e.OccurredAt)
 	p = mustEvents(t, s, f2.ID, 0, 10)
-	if len(p.Events) != 1 || p.Events[0].Seq != 1 || p.Events[0].UploaderDeviceID != "dev-2" {
+	if len(p.Events) != 1 || p.Events[0].Seq != 1 || p.Events[0].UploaderDeviceID != "dev-2" || p.Events[0].AssetID != second.ID {
 		t.Fatalf("f2 events %+v", p.Events)
 	}
 }
 
-func testListEvents(t *testing.T, s meta.MetadataStore) {
+func testListEvents(t *testing.T, s Store) {
 	ctx := context.Background()
 	if _, err := s.ListEvents(ctx, "missing", 0, 10); !errors.Is(err, meta.ErrFolderNotFound) {
 		t.Fatalf("ListEvents(missing) err = %v", err)
@@ -216,7 +302,7 @@ func testListEvents(t *testing.T, s meta.MetadataStore) {
 	if len(p.Events) != 2 || p.Events[0].Seq != 1 || p.Events[1].Seq != 2 || p.NextCursor != 2 || !p.HasMore {
 		t.Fatalf("page 1 %+v", p)
 	}
-	if len(p.Assets) != 2 || p.Assets[sha(0)].Filename != "0.jpg" || p.Assets[sha(1)].Filename != "1.jpg" {
+	if len(p.Assets) != 2 || p.Assets[p.Events[0].AssetID].Filename != "0.jpg" || p.Assets[p.Events[1].AssetID].Filename != "1.jpg" {
 		t.Fatalf("page 1 assets %+v", p.Assets)
 	}
 	p = mustEvents(t, s, f.ID, 2, 2)
@@ -235,7 +321,7 @@ func testListEvents(t *testing.T, s meta.MetadataStore) {
 
 // testConcurrentCommits commits distinct assets to one folder in parallel.
 // Run it with -race: sequence numbers must be 1..n without gaps or repeats.
-func testConcurrentCommits(t *testing.T, s meta.MetadataStore) {
+func testConcurrentCommits(t *testing.T, s Store) {
 	f := mustFolder(t, s, "busy")
 	const n = 20
 	var wg sync.WaitGroup

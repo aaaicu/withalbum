@@ -30,15 +30,16 @@ import (
 	"github.com/aaaicu/withalbum/internal/storage"
 )
 
-// This is a localhost demonstration server, NOT a production service. Login
-// and sessions exist, but the folder and asset routes are not protected yet
-// (M10) and there is no TLS (M15). Never publish its port.
+// This is a localhost development server, NOT a production service. Every
+// route except the dashboard page, health and login requires a session, and
+// folder and asset routes are authorized per request (album ACL), but there
+// is no TLS yet (M15). Never publish its port.
 
 // Set with -ldflags "-X main.version=<version>" by the release builder.
 var version = "dev"
 
-// Keep this prototype strictly on the local machine until authentication, ACLs,
-// rate limiting and TLS/reverse-proxy security have been implemented.
+// Keep the server strictly on the local machine until TLS (M15) exists:
+// passwords and session tokens must not cross a network in clear text.
 func loopbackOnly(addr string) bool {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -363,7 +364,7 @@ func main() {
 		addr = "127.0.0.1:8787"
 	}
 	if !loopbackOnly(addr) {
-		log.Fatalf("SECURITY: refusing non-loopback address %q (folder and asset routes are not access-controlled yet and there is no TLS)", addr)
+		log.Fatalf("SECURITY: refusing non-loopback address %q (there is no TLS yet, so passwords and tokens would cross the network in clear text)", addr)
 	}
 	minFree, err := minFreeBytes(os.Getenv("WITHALBUM_MIN_FREE_BYTES"))
 	if err != nil {
@@ -392,7 +393,7 @@ func main() {
 			log.Printf("shutdown: %v", err)
 		}
 	}()
-	log.Printf("EXPERIMENTAL / FOLDER AND ASSET API UNAUTHENTICATED: listen=%s root=%s volume_id=%s", addr, a.vol.Root(), a.vol.ID())
+	log.Printf("EXPERIMENTAL / LOOPBACK ONLY, NO TLS: listen=%s root=%s volume_id=%s", addr, a.vol.Root(), a.vol.ID())
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}

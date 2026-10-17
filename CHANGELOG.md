@@ -4,8 +4,16 @@
 
 - 최소 Go 버전 1.23 → 1.26 (지원 종료 버전 탈피), modernc.org/sqlite v1.39.0 → v1.60.1 (SQLite 3.53.4).
 
+### Changed (breaking, API)
+- 앨범 ACL(M10): 대시보드 페이지·`/api/v1/health`·`/api/v1/auth/login`·`/api/v1/auth/refresh` 외 모든 경로가 세션 필요(없거나 무효하면 401, 알 수 없는 `/api/v1/*` 경로도). 폴더·자산 라우트는 요청마다 DB의 소유자·멤버십으로 판정: 소유·멤버가 아닌 폴더는 SERVER_ADMIN이라도 404 `folder_not_found`, 역할 부족은 403 `forbidden`. 라우트별 접근 정책은 `internal/httpapi/middleware_authz.go` 표 하나에만 선언하며 미선언 라우트는 핸들러 구성 시 panic.
+- `POST /api/v1/folders`는 SERVER_ADMIN 또는 `can_create_albums`만(아니면 403), 만든 사람이 유일한 OWNER. `GET /api/v1/folders`는 내가 소유하거나 멤버인 폴더만 `role`·`can_read`·`can_upload`와 함께 반환. `GET /api/v1/folders/{id}` 추가(UPLOADER 포함 멤버에게 최소 메타데이터).
+- 자산 ID가 SHA-256에서 폴더별 랜덤 ID로 바뀜(같은 바이트도 폴더마다 다른 자산·파일명). 다운로드는 `GET /api/v1/folders/{fid}/assets/{aid}/original|preview`만, 그 폴더에 연결된 자산이 아니면 404. **무인증 `/api/v1/assets/{sha}/original|preview` 제거.** sync의 `assets`는 자산 ID 키, 각 자산에 `sha256`.
+- 업로드 응답: 읽기 권한자는 201 `created`/200 `already_present`(다른 폴더에 같은 바이트가 있어도 `linked`가 아닌 `created`), UPLOADER는 항상 202 `{"result":"accepted","folder_id","sha256","bytes"}`. 커밋 직전 DB 트랜잭션 안에서 계정·세션·멤버십을 다시 읽어 권한 재확인(업로드 중 회수 시 403/404, 기록 없음). 이미 있는 바이트도 pool 파일 재검증·프리뷰 재생성을 똑같이 수행.
+- 로컬 대시보드가 로그인(웹 쿠키 세션 + CSRF)을 요구하고 내 앨범만 표시.
+- `internal/meta/jsonstore`는 더 이상 `meta.MetadataStore`를 구현하지 않음(이전 버전 데이터 생성용으로 고정).
+
 ### Added
-- 로그인·기기 세션·계정 관리 API (**loopback 전용, 기존 폴더/자산 API는 아직 무인증 — M10**): `POST /api/v1/auth/login|refresh|logout`, `GET /api/v1/me`, `POST /api/v1/me/password`, `GET /api/v1/me/devices`, `DELETE /api/v1/me/devices/{id}`, `GET|POST /api/v1/admin/users`, `GET|PATCH /api/v1/admin/users/{id}`, `PATCH /api/v1/admin/users/{id}/permissions`. 규격: `docs/API_AUTH_v1.4.yaml`(1.4.1-draft).
+- 로그인·기기 세션·계정 관리 API (loopback 전용): `POST /api/v1/auth/login|refresh|logout`, `GET /api/v1/me`, `POST /api/v1/me/password`, `GET /api/v1/me/devices`, `DELETE /api/v1/me/devices/{id}`, `GET|POST /api/v1/admin/users`, `GET|PATCH /api/v1/admin/users/{id}`, `PATCH /api/v1/admin/users/{id}/permissions`. 규격: `docs/API_AUTH_v1.4.yaml`(1.4.1-draft).
 - `internal/auth/session`: 256비트 랜덤 토큰(SHA-256만 저장), access 15분·refresh 30일 회전, refresh 재사용 시 세션 전체 폐기, 기기별 해지, 매 요청 계정 재조회. 웹은 HttpOnly·SameSite=Strict 쿠키 + CSRF 토큰(`X-CSRF-Token`).
 - `internal/auth/ratelimit`: 로그인 속도 제한(IP 토큰 버킷, 계정+IP·계정 실패 횟수) → 429 + Retry-After. `password.Limiter`: Argon2id 동시 계산 2개 제한(초과 대기 시 503 busy), 없는 계정도 더미 해시로 같은 비용.
 - 감사 로그: 로그인 성공/실패(사유), 제한 시작, 로그아웃, 기기 해지, refresh 재사용, 비밀번호 변경.

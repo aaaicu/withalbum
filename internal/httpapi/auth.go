@@ -15,25 +15,23 @@ import (
 )
 
 // Auth, own-account and account administration routes (API_AUTH_v1.4.yaml).
-// They exist only when Config.Auth is set. The folder and asset routes are
-// NOT protected yet (M10), which is why the server still listens on loopback
-// only.
+// Their access policies are declared in middleware_authz.go.
 
 const maxAuthBody = 8 << 10
 
-func (s *Server) authRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("POST /api/v1/auth/login", s.login)
-	mux.HandleFunc("POST /api/v1/auth/refresh", s.refresh)
-	mux.Handle("POST /api/v1/auth/logout", s.RequireSession(http.HandlerFunc(s.logout)))
-	mux.Handle("GET /api/v1/me", s.RequireSession(http.HandlerFunc(s.me)))
-	mux.Handle("POST /api/v1/me/password", s.RequireSession(http.HandlerFunc(s.changePassword)))
-	mux.Handle("GET /api/v1/me/devices", s.RequireSession(http.HandlerFunc(s.listDevices)))
-	mux.Handle("DELETE /api/v1/me/devices/{deviceID}", s.RequireSession(http.HandlerFunc(s.revokeDevice)))
-	mux.Handle("GET /api/v1/admin/users", s.requireAdmin(s.adminListUsers))
-	mux.Handle("POST /api/v1/admin/users", s.requireAdmin(s.adminCreateUser))
-	mux.Handle("GET /api/v1/admin/users/{userID}", s.requireAdmin(s.adminGetUser))
-	mux.Handle("PATCH /api/v1/admin/users/{userID}", s.requireAdmin(s.adminSetStatus))
-	mux.Handle("PATCH /api/v1/admin/users/{userID}/permissions", s.requireAdmin(s.adminSetPermissions))
+func (s *Server) authRoutes(rt *router) {
+	rt.handle("POST /api/v1/auth/login", s.login)
+	rt.handle("POST /api/v1/auth/refresh", s.refresh)
+	rt.handle("POST /api/v1/auth/logout", s.logout)
+	rt.handle("GET /api/v1/me", s.me)
+	rt.handle("POST /api/v1/me/password", s.changePassword)
+	rt.handle("GET /api/v1/me/devices", s.listDevices)
+	rt.handle("DELETE /api/v1/me/devices/{deviceID}", s.revokeDevice)
+	rt.handle("GET /api/v1/admin/users", s.adminListUsers)
+	rt.handle("POST /api/v1/admin/users", s.adminCreateUser)
+	rt.handle("GET /api/v1/admin/users/{userID}", s.adminGetUser)
+	rt.handle("PATCH /api/v1/admin/users/{userID}", s.adminSetStatus)
+	rt.handle("PATCH /api/v1/admin/users/{userID}/permissions", s.adminSetPermissions)
 }
 
 // decodeJSON reads a JSON object body. It requires Content-Type

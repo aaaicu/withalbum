@@ -69,7 +69,7 @@ func TestAdminCommandsEndToEnd(t *testing.T) {
 	t.Setenv("WITHALBUM_ROOT", root)
 	t.Setenv("WITHALBUM_VOLUME_ID", "")
 	// The server ran before: the locked bootstrap account owns a folder.
-	legacy := newFolder(t, root)
+	legacy := newBootstrapFolder(t, root)
 
 	const adminPW = "first admin password"
 	if r := runAdminPipe("bob password 123\n", "create-user", "-login", "bob"); r.code != 1 || !strings.Contains(r.stderr, "admin init") {

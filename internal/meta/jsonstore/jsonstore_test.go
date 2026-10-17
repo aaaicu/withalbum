@@ -10,7 +10,6 @@ import (
 
 	"github.com/aaaicu/withalbum/internal/meta"
 	"github.com/aaaicu/withalbum/internal/meta/jsonstore"
-	"github.com/aaaicu/withalbum/internal/meta/metatest"
 	"github.com/aaaicu/withalbum/internal/storage"
 )
 
@@ -34,10 +33,6 @@ func open(t *testing.T, vol *storage.Volume) *jsonstore.Store {
 		t.Fatal(err)
 	}
 	return s
-}
-
-func TestContract(t *testing.T) {
-	metatest.Run(t, func(t *testing.T) meta.MetadataStore { return open(t, newVolume(t)) })
 }
 
 func TestReopenPreservesState(t *testing.T) {
