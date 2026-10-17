@@ -14,6 +14,8 @@ PLIST_DIR="$HOME/Library/LaunchAgents"
 PLIST="$PLIST_DIR/org.withalbum.server.plist"
 LOG_DIR="$HOME/Library/Logs/WithAlbum"
 mkdir -p "$BIN_DIR" "$PLIST_DIR" "$LOG_DIR"
+# Logs can contain the one-time setup code: owner-only.
+chmod 700 "$LOG_DIR"
 install -m 0755 "$BINARY" "$BIN_DIR/withalbum-server"
 # Encode XML metacharacters in paths.
 xml_escape() { printf '%s' "$1" | sed -e 's/\&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g' -e "s/'/\\\&apos;/g"; }
