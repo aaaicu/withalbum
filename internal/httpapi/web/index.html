@@ -4,133 +4,476 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="robots" content="noindex, nofollow" />
+  <meta name="color-scheme" content="light dark" />
   <title>WithAlbum Server — 관리</title>
   <style>
-    :root { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color-scheme: light dark; }
-    * { box-sizing: border-box; }
-    body { margin: 0; background: #f6f8fb; color: #172234; }
-    main { max-width: 960px; margin: 0 auto; padding: 28px 16px 72px; }
-    .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
-    .mark { background: #1d4ed8; border-radius: 12px; display: grid; place-items: center; color: white; font-size: 22px; width: 44px; height: 44px; }
-    h1 { font-size: 27px; margin: 0; letter-spacing: -.6px; }
-    h3 { font-size: 15px; margin: 18px 0 8px; }
-    .sub { color: #58667b; margin: 4px 0 20px; }
-    .warning { background: #fff8e8; border: 1px solid #f7d68c; color: #875a00; padding: 14px 16px; border-radius: 12px; line-height: 1.6; margin-bottom: 20px; }
-    .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
-    section { background: white; border: 1px solid #e1e7f0; padding: 20px; border-radius: 14px; margin-top: 14px; }
-    .cards section { margin-top: 0; }
-    section h2 { font-size: 15px; color: #657387; margin: 0 0 12px; font-weight: 600; }
-    .value { font-size: 22px; font-weight: 750; }
-    .field { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; align-items: center; }
-    input, select { min-width: 0; border-radius: 8px; border: 1px solid #ccd5e3; padding: 9px 11px; background: white; color: #172234; font: inherit; }
-    input[type="text"], input[type="password"] { flex: 1 1 160px; }
-    input[type="checkbox"] { padding: 0; }
-    button { background: #1d4ed8; color: white; padding: 9px 14px; border: 0; border-radius: 8px; cursor: pointer; font-weight: 650; font: inherit; }
-    button:disabled { opacity: .5; cursor: not-allowed; }
-    .ghost { background: transparent; color: inherit; border: 1px solid #ccd5e3; }
-    .danger { background: #b42318; }
-    .small { padding: 5px 10px; font-size: 13px; }
-    ul { padding-left: 18px; line-height: 1.8; margin: 8px 0; }
-    .muted, small { color: #6f7c90; }
-    .status { margin: 12px 0 0; min-height: 1.4rem; }
-    .error { color: #b42318; }
-    .bar { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
-    nav { display: flex; gap: 6px; flex-wrap: wrap; margin: 16px 0 0; }
-    nav button { background: transparent; color: inherit; border: 1px solid #ccd5e3; }
-    nav button.active { background: #1d4ed8; color: white; border-color: #1d4ed8; }
-    table { width: 100%; border-collapse: collapse; font-size: 14px; }
-    th, td { text-align: left; padding: 7px 6px; border-bottom: 1px solid #e1e7f0; vertical-align: middle; }
-    th { color: #657387; font-weight: 600; }
-    .scroll { overflow-x: auto; }
-    details { border: 1px solid #e1e7f0; border-radius: 10px; padding: 10px 12px; margin: 8px 0; }
-    summary { cursor: pointer; font-weight: 650; }
-    .panel { border-top: 1px dashed #ccd5e3; margin-top: 12px; padding-top: 4px; }
-    [hidden] { display: none !important; }
-    code { font-size: 13px; background: #edf1f7; border-radius: 5px; padding: 2px 6px; word-break: break-all; }
-    @media (max-width: 680px) { .cards { grid-template-columns: 1fr; } h1 { font-size: 23px; } }
-    @media (prefers-color-scheme: dark) {
-      body { background: #0f1725; color: #e8edf5; }
-      .sub, .muted, section h2, small, th { color: #9daec5; }
-      section, details { background: #192438; border-color: #31435d; }
-      th, td { border-color: #31435d; }
-      .warning { background: #3c3219; color: #ffe6ab; border-color: #a4781e; }
-      input, select { background: #101b2e; color: #e8edf5; border-color: #3c506a; }
-      code { background: #2c3a50; }
-      .error { color: #ff8a80; }
+    /* Colors, type, spacing and radii derived from SEED Design tokens
+       (github.com/daangn/seed-design, Apache-2.0) with the WithAlbum
+       "keep green" brand. See docs/OPEN_SOURCE_DECISIONS.md. */
+    :root {
+      color-scheme: light dark;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Segoe UI", Roboto, "Noto Sans KR", "Noto Sans", sans-serif;
+      --bg-basement: #f3f4f5; --bg-layer: #fff; --bg-layer-pressed: #f7f8f9;
+      --bg-neutral-weak: #f3f4f5; --bg-neutral-weak-pressed: #eeeff1; --bg-neutral-muted: #f7f8f9;
+      --bg-neutral-solid: #2a3038; --bg-neutral-solid-pressed: #555d6d; --fg-on-neutral-solid: #fff;
+      --bg-brand-solid: #00745f; --bg-brand-solid-pressed: #075445; --bg-brand-weak: #edfaf6;
+      --fg-brand: #00745f; --fg-brand-contrast: #075445; --fg-on-brand-solid: #fff; --stroke-brand-weak: #b9e9d2;
+      --bg-critical-weak: #fdf0f0; --bg-critical-weak-pressed: #fde7e7; --fg-critical: #fa342c; --fg-critical-contrast: #921708;
+      --bg-warning-weak: #fff7de; --fg-warning: #9b7821; --fg-warning-contrast: #4f3e1f;
+      --bg-informative-weak: #eff6ff; --fg-informative: #217cf9; --fg-informative-contrast: #0b4596;
+      --fg-positive: #079171;
+      --fg-neutral: #1a1c20; --fg-neutral-muted: #555d6d; --fg-neutral-subtle: #868b94; --fg-placeholder: #868b94;
+      --stroke-neutral-weak: #dcdee3; --stroke-neutral-muted: #00000010; --stroke-focus-ring: #5e98fe;
+      --x1: 4px; --x1_5: 6px; --x2: 8px; --x2_5: 10px; --x3: 12px; --x3_5: 14px; --x4: 16px; --x5: 20px; --x6: 24px; --x10: 40px;
+      --r1_5: 6px; --r2: 8px; --r2_5: 10px; --r3: 12px; --r4: 16px; --r-full: 9999px;
+      --shadow-s2: 0 2px 10px 0 #0000001a;
+      --touch: 44px;
     }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg-basement: #000; --bg-layer: #16171b; --bg-layer-pressed: #2b2e35;
+        --bg-neutral-weak: #2b2e35; --bg-neutral-weak-pressed: #393d46; --bg-neutral-muted: #1d2025;
+        --bg-neutral-solid: #f3f4f5; --bg-neutral-solid-pressed: #dcdee3; --fg-on-neutral-solid: #16171b;
+        --bg-brand-solid: #117956; --bg-brand-solid-pressed: #1b946d; --bg-brand-weak: #202926;
+        --fg-brand: #22b27f; --fg-brand-contrast: #93e5c0; --stroke-brand-weak: #20493b;
+        --bg-critical-weak: #322323; --bg-critical-weak-pressed: #4f2624; --fg-critical: #ff6e60; --fg-critical-contrast: #f8c5c3;
+        --bg-warning-weak: #302819; --fg-warning: #ca901c; --fg-warning-contrast: #e5d49b;
+        --bg-informative-weak: #202742; --fg-informative: #41a2f9; --fg-informative-contrast: #b9d7fb;
+        --fg-positive: #22b27f;
+        --fg-neutral: #f3f4f5; --fg-neutral-muted: #dcdee3; --fg-neutral-subtle: #b0b3ba; --fg-placeholder: #868b94;
+        --stroke-neutral-weak: #393d46; --stroke-neutral-muted: #ffffff17; --stroke-focus-ring: #1e82eb;
+        --shadow-s2: 0 2px 10px 0 #000000ad;
+      }
+    }
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+    html, body { margin: 0; }
+    body { min-height: 100vh; background: var(--bg-basement); color: var(--fg-neutral); font-family: var(--font-sans); font-size: 16px; line-height: 22px; font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased; }
+    a { color: var(--fg-neutral); }
+    a:hover { color: var(--fg-brand); }
+    :focus-visible { outline: 2px solid var(--stroke-focus-ring); outline-offset: 2px; }
+    h1, h2, h3, p { margin: 0; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; background: var(--bg-neutral-weak); border-radius: var(--r1_5); padding: 2px 6px; word-break: break-all; }
+    ul, ol { margin: 0; padding: 0; list-style: none; }
+
+    /* type scale (SEED t2–t10) */
+    .t-title { font-size: 26px; line-height: 35px; font-weight: 700; }
+    .t-h2 { font-size: 18px; line-height: 24px; font-weight: 700; }
+    .t-h3 { font-size: 16px; line-height: 22px; font-weight: 700; margin: var(--x2) 0 0; }
+    .t-value { font-size: 20px; line-height: 27px; font-weight: 700; }
+    .note { font-size: 14px; line-height: 19px; color: var(--fg-neutral-muted); }
+    .caption { font-size: 13px; line-height: 18px; color: var(--fg-neutral-muted); }
+    .error { color: var(--fg-critical-contrast); }
+
+    /* icons: inline SVG, colored through currentColor */
+    .ico { width: 22px; height: 22px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+    .ico .fill { fill: currentColor; stroke: none; }
+    .i12 { width: 12px; height: 12px; stroke-width: 2.4; }
+    .i14 { width: 14px; height: 14px; stroke-width: 2.2; }
+    .i16 { width: 16px; height: 16px; stroke-width: 2; }
+    .i20 { width: 20px; height: 20px; stroke-width: 2; }
+    .i24 { width: 24px; height: 24px; stroke-width: 2; }
+    /* the shield with a check marks only originals the server verified and keeps */
+    .kept { color: var(--fg-positive); }
+
+    /* top bar */
+    .topbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--x4); min-height: 56px; padding: var(--x2) var(--x5); background: var(--bg-layer); border-bottom: 1px solid var(--stroke-neutral-weak); }
+    .brand { display: flex; align-items: center; gap: var(--x2); font-size: 18px; line-height: 24px; font-weight: 700; }
+    .mark { width: 26px; height: 26px; border-radius: var(--r2); background: var(--bg-brand-solid); color: var(--fg-on-brand-solid); display: grid; place-items: center; flex: none; }
+    .mark .ico { width: 15px; height: 15px; stroke-width: 2.4; }
+    .mark.big { width: 44px; height: 44px; border-radius: var(--r3); }
+    .mark.big .ico { width: 24px; height: 24px; }
+    .top-right { margin-left: auto; display: flex; align-items: center; gap: var(--x2); }
+    .user { display: inline-flex; align-items: center; gap: var(--x2); min-height: var(--touch); padding: 0 var(--x2_5) 0 var(--x1); border-radius: var(--r2); text-decoration: none; font-size: 14px; line-height: 19px; font-weight: 500; }
+    .user:hover { background: var(--bg-neutral-weak); color: var(--fg-neutral); }
+    .avatar { width: 32px; height: 32px; border-radius: 16px; background: var(--bg-neutral-weak); display: grid; place-items: center; font-weight: 700; font-size: 13px; flex: none; }
+    .user small { color: var(--fg-neutral-muted); font-size: 12px; }
+
+    /* chips (status labels, not buttons) */
+    .chip { display: inline-flex; align-items: center; gap: var(--x1); min-height: 24px; padding: var(--x1) var(--x2); border-radius: var(--r1_5); background: var(--bg-neutral-weak); color: var(--fg-neutral); font-size: 12px; line-height: 16px; font-weight: 500; }
+    .chip-critical { background: var(--bg-critical-weak); color: var(--fg-critical-contrast); }
+    .chip-warn { background: var(--bg-warning-weak); color: var(--fg-warning-contrast); }
+    .chip .ico.warnmark { color: var(--fg-warning); }
+    .chip-critical .ico.warnmark { color: var(--fg-critical); }
+    .count { margin-left: auto; min-width: 20px; height: 20px; padding: 0 7px; border-radius: 10px; background: var(--bg-brand-solid); color: var(--fg-on-brand-solid); font-size: 12px; line-height: 20px; font-weight: 700; text-align: center; }
+    .dot-alert { margin-left: auto; width: 8px; height: 8px; border-radius: 4px; background: var(--fg-critical); flex: none; }
+
+    /* layout: side menu + content */
+    .layout { display: flex; min-height: calc(100vh - 56px); }
+    .sidenav { flex: 0 0 240px; padding: var(--x4) var(--x3); background: var(--bg-layer); border-right: 1px solid var(--stroke-neutral-weak); display: flex; flex-direction: column; gap: 2px; }
+    .nav-group { padding: var(--x2) var(--x3) var(--x1_5); font-size: 13px; line-height: 18px; font-weight: 700; color: var(--fg-neutral-muted); }
+    .sidenav a { display: flex; align-items: center; gap: var(--x2_5); min-height: var(--touch); padding: var(--x2_5) var(--x3); border-radius: var(--r2_5); color: var(--fg-neutral-muted); text-decoration: none; font-size: 16px; line-height: 22px; }
+    .sidenav a:hover { background: var(--bg-layer-pressed); color: var(--fg-neutral); }
+    .sidenav a[aria-current="page"] { background: var(--bg-neutral-weak); color: var(--fg-neutral); font-weight: 700; }
+    .nav-foot { margin-top: auto; padding: var(--x3); border-radius: var(--r2_5); background: var(--bg-neutral-muted); font-size: 13px; line-height: 18px; color: var(--fg-neutral-muted); }
+    .nav-foot strong { color: var(--fg-neutral); }
+    .content { flex: 1 1 auto; min-width: 0; padding: var(--x6) var(--x6) var(--x10); display: flex; flex-direction: column; gap: var(--x3); }
+    .pane { display: flex; flex-direction: column; gap: var(--x3); }
+    .page-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: var(--x4); padding: var(--x2) var(--x1) var(--x3); }
+    .page-head > div:first-child { display: flex; flex-direction: column; gap: var(--x1_5); }
+    .page-head h1:focus { outline: none; }
+    .actions { display: flex; flex-wrap: wrap; gap: var(--x2); }
+
+    /* cards and grids */
+    .card { background: var(--bg-layer); border-radius: var(--r4); padding: var(--x5); display: flex; flex-direction: column; gap: var(--x3); min-width: 0; }
+    .card-head { display: flex; justify-content: space-between; align-items: center; gap: var(--x3); }
+    .more { display: inline-flex; align-items: center; gap: 2px; min-height: var(--touch); font-size: 14px; line-height: 19px; color: var(--fg-neutral-muted); text-decoration: none; }
+    .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); gap: var(--x3); }
+    .stat { gap: var(--x1_5); }
+    .stat-label { display: flex; align-items: center; gap: var(--x1_5); font-size: 13px; line-height: 18px; color: var(--fg-neutral-muted); }
+    .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr)); gap: var(--x3); align-items: start; }
+    .notices { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr)); gap: var(--x3); }
+    .notice { background: var(--bg-layer); border-radius: var(--r4); padding: var(--x4) var(--x5); display: flex; gap: var(--x3); align-items: flex-start; }
+    .notice > div { display: flex; flex-direction: column; gap: 2px; }
+    .notice strong { font-size: 14px; line-height: 19px; }
+    .notice .ico { margin-top: 1px; color: var(--fg-neutral-muted); }
+    .notice.warn { background: var(--bg-warning-weak); color: var(--fg-warning-contrast); }
+    .notice.warn .ico { color: var(--fg-warning); }
+    .notice.warn .caption { color: var(--fg-warning-contrast); }
+    .notice.info { background: var(--bg-informative-weak); color: var(--fg-informative-contrast); border-radius: var(--r3); padding: var(--x3_5) var(--x4); }
+    .notice.info .ico { color: var(--fg-informative); }
+    .meta-line { display: flex; align-items: center; gap: var(--x2); font-size: 13px; line-height: 18px; color: var(--fg-neutral-muted); }
+
+    /* list rows (invitations, checks, albums) */
+    .rows { display: flex; flex-direction: column; margin: 0 calc(-1 * var(--x5)); }
+    .row { display: flex; align-items: center; gap: var(--x3); padding: var(--x3) var(--x5); }
+    .row-icon { width: 40px; height: 40px; border-radius: 20px; background: var(--bg-neutral-weak); color: var(--fg-neutral-muted); display: grid; place-items: center; flex: none; }
+    .row-icon.small { width: 28px; height: 28px; border-radius: 14px; }
+    .row-icon.bad { background: var(--bg-critical-weak); color: var(--fg-critical); }
+    .row-icon.kept { color: var(--fg-positive); }
+    .row-text { flex: 1; min-width: 0; }
+    .row-title, .row-meta { display: block; }
+    .row-title { font-size: 16px; line-height: 22px; overflow-wrap: anywhere; }
+    .row-meta { font-size: 13px; line-height: 18px; color: var(--fg-neutral-muted); overflow-wrap: anywhere; }
+    .empty { padding: var(--x3) 0; }
+
+    /* buttons: neutral solid is the CTA, brand solid only for inviting people */
+    .btn { display: inline-flex; align-items: center; justify-content: center; gap: var(--x1_5); min-height: var(--touch); padding: 0 var(--x4); border: 0; border-radius: var(--r2); font: inherit; font-size: 14px; line-height: 19px; font-weight: 700; text-decoration: none; cursor: pointer; white-space: nowrap; }
+    .btn:disabled { opacity: .5; cursor: not-allowed; }
+    .btn-solid { background: var(--bg-neutral-solid); color: var(--fg-on-neutral-solid); }
+    .btn-solid:hover:not(:disabled) { background: var(--bg-neutral-solid-pressed); color: var(--fg-on-neutral-solid); }
+    .btn-brand { background: var(--bg-brand-solid); color: var(--fg-on-brand-solid); }
+    .btn-brand:hover:not(:disabled) { background: var(--bg-brand-solid-pressed); color: var(--fg-on-brand-solid); }
+    .btn-weak { background: var(--bg-neutral-weak); color: var(--fg-neutral); }
+    .btn-weak:hover:not(:disabled) { background: var(--bg-neutral-weak-pressed); color: var(--fg-neutral); }
+    .btn-outline { background: var(--bg-layer); color: var(--fg-neutral); box-shadow: inset 0 0 0 1px var(--stroke-neutral-weak); }
+    .btn-outline:hover { background: var(--bg-layer-pressed); color: var(--fg-neutral); }
+    .btn-danger { background: var(--bg-critical-weak); color: var(--fg-critical-contrast); }
+    .btn-danger:hover:not(:disabled) { background: var(--bg-critical-weak-pressed); color: var(--fg-critical-contrast); }
+    .btn-pill { border-radius: var(--r-full); padding: 0 var(--x3_5); font-size: 13px; }
+    .btn-lg { min-height: 52px; padding: 0 var(--x6); border-radius: var(--r3); font-size: 18px; line-height: 24px; }
+
+    /* forms: every input has a visible label */
+    .form-row { display: flex; flex-wrap: wrap; gap: var(--x2); align-items: flex-end; }
+    .fl { display: flex; flex-direction: column; gap: var(--x1); flex: 1 1 180px; min-width: 0; font-size: 13px; line-height: 18px; font-weight: 700; color: var(--fg-neutral-muted); }
+    .fl.narrow { flex: 0 1 180px; }
+    input, select { min-width: 0; min-height: var(--touch); border-radius: var(--r2); border: 1px solid var(--stroke-neutral-weak); padding: 0 var(--x3); background: var(--bg-layer); color: var(--fg-neutral); font: inherit; font-size: 16px; }
+    input::placeholder { color: var(--fg-placeholder); }
+    input[type="file"] { padding: var(--x2_5) var(--x3); }
+    input[type="checkbox"] { min-height: 0; width: 20px; height: 20px; padding: 0; accent-color: var(--bg-brand-solid); }
+    .check { display: inline-flex; align-items: center; gap: var(--x2); min-height: var(--touch); font-size: 14px; }
+    .feedback { min-height: 22px; font-size: 14px; line-height: 19px; display: flex; align-items: center; gap: var(--x1_5); flex-wrap: wrap; }
+    .feedback:empty { display: none; }
+
+    /* tables */
+    .scroll { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; line-height: 19px; }
+    th, td { text-align: left; padding: var(--x2) var(--x1_5); border-bottom: 1px solid var(--stroke-neutral-weak); vertical-align: middle; }
+    th { color: var(--fg-neutral-muted); font-weight: 700; font-size: 13px; }
+    td .btn { min-height: var(--touch); padding: 0 var(--x3); font-size: 13px; }
+
+    /* albums */
+    details.album { border-radius: var(--r3); }
+    details.album > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: var(--x3); min-height: 64px; padding: var(--x2_5) var(--x5); }
+    details.album > summary::-webkit-details-marker { display: none; }
+    details.album > summary:hover { background: var(--bg-layer-pressed); }
+    details.album[open] > summary { background: var(--bg-neutral-muted); }
+    .thumb { width: 44px; height: 44px; border-radius: var(--r2_5); background: var(--bg-neutral-weak); color: var(--fg-neutral-muted); display: grid; place-items: center; flex: none; }
+    .chev { color: var(--fg-neutral-muted); transition: transform 150ms; }
+    details[open] > summary .chev { transform: rotate(90deg); }
+    .album-body { padding: var(--x2) var(--x5) var(--x5); display: flex; flex-direction: column; gap: var(--x3); border-bottom: 1px solid var(--stroke-neutral-weak); }
+    .panel { border-top: 1px solid var(--stroke-neutral-weak); padding-top: var(--x4); display: flex; flex-direction: column; gap: var(--x3); }
+
+    /* status block (W-States): what happened, is stored data safe, can it be retried, next action */
+    .state { gap: var(--x3); }
+    .state-head { display: flex; align-items: center; justify-content: space-between; }
+    .state-icon { width: 44px; height: 44px; border-radius: 22px; background: var(--bg-neutral-weak); color: var(--fg-neutral-muted); display: grid; place-items: center; }
+    .state-warn .state-icon { background: var(--bg-warning-weak); color: var(--fg-warning); }
+    .state-critical .state-icon { background: var(--bg-critical-weak); color: var(--fg-critical); }
+    .state-code { font-size: 12px; line-height: 16px; color: var(--fg-neutral-muted); }
+    .state-text { display: flex; flex-direction: column; gap: var(--x1_5); }
+    .state .chip { align-self: flex-start; }
+    .state-actions { display: flex; flex-wrap: wrap; gap: var(--x1_5); }
+    .state-actions .btn { flex: 1 1 140px; }
+
+    /* storage stopped alert (D-03) */
+    .alert { background: var(--bg-critical-weak); color: var(--fg-critical-contrast); border-radius: var(--r4); padding: var(--x6); display: flex; flex-wrap: wrap; gap: var(--x5); align-items: flex-start; }
+    .alert-icon { width: 48px; height: 48px; border-radius: 24px; background: var(--bg-layer); color: var(--fg-critical); display: grid; place-items: center; flex: none; }
+    .alert-text { flex: 1 1 360px; display: flex; flex-direction: column; gap: var(--x2); }
+    .alert-text h2 { font-size: 20px; line-height: 27px; }
+    .alert-text p { font-size: 16px; line-height: 24px; color: var(--fg-neutral); }
+    .alert-list { margin-top: var(--x1); display: flex; flex-direction: column; gap: var(--x1_5); font-size: 14px; line-height: 19px; color: var(--fg-neutral); }
+    .alert-list li { display: flex; gap: var(--x2); align-items: center; }
+    .alert-list .ico { color: var(--fg-neutral-muted); }
+    .alert-list .ico.kept { color: var(--fg-positive); }
+    .alert-actions { display: flex; flex-direction: column; gap: var(--x2); flex: 0 0 auto; }
+    .steps { display: flex; flex-direction: column; gap: var(--x3); font-size: 14px; line-height: 19px; }
+    .steps li { display: flex; gap: var(--x2_5); }
+    .num { width: 22px; height: 22px; border-radius: 11px; background: var(--bg-neutral-solid); color: var(--fg-on-neutral-solid); display: grid; place-items: center; flex: none; font-size: 11px; font-weight: 700; }
+    .cmd { display: flex; flex-direction: column; gap: var(--x1); }
+
+    /* sign in */
+    .login-wrap { display: grid; place-items: start center; padding: var(--x10) var(--x4); }
+    .login { width: 100%; max-width: 440px; gap: var(--x4); }
+    .login .brand { font-size: 22px; line-height: 30px; gap: var(--x3); }
+
+    @media (max-width: 760px) {
+      .layout { flex-direction: column; }
+      .sidenav { flex: none; flex-direction: row; overflow-x: auto; padding: var(--x2); border-right: 0; border-bottom: 1px solid var(--stroke-neutral-weak); }
+      .sidenav a { flex: none; white-space: nowrap; }
+      .nav-group, .nav-foot { display: none; }
+      .content { padding: var(--x4) var(--x4) var(--x10); }
+      .topbar { padding: var(--x2) var(--x4); }
+      .user .who-text { display: none; }
+      .alert { padding: var(--x5); }
+      .alert-actions { flex: 1 1 100%; }
+    }
+    @media (prefers-reduced-motion: reduce) { .chev { transition: none; } }
   </style>
 </head>
 <body>
-  <main>
-    <div class="brand"><span class="mark" aria-hidden="true">▧</span><div><h1>WithAlbum Server</h1><div class="sub">내 컴퓨터에서 직접 운영하는 사진 서버 · 관리 화면</div></div></div>
-    <div class="warning"><strong>개발 중 · 실험용</strong><div>로그인·앨범 권한·백업이 동작합니다. 같은 집 LAN 공개는 TLS(자체 서명 인증서 + 지문 확인)일 때만 가능하며, 인터넷에 공개하거나 중요한 사진의 유일한 보관 장소로 사용하지 마세요. 이 관리 화면은 서버 컴퓨터에서(localhost) 여는 것을 권장합니다.</div></div>
+  <!-- Icon sources, cloned by the script (never parsed from strings). -->
+  <div id="icons" hidden>
+    <svg data-i="photo" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="10" r="1.8"/><path d="M21 16l-5-5-9 8"/></svg>
+    <svg data-i="shield-check" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"/><path d="M9 12l2 2 4-4"/></svg>
+    <svg data-i="warn" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg>
+    <svg data-i="lock" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/></svg>
+    <svg data-i="dot" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle class="fill" cx="12" cy="12" r="5"/></svg>
+    <svg data-i="minus" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M7 12h10"/></svg>
+    <svg data-i="person" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.5 3.4-5.5 6.5-5.5s5.7 2 6.5 5.5"/></svg>
+    <svg data-i="mail" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/></svg>
+    <svg data-i="chevron" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 6l6 6-6 6"/></svg>
+    <svg data-i="device" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/></svg>
+    <svg data-i="refresh" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20 11a8 8 0 00-14.9-3M4 13a8 8 0 0014.9 3"/><path d="M4 4v4h4M20 20v-4h-4"/></svg>
+    <svg data-i="info" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v5h1"/></svg>
+    <svg data-i="offline" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M2 8.5a15 15 0 0120 0M5 12a10 10 0 0114 0M8.5 15.5a5 5 0 017 0"/><path d="M12 19h.01M3 3l18 18"/></svg>
+  </div>
 
-    <section id="loginBox" hidden><h2>로그인 (Sign in)</h2><div class="muted">서버 콘솔에서 만든 계정으로 로그인하세요 (<code>withalbum-server admin init</code> / <code>admin create-user</code>).</div>
-      <form id="login" class="field"><input id="loginName" type="text" autocomplete="username" placeholder="아이디" required><input id="password" type="password" autocomplete="current-password" placeholder="비밀번호" required><button>로그인</button></form>
-      <div class="status" id="loginFeedback" role="status" aria-live="polite"></div>
+  <header class="topbar">
+    <div class="brand"><span class="mark"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M21 16l-5-5-8 8"/></svg></span>WithAlbum</div>
+    <span id="statusChip" class="chip" role="status" hidden></span>
+    <div class="top-right">
+      <a id="meLink" class="user" href="#devices" hidden><span class="avatar" id="avatar" aria-hidden="true"></span><span class="who-text"><span id="who">-</span> <small id="whoRole"></small></span></a>
+      <button id="logout" class="btn btn-weak" type="button" hidden>로그아웃</button>
+    </div>
+  </header>
+
+  <div id="loginBox" class="login-wrap" hidden>
+    <section class="card login" aria-labelledby="loginTitle">
+      <div class="brand"><span class="mark big"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M21 16l-5-5-8 8"/></svg></span><h1 id="loginTitle" class="t-title">WithAlbum 관리</h1></div>
+      <p class="note">내 컴퓨터에서 직접 운영하는 사진 서버입니다. 서버 콘솔에서 만든 계정으로 로그인하세요 (<code>withalbum-server admin init</code> / <code>admin create-user</code>).</p>
+      <div id="loginState"></div>
+      <form id="login" class="pane">
+        <label class="fl"><span>아이디</span><input id="loginName" type="text" autocomplete="username" required></label>
+        <label class="fl"><span>비밀번호</span><input id="password" type="password" autocomplete="current-password" required></label>
+        <button class="btn btn-solid btn-lg">로그인</button>
+      </form>
+      <div class="feedback" id="loginFeedback" role="status" aria-live="polite"></div>
+      <div class="notice warn"><svg class="ico i20" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg><div><strong>개발 중 · 실험용</strong><span class="caption">로그인·앨범 권한·백업이 동작합니다. 같은 집 LAN 공개는 TLS(자체 서명 인증서 + 지문 확인)일 때만 가능하며, 인터넷에 공개하거나 중요한 사진의 유일한 보관 장소로 사용하지 마세요. 이 관리 화면은 서버 컴퓨터에서(localhost) 여는 것을 권장합니다.</span></div></div>
     </section>
+  </div>
 
-    <div id="app" hidden>
-      <div class="bar"><div class="muted">로그인: <strong id="who">-</strong> <small id="whoRole"></small></div><button id="logout" class="ghost" type="button">로그아웃</button></div>
-      <nav id="tabs" aria-label="메뉴">
-        <button type="button" data-tab="overview" class="active">개요</button>
-        <button type="button" data-tab="albums">내 앨범</button>
-        <button type="button" data-tab="account">내 계정·기기</button>
-        <button type="button" data-tab="users" data-admin="1" hidden>사용자 관리</button>
-        <button type="button" data-tab="server" data-admin="1" hidden>서버·저장소</button>
-      </nav>
-      <div class="status" id="feedback" role="status" aria-live="polite"></div>
+  <div id="app" class="layout" hidden>
+    <nav id="tabs" class="sidenav" aria-label="관리 메뉴">
+      <div class="nav-group">내 위드앨범</div>
+      <a href="#overview" data-tab="overview"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>개요</a>
+      <a href="#albums" data-tab="albums"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="10" r="1.8"/><path d="M21 16l-5-5-9 8"/></svg>내 앨범<span id="navInvites" class="count" hidden></span></a>
+      <a href="#devices" data-tab="devices"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/></svg>기기</a>
+      <div class="nav-group" data-admin="1" hidden>서버 관리</div>
+      <a href="#storage" data-tab="storage" data-admin="1" hidden><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/></svg>저장장치<span id="navStorageDot" class="dot-alert" role="img" aria-label="오류" hidden></span></a>
+      <a href="#users" data-tab="users" data-admin="1" hidden><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.5 3.4-5.5 6.5-5.5s5.7 2 6.5 5.5"/></svg>사용자</a>
+      <a href="#backup" data-tab="backup" data-admin="1" hidden><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 12a9 9 0 109-9 9.7 9.7 0 00-6.7 2.8L3 8"/><path d="M3 3v5h5"/></svg>백업·복구</a>
+      <a href="#server" data-tab="server" data-admin="1" hidden><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>서버 설정</a>
+      <div class="nav-foot">v<span id="version">-</span> · <strong>개발자용 설치</strong><br>실험용입니다. 인터넷에 공개하거나 사진의 유일한 보관 장소로 쓰지 마세요.</div>
+    </nav>
 
-      <div id="tab-overview" data-pane="1">
-        <div class="cards">
-          <section><h2>서버 상태</h2><div class="value" id="health">확인 중</div></section>
-          <section><h2>서버 버전</h2><div class="value" id="version">-</div></section>
-          <section><h2>내 앨범</h2><div class="value" id="count">-</div></section>
+    <main class="content">
+      <div id="banner"></div>
+      <div class="feedback" id="feedback" role="status" aria-live="polite"></div>
+
+      <!-- D-02 overview -->
+      <div id="tab-overview" class="pane" data-pane="1">
+        <div class="page-head">
+          <div><h1 class="t-title" tabindex="-1">서버 개요</h1><p class="note" id="ovSub">원본 저장 상태를 가장 먼저 확인합니다</p></div>
+          <div class="actions">
+            <a class="btn btn-outline" href="#storage" data-admin="1" hidden>저장장치 확인</a>
+            <a class="btn btn-outline" href="#users" id="ovAddUser" data-admin="1" hidden>사용자 추가</a>
+            <a class="btn btn-solid" href="#albums" id="ovNewAlbum" hidden>새 앨범</a>
+          </div>
         </div>
-        <section><h2>받은 초대 (Invitations)</h2><div class="muted">나에게 온 앨범 초대입니다. 수락하면 해당 역할로 앨범에 참여합니다.</div><ul id="myInvites"></ul></section>
+        <div id="ovState"></div>
+        <div class="stats">
+          <div class="card stat"><div class="stat-label">서버 실행 상태</div><div class="t-value" id="health">확인 중</div><div class="caption" id="healthDetail"></div></div>
+          <div class="card stat"><div class="stat-label">저장장치</div><div class="t-value" id="storageValue">-</div><div class="caption" id="storageDetail"></div></div>
+          <div class="card stat" id="freeCard" hidden><div class="stat-label">여유 공간</div><div class="t-value" id="freeValue">-</div><div class="caption" id="freeDetail"></div></div>
+          <div class="card stat"><div class="stat-label">내 앨범</div><div class="t-value" id="count">-</div><div class="caption" id="countDetail"></div></div>
+        </div>
+        <div class="grid2">
+          <section class="card" id="ovStorage" data-admin="1" hidden>
+            <div class="card-head"><h2 class="t-h2">저장장치 상태</h2><a class="more" href="#storage">자세히<svg class="ico i14" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 6l6 6-6 6"/></svg></a></div>
+            <ul class="rows" id="ovStorageList"></ul>
+            <p class="caption">업로드는 서버가 받은 바이트의 SHA-256을 기록하고, 쓰기 직전마다 디스크 표식을 다시 확인합니다. 원본 전체 해시 검사는 서버 콘솔의 <code>verify -hash</code>로 실행합니다.</p>
+          </section>
+          <section class="card">
+            <div class="card-head"><h2 class="t-h2">받은 초대</h2></div>
+            <p class="note">나에게 온 앨범 초대입니다. 수락하면 해당 역할로 앨범에 참여합니다.</p>
+            <ul class="rows" id="myInvites"></ul>
+          </section>
+        </div>
+        <div class="notices">
+          <div class="notice warn" data-admin="1" hidden><svg class="ico i20" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg><div><strong>백업 · 서버 콘솔에서 실행</strong><span class="caption">이 화면은 백업 여부를 알 수 없어요. 다른 디스크로 <code>withalbum-server backup -to</code>를 정기적으로 실행하세요.</span></div></div>
+          <div class="notice" data-admin="1" hidden><svg class="ico i20" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"/></svg><div><strong>접속 범위</strong><span class="caption" id="ovAccess">확인 중</span></div></div>
+          <div class="notice"><svg class="ico i20" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/></svg><div><strong>개인 앨범은 보이지 않아요</strong><span class="caption">관리자도 초대받지 않은 앨범의 사진은 볼 수 없어요.</span></div></div>
+        </div>
       </div>
 
-      <div id="tab-albums" data-pane="1" hidden>
-        <section><h2>앨범 (Albums)</h2><div class="muted">내가 소유하거나 초대된 앨범만 보입니다. 소유자(OWNER)인 앨범에서는 멤버·초대·소유권 이전·보관을 관리할 수 있습니다.</div>
-          <form id="create" class="field" hidden><input id="folderName" type="text" maxlength="80" placeholder="새 앨범 이름 (예: 가족여행)" required><button>앨범 만들기</button></form>
-          <div id="folders"></div>
+      <!-- albums (D-05/06 layout pending; same system) -->
+      <div id="tab-albums" class="pane" data-pane="1" hidden>
+        <div class="page-head"><div><h1 class="t-title" tabindex="-1">내 앨범</h1><p class="note">내가 소유하거나 초대된 앨범만 보여요. 소유자(OWNER)인 앨범에서는 멤버·초대·소유권 이전·보관을 관리할 수 있어요.</p></div></div>
+        <section class="card" id="createCard" hidden>
+          <h2 class="t-h2">새 앨범</h2>
+          <form id="create" class="form-row"><label class="fl"><span>앨범 이름</span><input id="folderName" type="text" maxlength="80" placeholder="예: 가족여행" required></label><button class="btn btn-solid">앨범 만들기</button></form>
         </section>
-        <section><h2>파일 업로드 테스트</h2><div class="field"><select id="folderSelect" aria-label="대상 앨범"><option value="">앨범 선택</option></select><input id="file" type="file" accept="image/*,video/*" aria-label="파일 선택"><button id="upload" type="button">업로드</button></div><div class="status" id="uploadFeedback" role="status" aria-live="polite"></div></section>
+        <div class="notice" id="noCreate" hidden><svg class="ico i20" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/></svg><div><strong>앨범을 만들 권한이 없어요</strong><span class="caption">참여 중인 앨범은 그대로 쓸 수 있어요. 새 앨범이 필요하면 서버 관리자에게 앨범 생성 권한을 요청하세요.</span></div></div>
+        <section class="card">
+          <h2 class="t-h2">앨범</h2>
+          <div class="rows" id="folders"></div>
+        </section>
+        <section class="card">
+          <h2 class="t-h2">파일 보내기 테스트</h2>
+          <p class="note">브라우저가 먼저 SHA-256을 계산해 함께 보내고, 서버가 받은 바이트와 같을 때만 "원본 보관됨"으로 표시해요.</p>
+          <div class="form-row">
+            <label class="fl narrow"><span>대상 앨범</span><select id="folderSelect"><option value="">앨범 선택</option></select></label>
+            <label class="fl"><span>파일</span><input id="file" type="file" accept="image/*,video/*"></label>
+            <button id="upload" class="btn btn-solid" type="button">보내기</button>
+          </div>
+          <div class="feedback" id="uploadFeedback" role="status" aria-live="polite"></div>
+        </section>
       </div>
 
-      <div id="tab-account" data-pane="1" hidden>
-        <section><h2>비밀번호 변경</h2><div class="muted">변경하면 이 브라우저를 제외한 모든 기기가 로그아웃됩니다.</div>
-          <form id="pwForm" class="field"><input id="pwCurrent" type="password" autocomplete="current-password" placeholder="현재 비밀번호" required><input id="pwNew" type="password" autocomplete="new-password" placeholder="새 비밀번호" required><button>변경</button></form>
+      <!-- devices and own account -->
+      <div id="tab-devices" class="pane" data-pane="1" hidden>
+        <div class="page-head"><div><h1 class="t-title" tabindex="-1">기기 · 내 계정</h1><p class="note">로그인된 기기와 비밀번호를 관리해요.</p></div></div>
+        <section class="card">
+          <h2 class="t-h2">내 기기</h2>
+          <p class="note">잃어버린 기기는 해지하세요. 현재 브라우저를 해지하면 로그아웃됩니다.</p>
+          <div class="scroll"><table><thead><tr><th>기기</th><th>플랫폼</th><th>마지막 사용</th><th><span class="sr-only">동작</span></th></tr></thead><tbody id="myDevices"></tbody></table></div>
         </section>
-        <section><h2>내 기기 (Devices)</h2><div class="muted">로그인된 기기 목록입니다. 잃어버린 기기는 해지하세요. 현재 브라우저를 해지하면 로그아웃됩니다.</div><div class="scroll"><table><thead><tr><th>기기</th><th>플랫폼</th><th>마지막 사용</th><th></th></tr></thead><tbody id="myDevices"></tbody></table></div></section>
+        <section class="card">
+          <h2 class="t-h2">비밀번호 변경</h2>
+          <p class="note">변경하면 이 브라우저를 제외한 모든 기기가 로그아웃됩니다.</p>
+          <form id="pwForm" class="form-row"><label class="fl"><span>현재 비밀번호</span><input id="pwCurrent" type="password" autocomplete="current-password" required></label><label class="fl"><span>새 비밀번호</span><input id="pwNew" type="password" autocomplete="new-password" required></label><button class="btn btn-solid">변경</button></form>
+        </section>
       </div>
 
-      <div id="tab-users" data-pane="1" hidden>
-        <section><h2>새 사용자 만들기</h2><div class="muted">초기 비밀번호는 직접 전달하세요. 관리자도 다른 사람의 앨범 내용은 볼 수 없습니다.</div>
-          <form id="newUser" class="field"><input id="nuLogin" type="text" autocomplete="off" placeholder="아이디" required><input id="nuName" type="text" autocomplete="off" placeholder="표시 이름 (선택)"><input id="nuPassword" type="password" autocomplete="new-password" placeholder="초기 비밀번호" required>
-            <select id="nuRole" aria-label="서버 역할"><option value="USER">일반 사용자</option><option value="SERVER_ADMIN">서버 관리자</option></select>
-            <label><input id="nuCreate" type="checkbox"> 앨범 생성 허용</label><button>만들기</button></form>
+      <!-- D-03 storage -->
+      <div id="tab-storage" class="pane" data-pane="1" hidden>
+        <div class="page-head"><div><h1 class="t-title" tabindex="-1">저장장치</h1><p class="note">원본이 저장되는 디스크의 연결과 쓰기 상태</p></div></div>
+        <section id="storageAlert" class="alert" role="alert" hidden></section>
+        <div class="grid2">
+          <section class="card"><h2 class="t-h2">점검 결과</h2><ul class="rows" id="checks"></ul></section>
+          <section class="card" id="restart" hidden>
+            <h2 class="t-h2">다시 시작하려면</h2>
+            <ol class="steps">
+              <li><span class="num">1</span><span>외장 디스크를 서버 컴퓨터에 다시 연결하세요.</span></li>
+              <li><span class="num">2</span><span>Finder 사이드바(또는 <code>mount</code>)에 디스크가 보이는지 확인하세요.</span></li>
+              <li><span class="num">3</span><span><strong>재검사</strong>로 상태를 확인하세요. 다시 연결하면 장치 번호가 바뀌어 계속 "연결 안 됨"일 수 있어요. 그때는 서버를 다시 시작하세요.</span></li>
+            </ol>
+            <div class="notice info"><svg class="ico i20" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v5h1"/></svg><div><span class="caption">가족 기기의 앱은 "서버 저장 중단"(503 storage_unavailable) 응답을 받아요. 서버가 원본을 확인하기 전에는 기기에서 사진을 지우지 않아요.</span></div></div>
+          </section>
+          <section class="card" id="storageHelp">
+            <h2 class="t-h2">원본 검사</h2>
+            <p class="note">이 화면은 서버 시작 시 점검 결과와 지금의 연결 상태만 보여 줍니다. 원본 전체 검사는 서버 콘솔에서 실행하세요.</p>
+            <ul class="steps">
+              <li class="cmd"><code>withalbum-server verify</code><span class="caption">빠른 검사: 모든 원본의 존재·크기 확인, 아무것도 바꾸지 않음</span></li>
+              <li class="cmd"><code>withalbum-server verify -hash</code><span class="caption">전수 검사: 모든 원본의 SHA-256 재계산</span></li>
+            </ul>
+          </section>
+        </div>
+      </div>
+
+      <!-- users (D-07 layout pending; same system) -->
+      <div id="tab-users" class="pane" data-pane="1" hidden>
+        <div class="page-head"><div><h1 class="t-title" tabindex="-1">사용자</h1><p class="note">계정을 발급하고 서버 역할을 관리해요. 관리자도 다른 사람의 앨범 내용은 볼 수 없어요.</p></div></div>
+        <section class="card">
+          <h2 class="t-h2">새 사용자 만들기</h2>
+          <p class="note">초기 비밀번호는 직접 전달하세요. 계정만으로는 어떤 앨범도 보이지 않고, 앨범 소유자가 초대해야 참여할 수 있어요.</p>
+          <form id="newUser" class="form-row">
+            <label class="fl"><span>아이디</span><input id="nuLogin" type="text" autocomplete="off" required></label>
+            <label class="fl"><span>표시 이름 (선택)</span><input id="nuName" type="text" autocomplete="off"></label>
+            <label class="fl"><span>초기 비밀번호</span><input id="nuPassword" type="password" autocomplete="new-password" required></label>
+            <label class="fl narrow"><span>서버 역할</span><select id="nuRole"><option value="USER">일반 사용자</option><option value="SERVER_ADMIN">서버 관리자</option></select></label>
+            <label class="check"><input id="nuCreate" type="checkbox"> 앨범 생성 허용</label>
+            <button class="btn btn-solid">만들기</button>
+          </form>
         </section>
-        <section><h2>사용자 (Users)</h2><div class="scroll"><table><thead><tr><th>아이디</th><th>이름</th><th>역할</th><th>앨범 생성</th><th>상태</th><th></th></tr></thead><tbody id="userRows"></tbody></table></div>
+        <section class="card">
+          <h2 class="t-h2">사용자 목록</h2>
+          <div class="scroll"><table><thead><tr><th>아이디</th><th>이름</th><th>역할</th><th>앨범 생성</th><th>상태</th><th><span class="sr-only">동작</span></th></tr></thead><tbody id="userRows"></tbody></table></div>
           <div id="userDetail" class="panel" hidden></div>
         </section>
       </div>
 
-      <div id="tab-server" data-pane="1" hidden>
-        <section><h2>저장소 상태 (Storage)</h2><ul id="storageInfo"></ul>
-          <div class="muted">원본 전체 검사는 서버 콘솔에서 <code>withalbum-server verify</code> (해시 포함: <code>verify -hash</code>)로 실행합니다. 이 화면은 서버 시작 시 점검 결과만 보여 줍니다.</div>
+      <!-- backup and restore (console commands) -->
+      <div id="tab-backup" class="pane" data-pane="1" hidden>
+        <div class="page-head"><div><h1 class="t-title" tabindex="-1">백업·복구</h1><p class="note">백업과 복원은 서버 콘솔 명령으로 실행해요. 이 화면에서는 실행하거나 상태를 확인할 수 없어요.</p></div></div>
+        <div class="notice warn"><svg class="ico i20" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg><div><strong>원본이 디스크 하나에만 있으면 위험해요</strong><span class="caption">디스크가 고장 나면 되돌릴 수 없어요. 다른 디스크에 정기적으로 백업하세요. 자동 백업 일정은 아직 없어요.</span></div></div>
+        <div class="grid2">
+          <section class="card">
+            <h2 class="t-h2">백업</h2>
+            <p class="note">서버가 실행 중이어도 백업할 수 있어요. DB 스냅샷과 원본 증분 복사, SHA-256 매니페스트를 만듭니다.</p>
+            <ul class="steps">
+              <li class="cmd"><code>withalbum-server backup -init -to &lt;백업 디스크 폴더&gt;</code><span class="caption">처음 한 번: 백업 대상 폴더 등록</span></li>
+              <li class="cmd"><code>withalbum-server backup -to &lt;백업 디스크 폴더&gt;</code><span class="caption">이후 매번: 바뀐 원본만 복사</span></li>
+            </ul>
+          </section>
+          <section class="card">
+            <h2 class="t-h2">복원</h2>
+            <p class="note">서버를 먼저 중지하세요. 복원하면 모든 기기가 로그아웃되고, 백업 이후에 올린 사진은 기기에서 다시 보내야 해요. 기존 데이터는 지우지 않고 옆에 보존합니다.</p>
+            <ul class="steps">
+              <li class="cmd"><code>withalbum-server restore -from &lt;스냅샷&gt; -check</code><span class="caption">검증만, 아무것도 바꾸지 않음</span></li>
+              <li class="cmd"><code>withalbum-server restore -from &lt;스냅샷&gt;</code><span class="caption">전수 검증 후 원자적으로 교체</span></li>
+            </ul>
+          </section>
+        </div>
+      </div>
+
+      <!-- server settings -->
+      <div id="tab-server" class="pane" data-pane="1" hidden>
+        <div class="page-head"><div><h1 class="t-title" tabindex="-1">서버 설정</h1><p class="note">기기 연결과 접속 범위</p></div></div>
+        <section class="card" id="tlsBox">
+          <h2 class="t-h2">기기 연결 (TLS 지문)</h2>
+          <p class="note">앱에서 서버를 추가할 때 아래 연결 정보(QR 내용)를 사용합니다. 지문이 서버 콘솔의 <code>withalbum-server tls</code> 출력과 같은지 꼭 확인하세요.</p>
+          <div id="tlsInfo" class="feedback"></div>
+          <ul class="rows" id="pairing"></ul>
         </section>
-        <section id="tlsBox"><h2>기기 연결 (TLS 지문)</h2><div class="muted">앱에서 서버를 추가할 때 아래 연결 정보(QR 내용)를 사용합니다. 지문이 서버 콘솔의 <code>withalbum-server tls</code> 출력과 같은지 꼭 확인하세요.</div>
-          <div id="tlsInfo" class="status"></div><ul id="pairing"></ul>
+        <section class="card">
+          <h2 class="t-h2">접속 범위</h2>
+          <p class="note">기본은 이 컴퓨터(127.0.0.1)에서만 열려요. 같은 집 LAN 기기는 <code>-tls -allow-lan</code>으로 시작하고 로그인 가능한 서버 관리자가 있을 때만 연결할 수 있어요. 인터넷 공개는 지원하지 않아요.</p>
         </section>
       </div>
-    </div>
-    <p class="muted"><small>인터넷 공개 및 실제 서비스 용도가 아닌, 서버 기능과 배포 방식 검증을 위한 단계입니다.</small></p>
-  </main>
+    </main>
+  </div>
   <script>
     'use strict';
     // Everything shown here comes from the API after login. The DOM is only
-    // written with textContent and created elements, never with HTML strings.
+    // written with textContent and created or cloned elements, never with
+    // HTML strings.
+    //
+    // Wording rules: the shield-with-check icon and the word "보관됨" mean
+    // only originals the server has verified and keeps; green surfaces are
+    // the brand or a selection; a status never says just "done".
     const $ = id => document.getElementById(id);
     const ROLE = {OWNER: '소유자', CONTRIBUTOR: '참여자', VIEWER: '보기 전용', UPLOADER: '업로드 전용'};
     const SERVER_ROLE = {SERVER_ADMIN: '서버 관리자', USER: '일반 사용자'};
@@ -144,28 +487,38 @@
       login_taken: '이미 쓰는 아이디입니다.', invalid_login_name: '아이디 형식이 올바르지 않습니다.',
       invalid_display_name: '표시 이름이 올바르지 않습니다.', invalid_password: '비밀번호 규칙에 맞지 않습니다.',
       invalid_credentials: '현재 비밀번호가 올바르지 않습니다.', rate_limited: '시도가 너무 많습니다. 잠시 후 다시 시도하세요.',
-      busy: '서버가 바쁩니다. 잠시 후 다시 시도하세요.', storage_unavailable: '저장소를 사용할 수 없습니다.',
-      insufficient_storage: '저장 공간이 부족합니다.', device_not_found: '이미 해지된 기기입니다.',
-      not_initialized: '서버 초기화(admin init)가 필요합니다.', invalid_role: '역할이 올바르지 않습니다.'
+      busy: '서버가 바쁩니다. 잠시 후 다시 시도하세요.', storage_unavailable: '저장장치가 연결되지 않아 서버가 쓰기를 멈췄습니다. 다시 연결한 뒤 시도하세요.',
+      insufficient_storage: '저장 공간이 부족합니다. 자동으로 다시 시도하지 않습니다.', device_not_found: '이미 해지된 기기입니다.',
+      not_initialized: '서버 초기화(admin init)가 필요합니다.', invalid_role: '역할이 올바르지 않습니다.',
+      hash_mismatch: '서버가 받은 파일의 SHA-256이 보낸 파일과 다릅니다.', file_too_large: '파일이 너무 큽니다 (최대 512MB).',
+      empty_file: '빈 파일입니다.', upload_failed: '전송이 끊겼습니다. 아무것도 저장되지 않았으니 다시 보내세요.',
+      storage_io_error: '디스크 쓰기 오류입니다. 아무것도 확정되지 않았으니 디스크를 확인한 뒤 다시 보내세요.'
     };
     let me = null;
     let users = [];
+    let health = null;
+    let recheckTries = 0;
+    let focusAfter = null; // element id to focus after the next menu change
 
     function csrf() {
       const m = document.cookie.match(/(?:^|; )withalbum_csrf=([^;]*)/);
       return m ? decodeURIComponent(m[1]) : '';
     }
     class Unauthorized extends Error {}
+    class Offline extends Error {}
     class ApiError extends Error { constructor(code, message) { super(message); this.code = code; } }
+    async function send(url, opts) {
+      try { return await fetch(url, opts); } catch (e) { throw new Offline('서버와 연결되지 않아요.'); }
+    }
     // Session cookies (HttpOnly) go along automatically; unsafe methods also
     // send the CSRF token. An expired access token is refreshed once.
     async function api(url, opts = {}, retried = false) {
       const headers = {...(opts.headers || {})};
       const method = (opts.method || 'GET').toUpperCase();
       if (method !== 'GET' && method !== 'HEAD') headers['X-CSRF-Token'] = csrf();
-      const response = await fetch(url, {cache: 'no-store', credentials: 'same-origin', ...opts, headers});
+      const response = await send(url, {cache: 'no-store', credentials: 'same-origin', ...opts, headers});
       if (response.status === 401 && !retried && csrf()) {
-        const r = await fetch('/api/v1/auth/refresh', {method: 'POST', credentials: 'same-origin', headers: {'Content-Type': 'application/json', 'X-CSRF-Token': csrf()}, body: '{}'});
+        const r = await send('/api/v1/auth/refresh', {method: 'POST', credentials: 'same-origin', headers: {'Content-Type': 'application/json', 'X-CSRF-Token': csrf()}, body: '{}'});
         if (r.ok) return api(url, opts, true);
       }
       if (response.status === 401) throw new Unauthorized('로그인이 필요합니다.');
@@ -184,15 +537,26 @@
     function el(tag, props = {}, ...children) {
       const node = document.createElement(tag);
       for (const [k, v] of Object.entries(props)) {
+        if (v === null || v === undefined) continue;
         if (k === 'text') node.textContent = v;
         else if (k === 'on') for (const [ev, fn] of Object.entries(v)) node.addEventListener(ev, fn);
+        else if (k === 'role' || k === 'list' || k.startsWith('aria-')) node.setAttribute(k, v);
         else node[k] = v;
       }
-      node.append(...children.filter(c => c !== null && c !== undefined));
+      node.append(...children.filter(c => c !== null && c !== undefined && c !== false));
       return node;
     }
-    const button = (text, fn, className = 'ghost small') => el('button', {type: 'button', text, className, on: {click: fn}});
+    // icon clones one of the SVG sources in #icons.
+    function icon(name, extra) {
+      const node = document.querySelector('#icons [data-i="' + name + '"]').cloneNode(true);
+      node.removeAttribute('data-i');
+      node.setAttribute('class', 'ico' + (extra ? ' ' + extra : ''));
+      return node;
+    }
+    const kept = () => icon('shield-check', 'i14 kept');
+    const button = (text, fn, className = 'btn btn-weak') => el('button', {type: 'button', text, className, on: {click: fn}});
     const fmtTime = s => s ? String(s).replace('T', ' ').slice(0, 16) : '-';
+    const clock = () => { const d = new Date(); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
     function fmtBytes(n) {
       if (n === null || n === undefined) return '알 수 없음';
       const units = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -202,98 +566,240 @@
     }
     function say(message, isError) {
       $('feedback').textContent = message || '';
-      $('feedback').className = isError ? 'status error' : 'status';
+      $('feedback').className = isError ? 'feedback error' : 'feedback';
     }
-    // run wraps an action: shows success or the error, handles logout.
+    // fail shows an error of an action: an expired session goes back to the
+    // sign-in view, a lost connection to the offline state.
+    function fail(err) {
+      if (err instanceof Unauthorized) sessionExpired();
+      else if (err instanceof Offline) showOffline();
+      else say(err.message, true);
+    }
+    // run wraps an action: shows success or the error.
     async function run(action, done) {
       try { await action(); if (done) say(done); return true; }
-      catch (err) { if (err instanceof Unauthorized) showLogin(err.message); else say(err.message, true); return false; }
+      catch (err) { fail(err); return false; }
     }
     const isAdmin = () => me && me.user.server_role === 'SERVER_ADMIN';
+    const canCreate = () => isAdmin() || (me && me.user.can_create_albums);
 
-    function showLogin(message) {
-      $('app').hidden = true; $('loginBox').hidden = false;
-      $('loginFeedback').textContent = message || '';
-      me = null;
+    // stateCard is the shared status block (W-States): the title says what
+    // happened, the body why and whether trying again helps, the chip
+    // whether stored data is safe, the buttons the next action.
+    function stateCard(s) {
+      const actions = el('div', {className: 'state-actions'});
+      if (s.primary) actions.append(button(s.primary[0], s.primary[1], 'btn btn-solid'));
+      if (s.secondary) actions.append(button(s.secondary[0], s.secondary[1], 'btn btn-weak'));
+      return el('section', {className: 'card state state-' + (s.tone || 'neutral'), role: s.alert ? 'alert' : null},
+        el('div', {className: 'state-head'}, el('span', {className: 'state-icon'}, icon(s.icon || 'warn', 'i20')), el('span', {className: 'state-code', text: s.code})),
+        el('div', {className: 'state-text'}, el('h2', {className: 't-h2', text: s.title}), el('p', {className: 'note', text: s.body})),
+        el('span', {className: 'chip'}, s.kept ? kept() : null, s.safe),
+        actions.childElementCount ? actions : null);
     }
-    function showTab(name) {
+    function showBanner(card) { $('banner').replaceChildren(card); }
+    function clearBanner() { $('banner').replaceChildren(); }
+    function diskState() {
+      return stateCard({tone: 'critical', code: '디스크 분리', alert: true, title: '저장장치가 연결되지 않았어요',
+        body: '안전을 위해 새 업로드를 멈췄습니다. 내부 디스크로 대신 저장하지 않아요. 디스크를 다시 연결하면 다시 받을 수 있어요.',
+        kept: true, safe: '이미 보관된 원본은 디스크에 그대로 있어요', primary: ['재검사', () => reload()],
+        secondary: isAdmin() ? ['자세히', () => go('storage')] : null});
+    }
+    function showOffline() {
+      setChip('offline', '연결 끊김');
+      const card = stateCard({tone: 'warn', icon: 'offline', code: '서버 오프라인', alert: true, title: '서버와 연결되지 않아요',
+        body: '서버 컴퓨터가 꺼져 있거나 네트워크가 끊겼을 수 있어요. 방금 한 작업은 서버에 반영되지 않았을 수 있으니 연결 후 다시 확인하세요.',
+        kept: true, safe: '이미 보관된 원본은 서버 디스크에 그대로 있어요', primary: ['다시 연결', () => reload()]});
+      if ($('app').hidden) { $('loginBox').hidden = false; $('loginState').replaceChildren(card); } else showBanner(card);
+    }
+    function sessionExpired() {
+      const was = me !== null;
+      showLogin('');
+      if (was) $('loginState').replaceChildren(stateCard({icon: 'lock', code: '세션 만료', title: '다시 로그인해 주세요',
+        body: '보안을 위해 로그인이 만료됐어요. 아래에서 다시 로그인하면 이어서 쓸 수 있어요.', kept: true, safe: '서버에 보관된 원본과 앨범은 그대로예요'}));
+    }
+
+    // ---- top bar status ----
+    function setChip(kind, text) {
+      const c = $('statusChip');
+      c.className = 'chip' + (kind === 'critical' ? ' chip-critical' : kind === 'warn' ? ' chip-warn' : '');
+      c.replaceChildren(kind === 'ok' ? kept() : icon(kind === 'offline' ? 'offline' : 'warn', 'i12' + (kind === 'offline' ? '' : ' warnmark')), text);
+      c.hidden = false;
+    }
+    function applyHealth(h) {
+      health = h;
+      const storageOK = h.storage === 'ok', integrityOK = h.integrity === 'ok';
+      if (!storageOK) setChip('critical', '저장 중단됨');
+      else if (!integrityOK) setChip('warn', '무결성 경고');
+      else setChip('ok', '정상 실행 중');
+      $('health').textContent = !storageOK ? '실행 중 · 저장 중단' : integrityOK ? '정상 실행' : '실행 중 · 무결성 경고';
+      $('healthDetail').textContent = '서버 버전 ' + h.version;
+      $('version').textContent = h.version;
+      $('storageValue').textContent = storageOK ? '연결됨' : '연결 안 됨';
+      $('storageDetail').textContent = !storageOK ? '새 업로드를 멈췄어요 · 내부 디스크로 대신 저장하지 않아요'
+        : integrityOK ? '쓰기 직전마다 디스크 표식을 다시 확인해요' : '시작 시 점검에서 문제 발견 · 서버 로그와 verify 결과 확인';
+      $('navStorageDot').hidden = storageOK;
+      $('ovState').replaceChildren(...(storageOK ? [] : [diskState()]));
+    }
+
+    // ---- navigation (hash links) ----
+    const TABS = ['overview', 'albums', 'devices', 'storage', 'users', 'backup', 'server'];
+    const ADMIN_TABS = ['storage', 'users', 'backup', 'server'];
+    function currentTab() {
+      const name = location.hash.slice(1);
+      return TABS.includes(name) && (isAdmin() || !ADMIN_TABS.includes(name)) ? name : 'overview';
+    }
+    function showTab(name, focus) {
       document.querySelectorAll('[data-pane]').forEach(p => { p.hidden = p.id !== 'tab-' + name; });
-      document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+      document.querySelectorAll('#tabs a').forEach(a => { if (a.dataset.tab === name) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
       say('');
-      if (name === 'account') loadDevices();
+      if (focus) { (focusAfter && $(focusAfter) || $('tab-' + name).querySelector('h1')).focus(); focusAfter = null; }
+      if (name === 'devices') loadDevices();
       if (name === 'users') loadUsers();
+      if (name === 'storage') loadStorage(false);
       if (name === 'server') loadServer();
     }
-    $('tabs').addEventListener('click', e => { const t = e.target.closest('button'); if (t && t.dataset.tab) showTab(t.dataset.tab); });
+    function go(name) { if (location.hash === '#' + name) showTab(name, true); else location.hash = name; }
+    window.addEventListener('hashchange', () => { if (me) showTab(currentTab(), true); });
 
     // ---- overview, albums ----
     async function reload() {
       try {
-        const [m, health, folders, invites] = await Promise.all([api('/api/v1/me'), api('/api/v1/health'), api('/api/v1/folders'), api('/api/v1/invitations')]);
+        const [m, h, folders, invites] = await Promise.all([api('/api/v1/me'), api('/api/v1/health'), api('/api/v1/folders'), api('/api/v1/invitations')]);
         me = m;
         $('loginBox').hidden = true; $('app').hidden = false;
+        $('meLink').hidden = false; $('logout').hidden = false;
+        clearBanner();
         $('who').textContent = me.user.display_name + ' (' + me.user.login_name + ')';
         $('whoRole').textContent = SERVER_ROLE[me.user.server_role] || me.user.server_role;
-        $('create').hidden = !(isAdmin() || me.user.can_create_albums);
+        $('avatar').textContent = (me.user.display_name || me.user.login_name || '?').slice(0, 1);
+        $('createCard').hidden = !canCreate();
+        $('noCreate').hidden = canCreate();
+        $('ovNewAlbum').hidden = !canCreate();
         document.querySelectorAll('[data-admin]').forEach(b => { b.hidden = !isAdmin(); });
-        $('health').textContent = health.status === 'ok' && health.storage === 'ok' ? (health.integrity === 'ok' ? '정상 실행' : '실행 중 · 무결성 경고') : '점검 필요';
-        $('version').textContent = health.version;
+        applyHealth(h);
+        $('ovSub').textContent = '원본 저장 상태를 가장 먼저 확인합니다 · 최근 확인 ' + clock();
+        const n = invites.invitations.length;
         $('count').textContent = folders.folders.length + '개';
+        $('countDetail').textContent = '받은 초대 ' + n + '건';
+        $('navInvites').textContent = String(n);
+        $('navInvites').hidden = n === 0;
+        $('navInvites').setAttribute('aria-label', '받은 초대 ' + n + '건');
         renderInvites(invites.invitations);
-        renderFolders(folders.folders);
+        renderFolders(folders.folders, n);
+        if (isAdmin()) { loadOverviewAdmin(); if (!users.length) loadUsers(); }
+        showTab(currentTab(), false);
       } catch (err) {
-        if (err instanceof Unauthorized) showLogin(''); else { $('health').textContent = '연결 오류'; say(err.message, true); }
+        if (err instanceof Unauthorized) { if (me) sessionExpired(); else showLogin(''); }
+        else if (err instanceof Offline) showOffline();
+        else { $('health').textContent = '연결 오류'; say(err.message, true); }
       }
+    }
+    async function loadOverviewAdmin() {
+      try {
+        const s = await api('/api/v1/admin/server/storage');
+        $('freeCard').hidden = s.free_bytes === null || s.free_bytes === undefined;
+        $('freeValue').textContent = fmtBytes(s.free_bytes);
+        $('freeDetail').textContent = '업로드 예약 ' + fmtBytes(s.min_free_bytes) + ' 남겨 둠';
+        $('ovStorageList').replaceChildren(...storageRows(s, true));
+      } catch (err) { if (err instanceof ApiError) $('ovStorageList').replaceChildren(el('li', {className: 'row error', text: err.message})); else fail(err); }
+      try {
+        const t = await api('/api/v1/admin/server/tls');
+        $('ovAccess').textContent = t.enabled ? 'TLS 켜짐 · LAN 기기는 지문 확인 후 연결 · 인터넷 공개 안 함' : 'TLS 꺼짐 · 이 컴퓨터(localhost)에서만 접속 · LAN 접속 꺼짐';
+      } catch (err) { if (err instanceof ApiError) $('ovAccess').textContent = err.message; }
     }
     function renderInvites(list) {
       $('myInvites').replaceChildren();
-      if (!list.length) { $('myInvites').append(el('li', {className: 'muted', text: '받은 초대가 없습니다.'})); return; }
+      if (!list.length) {
+        $('myInvites').append(el('li', {className: 'row'}, el('span', {className: 'row-icon'}, icon('mail', 'i20')),
+          el('div', {className: 'row-text'}, el('div', {className: 'row-title', text: '받은 초대가 없어요'}), el('div', {className: 'row-meta', text: '초대를 받으면 여기에 나타나요. 계정만으로는 앨범이 보이지 않아요.'}))));
+        return;
+      }
       list.forEach(inv => {
-        $('myInvites').append(el('li', {}, inv.folder_name + ' · ' + (ROLE[inv.role] || inv.role) + ' · 보낸 사람 ' + inv.inviter_display_name + ' · 만료 ' + fmtTime(inv.expires_at) + '  ',
-          button('수락', () => run(async () => { await api('/api/v1/invitations/' + enc(inv.id) + '/accept', json('POST', {})); await reload(); }, '초대를 수락했습니다.'), 'small')));
+        $('myInvites').append(el('li', {className: 'row'}, el('span', {className: 'row-icon'}, icon('mail', 'i20')),
+          el('div', {className: 'row-text'}, el('div', {className: 'row-title', text: inv.folder_name + ' · ' + (ROLE[inv.role] || inv.role)}),
+            el('div', {className: 'row-meta', text: '보낸 사람 ' + inv.inviter_display_name + ' · 만료 ' + fmtTime(inv.expires_at)})),
+          button('수락', () => acceptInvite(inv), 'btn btn-weak btn-pill')));
       });
     }
-    function renderFolders(list) {
+    async function acceptInvite(inv) {
+      try {
+        await api('/api/v1/invitations/' + enc(inv.id) + '/accept', json('POST', {}));
+        await reload();
+        say(inv.folder_name + ' 앨범에 참여했어요.');
+      } catch (err) {
+        if (err instanceof ApiError && err.code === 'invitation_gone') {
+          showBanner(stateCard({icon: 'lock', code: '초대 만료', title: '초대 유효기간이 지났어요',
+            body: '이미 처리되었거나 7일이 지난 초대예요. 앨범 소유자에게 다시 초대를 요청해 주세요.', safe: '앨범 내용은 미리 보여주지 않아요',
+            primary: ['확인', () => { clearBanner(); reload(); }]}));
+        } else fail(err);
+      }
+    }
+    function accessChanged() {
+      return stateCard({icon: 'lock', code: '권한 변경', title: '이 앨범의 접근 권한이 변경됐어요',
+        body: '소유자가 역할을 바꿨거나 멤버에서 제외했을 수 있어요. 앨범 목록을 다시 불러와 현재 권한을 확인하세요.',
+        safe: '이미 받은 파일은 기기에 남아요', primary: ['앨범 목록', () => reload()]});
+    }
+    function renderFolders(list, inviteCount) {
       $('folders').replaceChildren();
       $('folderSelect').replaceChildren(new Option('앨범 선택', ''));
-      if (!list.length) $('folders').append(el('p', {className: 'muted', text: '아직 볼 수 있는 앨범이 없습니다.'}));
+      if (!list.length) {
+        $('folders').append(stateCard({icon: 'photo', code: '빈 상태', title: '아직 참여한 앨범이 없어요',
+          body: '초대를 받으면 여기에 나타나요. 계정만으로는 앨범이 보이지 않아요.', safe: '받은 초대 ' + inviteCount + '건',
+          primary: ['초대함 보기', () => go('overview')], secondary: canCreate() ? ['새 앨범', () => $('folderName').focus()] : null}));
+      }
       list.sort((a, b) => a.name.localeCompare(b.name, 'ko')).forEach(folder => {
-        const d = el('details', {}, el('summary', {}, folder.name + '  ', el('small', {text: (ROLE[folder.role] || folder.role) + ' · ' + folder.id.slice(0, 8)})));
-        const body = el('div');
+        const meta = (ROLE[folder.role] || folder.role) + ' · ' + (folder.can_read ? '보기 가능' : '보기 불가') + ' · ' + (folder.can_upload ? '업로드 가능' : '업로드 불가');
+        const d = el('details', {className: 'album'}, el('summary', {},
+          el('span', {className: 'thumb'}, icon('photo', 'i20')),
+          el('span', {className: 'row-text'}, el('span', {className: 'row-title', text: folder.name}), el('span', {className: 'row-meta', text: meta + ' · ' + folder.id.slice(0, 8)})),
+          icon('chevron', 'i16 chev')));
+        const body = el('div', {className: 'album-body'});
         d.append(body);
         if (folder.role === 'OWNER') d.addEventListener('toggle', () => { if (d.open) loadOwnerPanel(folder, body); });
-        else body.append(el('p', {className: 'muted', text: '소유자만 멤버·초대를 관리할 수 있습니다. ' + (folder.can_read ? '보기 가능' : '보기 불가') + ' · ' + (folder.can_upload ? '업로드 가능' : '업로드 불가')}));
+        else body.append(el('p', {className: 'note', text: '소유자만 멤버·초대를 관리할 수 있어요.'}));
         $('folders').append(d);
         if (folder.can_upload) $('folderSelect').append(new Option(folder.name, folder.id));
       });
     }
     async function loadOwnerPanel(folder, body) {
       const base = '/api/v1/folders/' + enc(folder.id);
-      body.replaceChildren(el('p', {className: 'muted', text: '불러오는 중...'}));
+      body.replaceChildren(el('p', {className: 'note', text: '불러오는 중...'}));
       let members, invites;
       try {
         [members, invites] = await Promise.all([api(base + '/members'), api(base + '/invitations')]);
-      } catch (err) { body.replaceChildren(el('p', {className: 'error', text: err.message})); if (err instanceof Unauthorized) showLogin(err.message); return; }
+      } catch (err) {
+        if (err instanceof ApiError && (err.code === 'folder_not_found' || err.code === 'forbidden')) body.replaceChildren(accessChanged());
+        else { body.replaceChildren(el('p', {className: 'error', text: err.message})); fail(err); }
+        return;
+      }
       const refresh = () => loadOwnerPanel(folder, body);
+      // An owner action refused with 404/403 means the access changed meanwhile.
+      const act = (action, done) => run(async () => {
+        try { await action(); } catch (err) {
+          if (err instanceof ApiError && (err.code === 'folder_not_found' || err.code === 'forbidden')) { body.replaceChildren(accessChanged()); return; }
+          throw err;
+        }
+      }, done);
       const rows = el('tbody');
-      const transferSelect = el('select', {ariaLabel: '새 소유자'}, new Option('새 소유자 선택', ''));
+      const transferSelect = el('select', {'aria-label': '새 소유자'}, new Option('새 소유자 선택', ''));
       members.members.forEach(m => {
         const tr = el('tr', {}, el('td', {text: m.display_name + (m.active ? '' : ' (비활성)')}), el('td', {}, el('code', {text: m.user_id})));
         if (m.role === 'OWNER') {
           tr.append(el('td', {text: ROLE.OWNER}), el('td'));
         } else {
-          const sel = el('select', {ariaLabel: '역할'}, ...['CONTRIBUTOR', 'VIEWER', 'UPLOADER'].map(r => new Option(ROLE[r], r, false, r === m.role)));
-          tr.append(el('td', {}, sel, ' ', button('변경', () => run(async () => { await api(base + '/members/' + enc(m.user_id), json('PATCH', {role: sel.value})); await refresh(); }, '역할을 바꿨습니다.'))),
-            el('td', {}, button('내보내기', () => { if (confirm(m.display_name + ' 님을 앨범에서 내보낼까요?')) run(async () => { await api(base + '/members/' + enc(m.user_id), {method: 'DELETE'}); await refresh(); }, '멤버를 내보냈습니다.'); }, 'danger small')));
+          const sel = el('select', {'aria-label': m.display_name + ' 역할'}, ...['CONTRIBUTOR', 'VIEWER', 'UPLOADER'].map(r => new Option(ROLE[r], r, false, r === m.role)));
+          tr.append(el('td', {}, el('div', {className: 'form-row'}, sel, button('변경', () => act(async () => { await api(base + '/members/' + enc(m.user_id), json('PATCH', {role: sel.value})); await refresh(); }, '역할을 바꿨어요.')))),
+            el('td', {}, button('내보내기', () => { if (confirm(m.display_name + ' 님을 앨범에서 내보낼까요?')) act(async () => { await api(base + '/members/' + enc(m.user_id), {method: 'DELETE'}); await refresh(); }, '멤버를 내보냈어요.'); }, 'btn btn-danger')));
           if (m.active) transferSelect.append(new Option(m.display_name, m.user_id));
         }
         rows.append(tr);
       });
-      const invList = el('ul');
-      if (!invites.invitations.length) invList.append(el('li', {className: 'muted', text: '대기 중인 초대가 없습니다.'}));
-      invites.invitations.forEach(inv => invList.append(el('li', {}, inv.invitee_display_name + ' · ' + (ROLE[inv.role] || inv.role) + ' · 만료 ' + fmtTime(inv.expires_at) + '  ',
-        button('취소', () => run(async () => { await api(base + '/invitations/' + enc(inv.id), {method: 'DELETE'}); await refresh(); }, '초대를 취소했습니다.')))));
-      const inviteID = el('input', {type: 'text', placeholder: '초대할 사용자 ID (user_id)', autocomplete: 'off'});
+      const invList = el('ul', {className: 'rows'});
+      if (!invites.invitations.length) invList.append(el('li', {className: 'row'}, el('span', {className: 'row-meta', text: '대기 중인 초대가 없어요.'})));
+      invites.invitations.forEach(inv => invList.append(el('li', {className: 'row'}, el('span', {className: 'row-icon small'}, icon('person', 'i16')),
+        el('div', {className: 'row-text'}, el('div', {className: 'row-title', text: inv.invitee_display_name + ' · ' + (ROLE[inv.role] || inv.role)}), el('div', {className: 'row-meta', text: '수락 대기 · 만료 ' + fmtTime(inv.expires_at)})),
+        button('취소', () => act(async () => { await api(base + '/invitations/' + enc(inv.id), {method: 'DELETE'}); await refresh(); }, '초대를 취소했어요.')))));
+      const inviteID = el('input', {type: 'text', autocomplete: 'off'});
       let dl = null;
       if (isAdmin()) {
         // Administrators may pick from the account list (other owners type the ID they were given).
@@ -301,53 +807,85 @@
         users.filter(u => u.status === 'active').forEach(u => dl.append(new Option(u.login_name + ' · ' + u.display_name, u.user_id)));
         inviteID.setAttribute('list', dl.id);
       }
-      const inviteRole = el('select', {ariaLabel: '초대 역할'}, ...['VIEWER', 'CONTRIBUTOR', 'UPLOADER'].map(r => new Option(ROLE[r], r)));
+      const inviteRole = el('select', {}, ...['VIEWER', 'CONTRIBUTOR', 'UPLOADER'].map(r => new Option(ROLE[r], r)));
       body.replaceChildren(
-        el('h3', {text: '멤버'}), el('div', {className: 'scroll'}, el('table', {}, el('thead', {}, el('tr', {}, el('th', {text: '이름'}), el('th', {text: '사용자 ID'}), el('th', {text: '역할'}), el('th'))), rows)),
-        el('h3', {text: '초대'}), invList,
-        el('div', {className: 'field'}, inviteID, inviteRole, button('초대 보내기', () => {
-          const id = inviteID.value.trim();
-          if (!id) { say('초대할 사용자 ID를 입력하세요.', true); return; }
-          run(async () => { await api(base + '/invitations', json('POST', {invited_user_id: id, role: inviteRole.value})); await refresh(); }, '초대를 보냈습니다. 상대가 로그인해 수락해야 합니다.');
-        }, 'small')),
-        el('p', {className: 'muted', text: '초대는 등록된 활성 계정에만 보낼 수 있고, 7일 안에 본인이 수락해야 합니다. 사용자 ID는 상대의 관리자 화면 또는 서버 관리자에게 받으세요.'}),
-        el('h3', {text: '소유권 이전'}),
-        el('div', {className: 'field'}, transferSelect, button('이전', () => {
-          if (!transferSelect.value) { say('새 소유자를 고르세요 (현재 멤버만 가능).', true); return; }
-          if (confirm('소유권을 넘기면 나는 참여자(CONTRIBUTOR)가 되고 대기 중인 초대는 취소됩니다. 계속할까요?'))
-            run(async () => { await api(base + '/owner', json('POST', {new_owner_user_id: transferSelect.value})); await reload(); }, '소유권을 이전했습니다.');
-        }, 'small')),
-        el('h3', {text: '앨범 보관'}),
-        el('p', {className: 'muted', text: '보관하면 모든 사람(나 포함)에게서 앨범이 숨겨집니다. 파일은 삭제되지 않지만 지금은 화면에서 되돌릴 수 없습니다.'}),
-        button('앨범 보관', () => {
-          const typed = prompt('보관하려면 앨범 이름을 그대로 입력하세요: ' + folder.name);
-          if (typed === null) return;
-          if (typed !== folder.name) { say('이름이 일치하지 않아 보관하지 않았습니다.', true); return; }
-          run(async () => { await api(base, {method: 'DELETE'}); await reload(); }, '앨범을 보관했습니다.');
-        }, 'danger small'));
+        el('div', {className: 'panel'}, el('h3', {className: 't-h3', text: '멤버'}),
+          el('div', {className: 'scroll'}, el('table', {}, el('thead', {}, el('tr', {}, el('th', {text: '이름'}), el('th', {text: '사용자 ID'}), el('th', {text: '역할'}), el('th', {}, el('span', {className: 'sr-only', text: '동작'})))), rows))),
+        el('div', {className: 'panel'}, el('h3', {className: 't-h3', text: '초대'}), invList,
+          el('div', {className: 'form-row'},
+            el('label', {className: 'fl'}, el('span', {text: '초대할 사용자 ID (user_id)'}), inviteID),
+            el('label', {className: 'fl narrow'}, el('span', {text: '역할'}), inviteRole),
+            button('초대 보내기', () => {
+              const id = inviteID.value.trim();
+              if (!id) { say('초대할 사용자 ID를 입력하세요.', true); return; }
+              act(async () => { await api(base + '/invitations', json('POST', {invited_user_id: id, role: inviteRole.value})); await refresh(); }, '초대를 보냈어요. 상대가 로그인해 수락해야 참여돼요.');
+            }, 'btn btn-brand')),
+          el('p', {className: 'caption', text: '초대는 등록된 활성 계정에만 보낼 수 있고, 7일 안에 본인이 수락해야 해요. 사용자 ID는 상대의 관리자 화면 또는 서버 관리자에게 받으세요.'})),
+        el('div', {className: 'panel'}, el('h3', {className: 't-h3', text: '소유권 이전'}),
+          el('div', {className: 'form-row'}, el('label', {className: 'fl narrow'}, el('span', {text: '새 소유자 (현재 멤버만)'}), transferSelect), button('이전', () => {
+            if (!transferSelect.value) { say('새 소유자를 고르세요 (현재 멤버만 가능).', true); return; }
+            if (confirm('소유권을 넘기면 나는 참여자(CONTRIBUTOR)가 되고 대기 중인 초대는 취소됩니다. 계속할까요?'))
+              act(async () => { await api(base + '/owner', json('POST', {new_owner_user_id: transferSelect.value})); await reload(); }, '소유권을 이전했어요.');
+          }))),
+        el('div', {className: 'panel'}, el('h3', {className: 't-h3', text: '앨범 보관'}),
+          el('p', {className: 'note', text: '보관하면 모든 사람(나 포함)에게서 앨범이 숨겨져요. 파일은 삭제되지 않지만 지금은 화면에서 되돌릴 수 없어요.'}),
+          el('div', {}, button('앨범 보관', () => {
+            const typed = prompt('보관하려면 앨범 이름을 그대로 입력하세요: ' + folder.name);
+            if (typed === null) return;
+            if (typed !== folder.name) { say('이름이 일치하지 않아 보관하지 않았어요.', true); return; }
+            act(async () => { await api(base, {method: 'DELETE'}); await reload(); }, '앨범을 보관했어요.');
+          }, 'btn btn-danger'))));
       if (dl) body.append(dl);
     }
     $('create').addEventListener('submit', e => {
       e.preventDefault();
       const name = $('folderName').value.trim();
       if (!name) return;
-      run(async () => { await api('/api/v1/folders', json('POST', {name})); $('folderName').value = ''; await reload(); }, '앨범을 만들었습니다.');
+      run(async () => { await api('/api/v1/folders', json('POST', {name})); $('folderName').value = ''; await reload(); }, '앨범을 만들었어요.');
     });
-    $('upload').addEventListener('click', async () => {
+    $('ovNewAlbum').addEventListener('click', e => { e.preventDefault(); focusAfter = 'folderName'; go('albums'); });
+    $('ovAddUser').addEventListener('click', e => { e.preventDefault(); focusAfter = 'nuLogin'; go('users'); });
+
+    // ---- test upload: "kept" only when the server matched our SHA-256 ----
+    function uploadSay(...parts) { $('uploadFeedback').replaceChildren(...parts); }
+    async function sha256Hex(file) {
+      if (!(window.crypto && crypto.subtle)) return '';
+      const sum = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
+      return Array.from(new Uint8Array(sum), x => x.toString(16).padStart(2, '0')).join('');
+    }
+    async function sendFile() {
       const file = $('file').files[0], folder = $('folderSelect').value;
-      if (!folder || !file) { $('uploadFeedback').textContent = '앨범과 파일을 선택해 주세요.'; return; }
+      if (!folder || !file) { uploadSay('앨범과 파일을 선택해 주세요.'); return; }
       const b = $('upload'); b.disabled = true;
-      $('uploadFeedback').textContent = '업로드 중 (최대 512MB)...';
       try {
+        uploadSay('보내기 전 이 컴퓨터에서 SHA-256 계산 중...');
+        let digest = '';
+        try { digest = await sha256Hex(file); } catch (e) { digest = ''; }
+        uploadSay('보내는 중 (최대 512MB) · 서버가 확인하기 전에는 보관되지 않았어요');
         // One key per upload attempt; the retry after a token refresh reuses it.
         const key = crypto.randomUUID ? crypto.randomUUID() : Array.from(crypto.getRandomValues(new Uint8Array(16)), x => x.toString(16).padStart(2, '0')).join('');
-        const result = await api('/api/v1/folders/' + enc(folder) + '/assets', {method: 'POST', headers: {'Content-Type': 'application/octet-stream', 'X-Filename': enc(file.name), 'Idempotency-Key': key}, body: file});
-        const msg = {already_present: '이미 이 앨범에 있는 파일입니다.', accepted: '전송했습니다 (업로드 전용 앨범).'}[result.result] || '업로드 완료.';
-        $('uploadFeedback').textContent = msg + ' 해시: ' + result.sha256.slice(0, 16) + '…';
+        const headers = {'Content-Type': 'application/octet-stream', 'X-Filename': enc(file.name), 'Idempotency-Key': key};
+        if (digest) headers['X-Content-SHA256'] = digest;
+        const result = await api('/api/v1/folders/' + enc(folder) + '/assets', {method: 'POST', headers, body: file});
+        const short = String(result.sha256 || '').slice(0, 16) + '…';
+        if (result.result === 'accepted') {
+          uploadSay('서버가 받았어요 (업로드 전용 앨범). 앨범 내용은 소유자와 보기 권한이 있는 멤버만 볼 수 있어요.');
+        } else if (digest && result.sha256 === digest) {
+          uploadSay(kept(), (result.result === 'already_present' ? '이미 이 앨범에 보관된 원본이에요' : '원본 보관됨') + ' · 서버 SHA-256 확인 ' + short);
+        } else {
+          uploadSay('서버에 저장했어요. 이 브라우저에서 SHA-256을 계산하지 못해 보낸 파일과 대조하지 않았어요 · 서버 해시 ' + short);
+        }
         $('file').value = '';
-      } catch (err) { if (err instanceof Unauthorized) showLogin(err.message); else $('uploadFeedback').textContent = '업로드 실패: ' + err.message; }
-      finally { b.disabled = false; }
-    });
+      } catch (err) {
+        if (err instanceof ApiError && err.code === 'hash_mismatch') {
+          uploadSay(stateCard({tone: 'critical', code: '원본 검증 실패', title: '원본 확인에 실패했어요',
+            body: file.name + '의 서버 사본이 보낸 파일과 달라 서버가 저장하지 않았어요. 다시 보내면 해결돼요.',
+            safe: '보낸 파일은 이 컴퓨터에서 지우지 않았어요', primary: ['다시 보내기', sendFile], secondary: ['건너뛰기', () => { $('file').value = ''; uploadSay(); }]}));
+        } else if (err instanceof ApiError) uploadSay('보내지 못했어요: ' + err.message);
+        else fail(err);
+      } finally { b.disabled = false; }
+    }
+    $('upload').addEventListener('click', sendFile);
 
     // ---- own account ----
     $('pwForm').addEventListener('submit', e => {
@@ -355,13 +893,13 @@
       run(async () => {
         await api('/api/v1/me/password', json('POST', {current_password: $('pwCurrent').value, new_password: $('pwNew').value}));
         $('pwCurrent').value = ''; $('pwNew').value = '';
-      }, '비밀번호를 바꿨습니다. 다른 기기는 로그아웃되었습니다.');
+      }, '비밀번호를 바꿨어요. 다른 기기는 로그아웃되었습니다.');
     });
     function deviceRows(tbody, list, revoke) {
       tbody.replaceChildren();
-      if (!list.length) tbody.append(el('tr', {}, el('td', {className: 'muted', text: '로그인된 기기가 없습니다.', colSpan: 4})));
+      if (!list.length) tbody.append(el('tr', {}, el('td', {className: 'note', text: '로그인된 기기가 없어요.', colSpan: 4})));
       list.forEach(d => tbody.append(el('tr', {}, el('td', {text: d.device_name + (d.current ? ' (현재 브라우저)' : '')}), el('td', {text: d.platform}), el('td', {text: fmtTime(d.last_used_at)}),
-        el('td', {}, button('해지', () => { if (confirm(d.device_name + ' 기기를 로그아웃시킬까요?')) revoke(d); }, 'danger small')))));
+        el('td', {}, button('해지', () => { if (confirm(d.device_name + ' 기기를 로그아웃시킬까요?')) revoke(d); }, 'btn btn-danger')))));
     }
     async function loadDevices() {
       await run(async () => {
@@ -370,7 +908,7 @@
           await api('/api/v1/me/devices/' + enc(d.device_id), {method: 'DELETE'});
           if (d.current) { showLogin('이 브라우저를 해지해 로그아웃되었습니다.'); return; }
           await loadDevices();
-        }, '기기를 해지했습니다.'));
+        }, '기기를 해지했어요.'));
       });
     }
 
@@ -393,110 +931,164 @@
           password: $('nuPassword').value, server_role: $('nuRole').value, can_create_albums: $('nuCreate').checked}));
         $('newUser').reset();
         await loadUsers();
-      }, '사용자를 만들었습니다.');
+      }, '사용자를 만들었어요. 앨범은 소유자가 초대해야 보여요.');
     });
     async function openUser(userID) {
       const box = $('userDetail');
       box.hidden = false;
-      box.replaceChildren(el('p', {className: 'muted', text: '불러오는 중...'}));
+      box.replaceChildren(el('p', {className: 'note', text: '불러오는 중...'}));
       let u, devices, owned;
       try {
         [u, devices, owned] = await Promise.all([api('/api/v1/admin/users/' + enc(userID)), api('/api/v1/admin/users/' + enc(userID) + '/devices'), api('/api/v1/admin/users/' + enc(userID) + '/folders')]);
-      } catch (err) { box.replaceChildren(el('p', {className: 'error', text: err.message})); if (err instanceof Unauthorized) showLogin(err.message); return; }
+      } catch (err) { box.replaceChildren(el('p', {className: 'error', text: err.message})); fail(err); return; }
       const reopen = async () => { await loadUsers(); await openUser(userID); };
       const self = me && u.user_id === me.user.user_id;
-      const role = el('select', {ariaLabel: '서버 역할'}, ...['USER', 'SERVER_ADMIN'].map(r => new Option(SERVER_ROLE[r], r, false, r === u.server_role)));
-      const canCreate = el('input', {type: 'checkbox', checked: u.can_create_albums});
+      const role = el('select', {}, ...['USER', 'SERVER_ADMIN'].map(r => new Option(SERVER_ROLE[r], r, false, r === u.server_role)));
+      const canCreateBox = el('input', {type: 'checkbox', checked: u.can_create_albums});
       const devBody = el('tbody');
       deviceRows(devBody, devices.devices, d => run(async () => {
         await api('/api/v1/admin/users/' + enc(userID) + '/devices/' + enc(d.device_id), {method: 'DELETE'});
         if (d.current) { showLogin('이 브라우저를 해지해 로그아웃되었습니다.'); return; }
         await openUser(userID);
-      }, '기기를 해지했습니다.'));
+      }, '기기를 해지했어요.'));
       const archivedN = owned.archived.length;
-      const ownedInfo = el('p', {text: '소유 앨범: 사용 중 ' + owned.active_owned + '개 · 보관됨 ' + archivedN + '개 (이름·내용은 관리자에게 표시되지 않습니다)'});
-      const statusArea = el('div', {className: 'field'});
+      const ownedInfo = el('p', {className: 'note', text: '소유 앨범: 사용 중 ' + owned.active_owned + '개 · 보관 앨범 ' + archivedN + '개 (이름·내용은 관리자에게 표시되지 않아요)'});
+      const statusArea = el('div', {className: 'form-row'});
       if (u.status === 'active') {
         statusArea.append(button('비활성화', () => {
           if (!confirm(u.login_name + ' 계정을 비활성화할까요? 모든 기기가 즉시 로그아웃됩니다.')) return;
-          run(async () => { await api('/api/v1/admin/users/' + enc(userID), json('PATCH', {status: 'disabled'})); if (self) { showLogin('계정이 비활성화되었습니다.'); return; } await reopen(); }, '비활성화했습니다.');
-        }, 'danger small'));
+          run(async () => { await api('/api/v1/admin/users/' + enc(userID), json('PATCH', {status: 'disabled'})); if (self) { showLogin('계정이 비활성화되었습니다.'); return; } await reopen(); }, '비활성화했어요.');
+        }, 'btn btn-danger'));
       } else {
-        statusArea.append(button('다시 활성화', () => run(async () => { await api('/api/v1/admin/users/' + enc(userID), json('PATCH', {status: 'active'})); await reopen(); }, '활성화했습니다.'), 'small'));
+        statusArea.append(button('다시 활성화', () => run(async () => { await api('/api/v1/admin/users/' + enc(userID), json('PATCH', {status: 'active'})); await reopen(); }, '활성화했어요.')));
       }
-      const reassign = el('div');
+      const reassign = el('div', {className: 'pane'});
       if (u.status === 'active' && (owned.active_owned > 0 || archivedN > 0)) {
         if (owned.active_owned > 0) {
-          reassign.append(el('p', {className: 'muted', text: '사용 중인 앨범이 있으면 비활성화할 수 없습니다. 소유자가 직접 다른 멤버에게 소유권을 이전하거나 앨범을 보관해야 합니다 (관리자는 사용 중인 앨범을 옮길 수 없습니다).'}));
+          reassign.append(el('p', {className: 'caption', text: '사용 중인 앨범이 있으면 비활성화할 수 없어요. 소유자가 직접 다른 멤버에게 소유권을 이전하거나 앨범을 보관해야 해요 (관리자는 사용 중인 앨범을 옮길 수 없어요).'}));
         } else {
-          const target = el('select', {ariaLabel: '새 소유자'}, new Option('보관 앨범을 넘겨받을 계정', ''));
+          const target = el('select', {}, new Option('보관 앨범을 넘겨받을 계정', ''));
           users.filter(x => x.user_id !== userID && x.status === 'active' && !x.password_locked).forEach(x => target.append(new Option(x.login_name + ' · ' + x.display_name, x.user_id)));
-          reassign.append(el('p', {className: 'muted', text: '보관된 앨범은 계속 보관 상태로 남으며, 넘겨받는 계정도 내용을 볼 수 없습니다. 재배정은 감사 로그에 남습니다.'}),
-            el('div', {className: 'field'}, target, button('보관 앨범 ' + archivedN + '개 재배정 후 비활성화', () => {
+          reassign.append(el('p', {className: 'caption', text: '보관 앨범은 계속 보관 상태로 남으며, 넘겨받는 계정도 내용을 볼 수 없어요. 재배정은 감사 로그에 남아요.'}),
+            el('div', {className: 'form-row'}, el('label', {className: 'fl narrow'}, el('span', {text: '넘겨받을 계정'}), target), button('보관 앨범 ' + archivedN + '개 재배정 후 비활성화', () => {
               if (!target.value) { say('넘겨받을 계정을 고르세요.', true); return; }
               if (!confirm('보관 앨범 ' + archivedN + '개의 소유자를 바꾸고 ' + u.login_name + ' 계정을 비활성화할까요?')) return;
               run(async () => {
                 for (const f of owned.archived) await api('/api/v1/admin/folders/' + enc(f.folder_id) + '/owner', json('POST', {new_owner_user_id: target.value}));
                 await api('/api/v1/admin/users/' + enc(userID), json('PATCH', {status: 'disabled'}));
                 await reopen();
-              }, '보관 앨범을 재배정하고 계정을 비활성화했습니다.');
-            }, 'danger small')));
+              }, '보관 앨범을 재배정하고 계정을 비활성화했어요.');
+            }, 'btn btn-danger')));
         }
       }
       box.replaceChildren(
-        el('div', {className: 'bar'}, el('strong', {text: u.display_name + ' (' + u.login_name + ')' + (self ? ' · 나' : '')}), button('닫기', () => { box.hidden = true; })),
-        el('p', {}, '사용자 ID: ', el('code', {text: u.user_id}), ' · 생성 ' + fmtTime(u.created_at)),
-        el('h3', {text: '권한'}),
-        el('div', {className: 'field'}, role, el('label', {}, canCreate, ' 앨범 생성 허용'), button('저장', () => run(async () => {
-          await api('/api/v1/admin/users/' + enc(userID) + '/permissions', json('PATCH', {server_role: role.value, can_create_albums: canCreate.checked}));
+        el('div', {className: 'card-head'}, el('strong', {className: 't-h2', text: u.display_name + ' (' + u.login_name + ')' + (self ? ' · 나' : '')}), button('닫기', () => { box.hidden = true; })),
+        el('p', {className: 'note'}, '사용자 ID: ', el('code', {text: u.user_id}), ' · 생성 ' + fmtTime(u.created_at)),
+        el('h3', {className: 't-h3', text: '권한'}),
+        el('div', {className: 'form-row'}, el('label', {className: 'fl narrow'}, el('span', {text: '서버 역할'}), role), el('label', {className: 'check'}, canCreateBox, ' 앨범 생성 허용'), button('저장', () => run(async () => {
+          await api('/api/v1/admin/users/' + enc(userID) + '/permissions', json('PATCH', {server_role: role.value, can_create_albums: canCreateBox.checked}));
           if (self) { await reload(); } await reopen();
-        }, '권한을 저장했습니다.'), 'small')),
-        el('h3', {text: '계정 상태 · 소유 앨범'}), ownedInfo, statusArea, reassign,
-        el('h3', {text: '기기'}), el('div', {className: 'scroll'}, el('table', {}, el('thead', {}, el('tr', {}, el('th', {text: '기기'}), el('th', {text: '플랫폼'}), el('th', {text: '마지막 사용'}), el('th'))), devBody)));
+        }, '권한을 저장했어요.'), 'btn btn-solid')),
+        el('h3', {className: 't-h3', text: '계정 상태 · 소유 앨범'}), ownedInfo, statusArea, reassign,
+        el('h3', {className: 't-h3', text: '기기'}), el('div', {className: 'scroll'}, el('table', {}, el('thead', {}, el('tr', {}, el('th', {text: '기기'}), el('th', {text: '플랫폼'}), el('th', {text: '마지막 사용'}), el('th', {}, el('span', {className: 'sr-only', text: '동작'})))), devBody)));
     }
 
-    // ---- server (SERVER_ADMIN) ----
-    async function loadServer() {
+    // ---- storage (SERVER_ADMIN, D-03) ----
+    // checkRow: mark is bad | ok | off | lock | kept.
+    function checkRow(mark, label, detail) {
+      const ico = {bad: 'warn', ok: 'dot', off: 'minus', lock: 'lock', kept: 'shield-check'}[mark];
+      return el('li', {className: 'row'}, el('span', {className: 'row-icon small' + (mark === 'bad' ? ' bad' : mark === 'kept' ? ' kept' : '')}, icon(ico, 'i14')),
+        el('div', {className: 'row-text'}, el('div', {className: 'row-title', text: label}), el('div', {className: 'row-meta', text: detail})));
+    }
+    function storageRows(s, brief) {
+      const up = s.storage === 'ok', rows = [];
+      rows.push(up ? checkRow('ok', '디스크 연결 · 연결됨', '디스크 표식과 장치가 서버 시작 때와 같아요')
+        : checkRow('bad', '디스크 연결 · 확인 실패', '디스크가 빠졌거나, 다시 연결되며 장치가 바뀌었어요'));
+      if (!brief) {
+        if (s.free_bytes !== null && s.free_bytes !== undefined) rows.push(checkRow('ok', '여유 공간 · ' + fmtBytes(s.free_bytes), '업로드 예약 ' + fmtBytes(s.min_free_bytes) + ' 남겨 둠 · 부족하면 507로 거부'));
+        else rows.push(checkRow('off', '여유 공간', up ? '이 시스템에서는 여유 공간을 알 수 없어요' : '디스크가 없어 확인하지 않았어요'));
+        rows.push(checkRow('lock', '내부 디스크로 우회 저장 · 차단됨', '원본이 엉뚱한 곳에 쌓이지 않아요'));
+        rows.push(up ? checkRow('ok', '새 업로드 · 받는 중', '쓰기 직전마다 저장장치를 다시 확인해요')
+          : checkRow('bad', '새 업로드 · 일시 중지', '저장장치가 돌아올 때까지 업로드와 앨범 만들기를 거부해요'));
+      }
+      rows.push(s.integrity === 'ok' ? checkRow('ok', '무결성 · 정상', '서버 시작 시 점검 기준')
+        : checkRow('bad', '무결성 · 경고', '서버 로그와 verify 결과를 확인하세요'));
+      const c = s.startup_check;
+      if (c) {
+        const good = c.blobs - c.missing - c.size_mismatch;
+        rows.push(checkRow('kept', '원본 ' + Math.max(good, 0).toLocaleString('ko-KR') + '개 보관됨', '서버 시작 시 존재·크기 확인 · 없음 ' + c.missing + ' · 크기 불일치 ' + c.size_mismatch + ' · 격리(고아) ' + c.orphans + ' · 예상 밖 항목 ' + c.unexpected));
+      }
+      return rows;
+    }
+    function renderStorage(s) {
+      const up = s.storage === 'ok';
+      $('checks').replaceChildren(...storageRows(s, false));
+      $('restart').hidden = up;
+      $('storageHelp').hidden = !up;
+      const alert = $('storageAlert');
+      alert.hidden = up;
+      if (up) { alert.replaceChildren(); return; }
+      const c = s.startup_check;
+      const good = c ? Math.max(c.blobs - c.missing - c.size_mismatch, 0) : null;
+      const recheck = el('button', {type: 'button', className: 'btn btn-solid btn-lg', text: recheckTries === 0 ? '재검사' : '아직 연결되지 않았어요 · 다시 검사', on: {click: () => loadStorage(true)}});
+      alert.replaceChildren(
+        el('span', {className: 'alert-icon'}, icon('warn', 'i24')),
+        el('div', {className: 'alert-text'},
+          el('h2', {text: '저장장치가 연결되지 않았어요'}),
+          el('p', {}, '안전을 위해 ', el('strong', {text: '새 업로드를 모두 멈췄고'}), ', 내부 디스크로 대신 저장하지 않아요.'),
+          el('ul', {className: 'alert-list'},
+            el('li', {}, icon('shield-check', 'i16 kept'), good === null ? '이미 보관된 원본은 디스크 안에 그대로 있어요' : '이미 보관된 원본 ' + good.toLocaleString('ko-KR') + '개(서버 시작 시 확인)는 디스크 안에 그대로 있어요'),
+            el('li', {}, icon('device', 'i16'), '가족 기기에서 아직 못 보낸 사진은 각 기기에 그대로 남아 있어요'),
+            el('li', {}, icon('refresh', 'i16'), '디스크를 다시 연결하고 재검사하세요. 연결되면 다시 받아요'))),
+        el('div', {className: 'alert-actions'}, recheck));
+    }
+    async function loadStorage(recheck) {
       await run(async () => {
         const s = await api('/api/v1/admin/server/storage');
-        const li = (k, v) => el('li', {}, el('strong', {text: k + ': '}), v);
-        const items = [li('저장소', s.storage === 'ok' ? '연결됨' : '사용 불가 (외장 디스크 연결·마운트를 확인하세요)'),
-          li('여유 공간', fmtBytes(s.free_bytes) + ' (업로드 예약 ' + fmtBytes(s.min_free_bytes) + ')'),
-          li('무결성', s.integrity === 'ok' ? '정상' : '경고 — 서버 로그와 verify 결과를 확인하세요')];
-        if (s.startup_check) {
-          const c = s.startup_check;
-          items.push(li('시작 시 점검', '원본 ' + c.blobs + '개 · 없음 ' + c.missing + ' · 크기 불일치 ' + c.size_mismatch + ' · 격리(고아) ' + c.orphans + ' · 예상 밖 항목 ' + c.unexpected));
-        }
-        $('storageInfo').replaceChildren(...items);
+        if (recheck) recheckTries = s.storage === 'ok' ? 0 : recheckTries + 1;
+        renderStorage(s);
+        if (health) applyHealth({...health, storage: s.storage, integrity: s.integrity});
+        if (recheck && s.storage !== 'ok') $('storageAlert').querySelector('button').focus();
+        if (recheck) say(s.storage === 'ok' ? '저장장치를 다시 확인했어요. 새 업로드를 다시 받아요.' : '아직 저장장치가 연결되지 않았어요 (' + clock() + ' 확인).', s.storage !== 'ok');
       });
+    }
+
+    // ---- server settings (SERVER_ADMIN) ----
+    async function loadServer() {
       try {
         const t = await api('/api/v1/admin/server/tls');
         $('pairing').replaceChildren();
-        if (!t.enabled) { $('tlsInfo').textContent = 'TLS 꺼짐: 루프백 전용 평문 HTTP로 실행 중입니다. LAN 기기를 연결하려면 -tls -allow-lan 으로 다시 시작하세요.'; return; }
+        if (!t.enabled) { $('tlsInfo').textContent = 'TLS 꺼짐: 루프백 전용 평문 HTTP로 실행 중이에요. LAN 기기를 연결하려면 -tls -allow-lan 으로 다시 시작하세요.'; return; }
         $('tlsInfo').textContent = '공개키 지문(SPKI SHA-256): ' + t.spki_sha256.match(/../g).join(':').toUpperCase() + ' · 인증서 만료: ' + t.not_after;
-        t.pairing.forEach(p => $('pairing').append(el('li', {}, p.url + '  ', el('code', {text: p.payload}))));
-      } catch (err) { $('tlsInfo').textContent = 'TLS 정보를 불러오지 못했습니다: ' + err.message; }
+        t.pairing.forEach(p => $('pairing').append(el('li', {className: 'row'}, el('span', {className: 'row-icon small'}, icon('device', 'i14')),
+          el('div', {className: 'row-text'}, el('div', {className: 'row-title', text: p.url}), el('code', {text: p.payload})))));
+      } catch (err) { if (err instanceof ApiError) $('tlsInfo').textContent = 'TLS 정보를 불러오지 못했어요: ' + err.message; else fail(err); }
     }
 
     // ---- login / logout ----
+    function showLogin(message) {
+      $('app').hidden = true; $('loginBox').hidden = false;
+      $('meLink').hidden = true; $('logout').hidden = true; $('statusChip').hidden = true;
+      $('loginState').replaceChildren();
+      $('loginFeedback').textContent = message || '';
+      me = null; users = [];
+    }
     $('login').addEventListener('submit', async e => {
       e.preventDefault();
       try {
-        const r = await fetch('/api/v1/auth/login', {method: 'POST', credentials: 'same-origin', headers: {'Content-Type': 'application/json'},
+        const r = await send('/api/v1/auth/login', {method: 'POST', credentials: 'same-origin', headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({login_name: $('loginName').value.trim(), password: $('password').value, device_name: 'Web dashboard', platform: 'web'})});
         $('password').value = '';
         if (r.status === 429) { showLogin('시도가 너무 많습니다. 잠시 후 다시 시도하세요.'); return; }
         if (!r.ok) { showLogin('아이디 또는 비밀번호가 올바르지 않습니다.'); return; }
         await reload();
-        showTab('overview');
-        if (isAdmin()) loadUsers();
-      } catch (err) { showLogin(err.message); }
+      } catch (err) { if (err instanceof Offline) showOffline(); else showLogin(err.message); }
     });
     $('logout').addEventListener('click', async () => {
       try { await api('/api/v1/auth/logout', {method: 'POST'}); } catch (err) {}
       showLogin('로그아웃했습니다.');
     });
-    reload().then(() => { if (isAdmin()) loadUsers(); });
+    reload();
   </script>
 </body>
 </html>

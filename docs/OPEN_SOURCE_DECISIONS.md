@@ -25,3 +25,17 @@
 | `github.com/dustin/go-humanize` | v1.0.1 | MIT | 간접 |
 | `github.com/mattn/go-isatty` | v0.0.24 | MIT | 간접 |
 | `github.com/ncruces/go-strftime` | v1.0.0 | MIT | 간접 |
+
+## 디자인 토큰 출처 (Apache-2.0)
+
+내장 관리 화면(`internal/httpapi/web/index.html`)의 `<style>` 블록에 있는 색·글자 크기·간격·모서리 값은 **SEED Design** 토큰에서 파생했다. 코드·글꼴·이미지·아이콘 파일은 가져오지 않았고 값(CSS 사용자 정의 속성)만 옮겼다.
+
+| 항목 | 내용 |
+|---|---|
+| 원본 | SEED Design — `github.com/daangn/seed-design` (커밋 `0684acaa`, `packages/css/base.css`, `packages/rootage`) |
+| 저작권 | 주식회사 당근마켓 (Daangn Market Co., Ltd.) |
+| 라이선스 | Apache License 2.0 — https://www.apache.org/licenses/LICENSE-2.0 |
+| 사용 범위 | 시맨틱 색 토큰(라이트·다크), 타입 스케일(t2–t10), dimension(간격)·radius·shadow 값 |
+| 변경 | 브랜드 계열(`bg-brand-solid`·`bg-brand-weak`·`fg-brand`·`fg-brand-contrast`·`stroke-brand-weak`)을 SEED 팔레트 green 계열(라이트 `#00745F`, 다크 `#117956`)로 교체한 WithAlbum "보관 그린" 테마. 원격 글꼴(Pretendard) 대신 시스템 서체 스택, 작은 필수 글자는 대비 4.5:1을 위해 `fg-neutral-subtle` 대신 `fg-neutral-muted` 사용 |
+
+Apache-2.0 파생물은 AGPL-3.0 프로젝트에 포함할 수 있다(Apache-2.0은 GPLv3 계열과 호환). 바이너리 배포 시 다른 의존성 고지와 함께 Apache-2.0 전문을 동봉한다(릴리스 패키징에서 처리 예정).

@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"errors"
 	"net/http"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -12,6 +14,7 @@ import (
 	"github.com/aaaicu/withalbum/internal/authz"
 	"github.com/aaaicu/withalbum/internal/httpapi"
 	"github.com/aaaicu/withalbum/internal/meta"
+	"github.com/aaaicu/withalbum/internal/storage"
 )
 
 // inlineBody returns the text between <tag> and </tag> of page.
@@ -94,6 +97,82 @@ func TestDashboardPage(t *testing.T) {
 		if res.Header.Get("WWW-Authenticate") == "" {
 			t.Errorf("%s: no WWW-Authenticate", p)
 		}
+	}
+}
+
+// TestDashboardDesignRules pins the rules of the dashboard design (SEED
+// "keep green"): no wording that claims an upload is done before the server
+// verified it, icons are decorative inline SVG, nothing is loaded from
+// elsewhere (fonts, images, scripts, styles), no emoji, and light and dark
+// themes come from the page's own tokens.
+func TestDashboardDesignRules(t *testing.T) {
+	e := newACLEnv(t)
+	page := string(do(t, e.Raw, "GET", "/", nil, nil).Body)
+	// "업로드 완료" (upload done) and a bare "완료" (done) are not used: an
+	// original is "보관됨" (kept) only after the server verified it.
+	if strings.Contains(page, "업로드 완료") {
+		t.Error(`page says "업로드 완료"`)
+	}
+	if m := regexp.MustCompile(`[>'"]\s*완료\s*[.!]?\s*[<'"]`).FindString(page); m != "" {
+		t.Errorf("page uses a bare 완료: %q", m)
+	}
+	if !strings.Contains(page, "보관됨") {
+		t.Error(`page never says "보관됨"`)
+	}
+	// Every icon is inline SVG hidden from assistive technology.
+	svgs := regexp.MustCompile(`<svg[^>]*>`).FindAllString(page, -1)
+	if len(svgs) < 10 {
+		t.Fatalf("only %d inline SVG icons", len(svgs))
+	}
+	for _, s := range svgs {
+		if !strings.Contains(s, `aria-hidden="true"`) {
+			t.Errorf("icon without aria-hidden: %s", s)
+		}
+	}
+	// Nothing remote or external: the CSP would refuse it anyway.
+	for _, re := range []string{`https?://`, `@import`, `@font-face`, `url\(`, `<link\b`, `<img\b`, `<iframe\b`, `\ssrc\s*=`} {
+		if regexp.MustCompile(re).MatchString(page) {
+			t.Errorf("page matches %s", re)
+		}
+	}
+	for _, r := range page {
+		if (r >= 0x1F000 && r <= 0x1FAFF) || (r >= 0x2600 && r <= 0x27BF) || r == 0xFE0F {
+			t.Errorf("page contains emoji or pictograph %U", r)
+		}
+	}
+	style := inlineBody(t, page, "style")
+	for _, want := range []string{"@media (prefers-color-scheme: dark)", "--bg-brand-solid: #00745f", "--bg-brand-solid: #117956",
+		"--bg-neutral-solid: #2a3038", "-apple-system", "Apple SD Gothic Neo", "seed-design, Apache-2.0"} {
+		if !strings.Contains(style, want) {
+			t.Errorf("style lacks %q", want)
+		}
+	}
+}
+
+// TestAdminServerStorageUnavailable: with the volume marker gone, the
+// storage state the dashboard shows as "storage stopped" (D-03) comes from
+// the existing APIs, without the path or the volume identifier.
+func TestAdminServerStorageUnavailable(t *testing.T) {
+	e := newACLEnv(t)
+	if err := os.Remove(filepath.Join(e.Root, storage.MarkerName)); err != nil {
+		t.Fatal(err)
+	}
+	h := wantJSON(t, "health", do(t, e.Raw, "GET", "/api/v1/health", nil, nil), 200)
+	if h["storage"] != "unavailable" {
+		t.Fatalf("health %v", h)
+	}
+	r := e.as(t, "root", "GET", "/api/v1/admin/server/storage", nil, nil)
+	m := wantJSON(t, "storage", r, 200)
+	wantKeys(t, "storage", m, "storage", "integrity", "free_bytes", "min_free_bytes")
+	if m["storage"] != "unavailable" {
+		t.Fatalf("storage %v", m)
+	}
+	if strings.Contains(string(r.Body), e.Root) || strings.Contains(string(r.Body), e.Volume.ID()) || strings.Contains(string(r.Body), storage.MarkerName) {
+		t.Fatalf("storage reply leaks details: %s", r.Body)
+	}
+	wantError(t, "create folder while stopped", e.asJSON(t, "root", "POST", "/api/v1/folders", `{"name":"x"}`), 503, "storage_unavailable")
+	for _, login := range []string{"owner", "outsider"} {
+		wantError(t, login, e.as(t, login, "GET", "/api/v1/admin/server/storage", nil, nil), 403, "forbidden")
 	}
 }
 
