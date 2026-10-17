@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added (M22, resumable uploads / HEIC and video previews)
+- 재개 가능한 업로드 세션: `POST /api/v1/folders/{id}/uploads`(전체 `bytes`·`sha256`·`filename`, `Idempotency-Key` 필수), `GET|PATCH|DELETE .../uploads/{uid}`, `POST .../uploads/{uid}/complete`. 세션은 만든 계정·세션 기기·폴더에만 보이고 그 밖에는 404 `upload_not_found`. 같은 키·같은 내용 재생성은 같은 세션(200), 다른 내용 422, 이미 커밋된 키 409 `upload_already_committed`. 생성 시 전체 크기만큼 여유 공간을 예약(다른 열린 세션의 남은 바이트 포함, 부족하면 507), 단일 요청 업로드도 예약분을 침범하지 않음. 청크는 `Upload-Offset`이 현재 오프셋과 같아야 하고(아니면 409 `offset_mismatch`+현재 오프셋), 선택 `X-Chunk-SHA256` 불일치는 422 `chunk_hash_mismatch`(버림), fsync 후 오프셋 기록. 해시 없는 청크가 끊기면 도착분 보존. 같은 세션 동시 요청 409 `upload_busy`. 완료 시 저장 파일 전체를 다시 해시해 선언과 비교(불일치 422 `hash_mismatch`, 세션 0부터), 단일 업로드와 같은 커밋 경로(트랜잭션 안 권한·볼륨 재확인, 영수증, UPLOADER 202). 완료 재시도는 저장된 결과(`Idempotency-Replayed: true`). 계정당 열린 세션 16개(429 `too_many_uploads`), 세션당 최대 64GiB, 청크 최대 512MiB, 24시간(마지막 변경 기준) 만료 후 6시간 주기 정리에 합류. 기동 시 부분 파일을 기록 오프셋으로 절단·바이트 잃은 세션 삭제·고아 부분 파일 삭제.
+- HEIC/영상 프리뷰: 선택적 외부 변환기(macOS `sips`, `ffmpeg`; `WITHALBUM_PREVIEW_TOOLS`/`WITHALBUM_SIPS`/`WITHALBUM_FFMPEG`). 해당 형식은 `preview_status: "pending"`으로 커밋되고 백그라운드 워커가 변환 후 `ready`/`failed`를 기록하며 그 바이트를 가진 모든 폴더에 `asset_updated` 이벤트를 남김. 도구가 없으면 `unsupported`(원본만 보존). 자산·업로드 결과에 `preview_status` 추가.
+- 업로드 MIME 판별에 ISO BMFF 브랜드 추가(`image/heic`, `image/heif`, `image/avif`, `video/quicktime`, `video/mp4`, `video/3gpp`).
+- 마이그레이션 0008: `upload_sessions`, `assets.preview_state`.
+
+### Fixed (M22)
+- 같은 바이트의 동시 업로드에서 pool 승격(`Promote`)이 다른 업로드가 방금 넣은 정상 파일을 손상 파일로 오인해 orphans로 격리하고, 그 사이 pool 경로가 비어 동시 커밋이 500(`storage_failed`/`metadata_write_failed`)으로 실패할 수 있던 경쟁 조건(M17에서 1/16 관찰된 ConcurrentUploads 간헐 500의 원인). 승격을 pool 접두 디렉터리 단위로 직렬화.
+- UPLOADER가 응답 시간으로 "이미 있던 바이트"를 추정할 수 있던 차이(바이너리 스모크 중앙값 약 7.7ms → 0.5ms 이내): pool·preview 접두 디렉터리 256개를 시작 시 미리 만들고, 이미 있는 바이트의 승격도 같은 디렉터리에 이름 추가·삭제(하드 링크) 후 동기화. 남은 링크는 기동 재조정이 정리.
+
 ### Added (M17, admin / owner web UI)
 - 내장 웹 관리 화면(`internal/httpapi/web/index.html`, 의존성 없는 정적 HTML/JS): 개요(서버 상태·받은 초대 수락), 내 앨범(생성·업로드 테스트, OWNER는 멤버 역할 변경·내보내기·초대·초대 취소·소유권 이전·보관), 내 계정(비밀번호 변경·기기 해지), 사용자 관리(SERVER_ADMIN: 생성·역할·앨범 생성 권한·비활성/재활성·기기 해지·보관 앨범 재배정 후 비활성화), 서버·저장소(SERVER_ADMIN: 저장소 상태·여유 공간·시작 시 점검·TLS 지문). 모든 동작은 `docs/API_v2.yaml`의 기존 API만 사용하고, 관리자에게도 타인 앨범 이름·내용은 보이지 않음.
 - `GET /api/v1/admin/server/storage`(SERVER_ADMIN): 저장소 ok/unavailable, 여유 공간·업로드 예약, integrity, 기동 재조정 결과 개수(경로·볼륨 ID·해시 없음). 전체 `verify` 결과는 저장하지 않음(콘솔 명령).

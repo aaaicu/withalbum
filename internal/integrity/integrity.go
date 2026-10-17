@@ -406,6 +406,9 @@ func checkPool(ctx context.Context, vol *storage.Volume, sqlDB *sql.DB, r *Repor
 				return err
 			}
 			name := f.Name()
+			if strings.HasPrefix(name, blobstore.LinkPrefix) {
+				continue // a second name of a pool file (upload in progress, or removed at the next start)
+			}
 			if !f.Type().IsRegular() || len(name) != 64 || !isHex(name) || name[:2] != p.Name() {
 				r.Unexpected++
 				addSample(&r.UnexpectedList, rel(filepath.Join(dir, name)))

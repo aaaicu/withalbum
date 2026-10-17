@@ -120,7 +120,11 @@ func testBeforeCommit(t *testing.T, s Store) {
 func sha(n int) string { return fmt.Sprintf("%064x", n+1) }
 
 func asset(n int, name string) meta.Asset {
-	return meta.Asset{SHA256: sha(n), Filename: name, MimeType: "image/jpeg", Bytes: int64(100 + n), PreviewReady: n%2 == 0}
+	status := meta.PreviewStatusReady
+	if n%2 != 0 {
+		status = meta.PreviewStatusFailed
+	}
+	return meta.Asset{SHA256: sha(n), Filename: name, MimeType: "image/jpeg", Bytes: int64(100 + n), PreviewReady: n%2 == 0, PreviewStatus: status}
 }
 
 func mustFolder(t *testing.T, s Store, name string) meta.Folder {
@@ -246,7 +250,7 @@ func testCommitUpload(t *testing.T, s Store) {
 
 	// Same folder again: nothing changes, the stored asset is returned.
 	again := asset(0, "renamed.jpg")
-	again.PreviewReady = false
+	again.PreviewReady, again.PreviewStatus = false, meta.PreviewStatusFailed
 	res = mustCommit(t, s, meta.CommitRequest{FolderID: f1.ID, DeviceID: "dev-2", Asset: again}, meta.ResultAlreadyPresent)
 	if res.Asset != stored {
 		t.Fatalf("already_present asset %+v, want %+v", res.Asset, stored)

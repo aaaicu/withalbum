@@ -79,7 +79,8 @@ func sample(list *[]string, v string) {
 // instance lock (storage.Volume.Lock) and before any upload is accepted:
 //
 //   - deletes upload temp files in .system/incoming (never acknowledged),
-//   - deletes preview temp files in .system/previews,
+//   - deletes preview temp files in .system/previews and preview
+//     converter scratch directories in .system/work,
 //   - moves pool files that index does not list to .system/orphans,
 //   - reports blobs listed in index whose pool file is missing or has the
 //     wrong size (originals are never re-hashed here; that is too slow at
@@ -97,6 +98,9 @@ func (s *Store) Reconcile(ctx context.Context, index BlobIndex) (*ReconcileRepor
 	}
 	if err := s.cleanPreviewTemps(r); err != nil {
 		return r, fmt.Errorf("reconcile previews: %w", err)
+	}
+	if err := s.cleanWork(); err != nil {
+		return r, fmt.Errorf("reconcile preview work: %w", err)
 	}
 	it := &poolIter{s: s, r: r}
 	cur, ok, err := it.next()
@@ -228,6 +232,31 @@ func (s *Store) cleanPreviewTemps(r *ReconcileReport) error {
 	return nil
 }
 
+// removeLink deletes a leftover ".link-<sha>-<random>" entry of
+// equalizeDirWork if it is a second name of the pool file <sha> in the same
+// directory; anything else with that prefix is unexpected and left alone.
+func (s *Store) removeLink(r *ReconcileReport, dir, name string) error {
+	path := filepath.Join(dir, name)
+	sha, _, ok := strings.Cut(strings.TrimPrefix(name, LinkPrefix), "-")
+	if !ok || len(sha) != 64 || !isHex(sha) || sha[:2] != filepath.Base(dir) {
+		s.unexpected(r, path)
+		return nil
+	}
+	li, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	oi, err := os.Lstat(filepath.Join(dir, sha))
+	if err != nil || !li.Mode().IsRegular() || !os.SameFile(li, oi) {
+		s.unexpected(r, path)
+		return nil
+	}
+	if err := s.vol.Check(); err != nil {
+		return err
+	}
+	return os.Remove(path)
+}
+
 // isHex reports whether s is non-empty lowercase hex.
 func isHex(s string) bool {
 	for _, c := range s {
@@ -273,6 +302,12 @@ func (it *poolIter) next() (poolEntry, bool, error) {
 			it.fi++
 			path := filepath.Join(it.dir, e.Name())
 			name := e.Name()
+			if strings.HasPrefix(name, LinkPrefix) {
+				if err := it.s.removeLink(it.r, it.dir, name); err != nil {
+					return poolEntry{}, false, err
+				}
+				continue
+			}
 			if !e.Type().IsRegular() || len(name) != 64 || !isHex(name) || name[:2] != filepath.Base(it.dir) {
 				it.s.unexpected(it.r, path)
 				continue

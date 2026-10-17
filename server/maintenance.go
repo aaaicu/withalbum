@@ -14,9 +14,10 @@ import (
 const maintenanceInterval = 6 * time.Hour
 
 // prune deletes session rows revoked or expired more than
-// session.SessionRetention ago, used refresh tokens past their expiry and
-// upload receipts older than meta.ReceiptTTL. It writes nothing when the
-// storage volume does not verify.
+// session.SessionRetention ago, used refresh tokens past their expiry,
+// upload receipts older than meta.ReceiptTTL and expired upload sessions
+// with their partial files. It writes nothing when the storage volume does
+// not verify.
 func (a *app) prune(ctx context.Context, now time.Time) error {
 	if err := a.vol.Check(); err != nil {
 		return fmt.Errorf("storage unavailable, nothing pruned: %w", err)
@@ -29,8 +30,13 @@ func (a *app) prune(ctx context.Context, now time.Time) error {
 	if err != nil {
 		return fmt.Errorf("prune upload receipts: %w", err)
 	}
-	if r.Sessions+r.UsedRefresh+n > 0 {
-		log.Printf("maintenance: pruned %d old session(s), %d used refresh token(s), %d upload receipt(s)", r.Sessions, r.UsedRefresh, n)
+	u, err := a.api.PruneUploads(ctx, now)
+	if err != nil {
+		return fmt.Errorf("prune upload sessions: %w", err)
+	}
+	if r.Sessions+r.UsedRefresh+n+int64(u) > 0 {
+		log.Printf("maintenance: pruned %d old session(s), %d used refresh token(s), %d upload receipt(s), %d expired upload session(s)",
+			r.Sessions, r.UsedRefresh, n, u)
 	}
 	return nil
 }

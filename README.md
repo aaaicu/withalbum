@@ -28,7 +28,7 @@
 - **보안 경고:** **인터넷에 공개(포트포워딩·공개 리버스 프록시)하거나 대체할 수 없는 원본 사진의 단일 보관소로 사용하지 마세요.**
 
 <!-- 구현 범위 확인:
-internal/meta/sqlitestore: 서버가 쓰는 메타데이터 저장소. internal/meta/jsonstore는 서버 기동에 쓰이지 않는다(이관 테스트에서 이전 버전 데이터를 만드는 용도). 이관은 internal/legacyimport가 state.json을 자체 엄격 파서로 읽는다. 현재 전체 파일 한 번 업로드, MAX 512MiB.
+internal/meta/sqlitestore: 서버가 쓰는 메타데이터 저장소. internal/meta/jsonstore는 서버 기동에 쓰이지 않는다(이관 테스트에서 이전 버전 데이터를 만드는 용도). 이관은 internal/legacyimport가 state.json을 자체 엄격 파서로 읽는다. 단일 요청 업로드 MAX 512MiB, 그보다 큰 원본은 재개 가능한 업로드 세션(M22, 최대 64GiB).
 internal/httpapi: API 자산 ID는 랜덤 assets.asset_id(폴더별). SHA-256은 업로드 중복 제거·다운로드 검증용 sha256 필드로만 노출(읽기 권한자에게만). 라우트 보호는 middleware_authz.go의 routePolicies가 단일 출처다. 업로더는 세션의 user_id로 기록(assets.uploaded_by_user_id, folder_assets.added_by_user_id).
 server/listen.go: non-loopback listen은 -allow-lan + -tls + 사용 가능한 SERVER_ADMIN 모두 필요(checkListen). 평문 HTTP는 loopback만. 이 조건을 완화하지 말 것.
 SQLite 스키마와 YAML API 문서는 목표 규격으로만 분류할 것. 결과/HTTP 응답이 현재 구현과 다를 수 있다.
@@ -301,21 +301,24 @@ CAS pool 원본에 대해 해시가 같더라도 멀티파일 Live Photo, 메타
 | `GET` | `/api/v1/folders` | 내가 소유하거나 멤버인 폴더만, 내 역할 포함 | 세션 |
 | `POST` | `/api/v1/folders` | 폴더 생성, 만든 사람이 OWNER | 세션 + SERVER_ADMIN 또는 `can_create_albums` |
 | `GET` | `/api/v1/folders/{folderID}` | 이름·내 역할·가능 작업 | OWNER·모든 멤버 |
-| `POST` | `/api/v1/folders/{folderID}/assets` | 원본 업로드. `Idempotency-Key` 필수(계정·기기·폴더 범위, 같은 키 재시도는 같은 결과·중복 없음). 201/200은 파일+DB+영수증 커밋 후에만, UPLOADER는 항상 202 영수증. 커밋 직전 권한 재확인 | OWNER·CONTRIBUTOR·UPLOADER |
+| `POST` | `/api/v1/folders/{folderID}/assets` | 원본 업로드(한 요청, 512MiB 이하). `Idempotency-Key` 필수(계정·기기·폴더 범위, 같은 키 재시도는 같은 결과·중복 없음). 201/200은 파일+DB+영수증 커밋 후에만, UPLOADER는 항상 202 영수증. 커밋 직전 권한 재확인 | OWNER·CONTRIBUTOR·UPLOADER |
+| `POST` | `/api/v1/folders/{folderID}/uploads` | 재개 가능한 업로드 세션 생성(전체 크기·SHA-256 선언, `Idempotency-Key` 같은 범위, 전체 크기만큼 공간 예약·부족 시 507, 24시간 만료) | OWNER·CONTRIBUTOR·UPLOADER |
+| `GET`·`PATCH`·`DELETE` | `/api/v1/folders/{folderID}/uploads/{uploadID}` | 오프셋 조회 / 청크 순차 추가(`Upload-Offset`, 선택 `X-Chunk-SHA256`, fsync 후 기록) / 취소. 만든 계정·기기·폴더 외에는 404 | 세션을 만든 기기 |
+| `POST` | `/api/v1/folders/{folderID}/uploads/{uploadID}/complete` | 저장된 파일 전체 SHA-256 검증 → 단일 업로드와 같은 커밋(권한·볼륨 재확인, 영수증, UPLOADER 202). 재시도는 저장된 결과 | 세션을 만든 기기 |
 | `GET` | `/api/v1/folders/{folderID}/assets?after=&limit=` | 현재 자산 스냅샷(첫 페이지에 피드 cursor) | OWNER·CONTRIBUTOR·VIEWER |
 | `POST` | `/api/v1/folders/{folderID}/assets/check` | 이 폴더에 이미 있는 SHA-256(폴더 범위만) | OWNER·CONTRIBUTOR·VIEWER |
 | `DELETE` | `/api/v1/folders/{folderID}/assets/{assetID}` | 앨범에서 사진 제거(tombstone 이벤트, 원본 파일은 유지) | OWNER |
-| `GET` | `/api/v1/folders/{folderID}/sync?cursor=&limit=` | 변경 이벤트(`asset_added`/`asset_removed`), 문자열 cursor, 다른 폴더·복원 전·만료 cursor는 409 | OWNER·CONTRIBUTOR·VIEWER |
+| `GET` | `/api/v1/folders/{folderID}/sync?cursor=&limit=` | 변경 이벤트(`asset_added`/`asset_removed`/`asset_updated`(프리뷰 상태 변경)), 문자열 cursor, 다른 폴더·복원 전·만료 cursor는 409 | OWNER·CONTRIBUTOR·VIEWER |
 | `PUT` | `/api/v1/folders/{folderID}/sync/cursor` | 기기별 적용 위치 기록(선택) | OWNER·CONTRIBUTOR·VIEWER |
 | `GET` | `/api/v1/folders/{folderID}/assets/{assetID}/original` | 원본(그 폴더에 연결된 자산만) | OWNER·CONTRIBUTOR·VIEWER |
-| `GET` | `/api/v1/folders/{folderID}/assets/{assetID}/preview` | 기초 프리뷰 | OWNER·CONTRIBUTOR·VIEWER |
+| `GET` | `/api/v1/folders/{folderID}/assets/{assetID}/preview` | JPEG 프리뷰(`preview_status` = ready일 때) | OWNER·CONTRIBUTOR·VIEWER |
 
 나머지 `/api/v1/me*`, `/api/v1/admin/users*`(관리자의 타인 기기 목록·해지 포함)는 [`docs/API_v2.yaml`](docs/API_v2.yaml) 참조. 소유·멤버가 아닌 폴더(관리자 포함)는 존재하지 않는 폴더와 똑같이 404, 멤버인데 역할이 부족하면 403. 이 표는 실제 `internal/httpapi`(라우트 정책 표 `middleware_authz.go`)를 기준으로 합니다. 초대·멤버·소유권 이전·보관 라우트(`/api/v1/folders/{id}/invitations*`, `/members*`, `/owner`, `DELETE /api/v1/folders/{id}`, `/api/v1/invitations*`)도 같은 규격 파일에 있습니다.
 
-**미디어 목표:** HEIC/HEIF, JPG, PNG, RAW, Live Photo(HEIC+MOV 묶음), MP4/MOV, 4K/HDR, EXIF 및 촬영 날짜 유지. 원본 바이트는 변환하지 않고 보존, 프리뷰만 별도 생성. 현재 JPEG/PNG/GIF 기초 이미지 디코딩/간이 JPEG 미리보기 외에는 구현돼 있지 않습니다. 영상 프리뷰·변환은 미구현입니다.
+**미디어 목표:** HEIC/HEIF, JPG, PNG, RAW, Live Photo(HEIC+MOV 묶음), MP4/MOV, 4K/HDR, EXIF 및 촬영 날짜 유지. 원본 바이트는 변환하지 않고 보존, 프리뷰만 별도 생성. 현재 JPEG/PNG/GIF는 업로드 중 내장 디코더로 간이 JPEG 미리보기를 만들고, HEIC/HEIF/AVIF 등 정지 이미지(macOS `sips`)와 영상(`ffmpeg`, 대표 프레임 1장)은 **선택적 외부 도구**가 있을 때 커밋 후 백그라운드 워커가 만듭니다(M22: `preview_status` pending → ready/failed, 폴더 피드에 `asset_updated`). 도구가 없으면 원본만 보존하고 `unsupported`로 표시합니다. 도구는 셸 없이 인자 배열로만, 최소 환경·시간 제한·프로세스 그룹·격리된 작업 디렉터리(`.system/work`)에서 실행하고, 출력은 JPEG로 디코드·재인코드한 뒤에만 저장합니다. RAW·Live Photo 묶음·HDR 톤 매핑·영상 트랜스코딩은 미구현입니다.
 
 <!-- API 개발 지시:
-internal/httpapi는 512MiB 일괄 업로드만 지원. 대용량 영상 업로드 재개는 미구현(M22). idempotency receipt·폴더 범위 hash preflight는 M16에서 구현.
+internal/httpapi는 512MiB 단일 요청 업로드 + 재개 가능한 업로드 세션(M22, uploads.go: 세션은 계정·기기·폴더 소유, 청크 fsync 후 오프셋 기록, 완료 시 전체 SHA-256 재계산 후 단일 업로드와 같은 commitOriginal). idempotency receipt·폴더 범위 hash preflight는 M16에서 구현.
 원본 다운로드는 /folders/{folderID}/assets/{assetID}로만, 인증된 앨범 연결(folder_assets, removed_at NULL)·역할을 매 요청 검증한다(M10 구현).
 초대/관리/원본/프리뷰/이벤트 모든 핸들러가 인증 미들웨어를 통과해야 한다.
 공식 규격은 docs/API_v2.yaml 하나(M16). 라우트를 바꾸면 이 파일도 바꾼다(openapi_test.go가 강제).
@@ -389,7 +392,7 @@ GitHub에 곧바로 public push, Release 발행, 실제 원본 정리/삭제 등
 | `internal/meta/sqlitestore/` | **실행됨(부분 구현):** SQLite `MetadataStore`. 쓰기는 `BEGIN IMMEDIATE` 트랜잭션 하나(전역 mutex 없음), 읽기는 트랜잭션 없이 조회. 폴더별 랜덤 asset_id, 소유자는 `folders.owner_user_id`, 멤버는 `folder_members`. bootstrap 관리자(`account_bootstrap.user_id`로 식별, 처음엔 잠금된 `admin`)가 이전·이관 폴더 소유 |
 | `internal/meta/jsonstore/` | **서버 미사용·고정:** 이전 버전의 `.system/state.json` 구현. `MetadataStore`를 더 이상 구현하지 않으며 테스트에서 이전 버전 데이터를 만드는 용도로만 유지 |
 | `internal/legacyimport/` | **실행됨(`migrate-legacy`):** state.json → SQLite 무손실 이관. dry-run 기본, `-apply` 시 백업 → 임시 DB에 단일 트랜잭션 → 전 행 대조 검증 → 원자적 rename → state.json 보존 rename. 단계별 크래시·결함 입력 테스트 |
-| `internal/blobstore/` | **실행됨:** 업로드 임시 저장(해시·크기·MIME), pool 승격(원자적 rename, 0400), JPEG 프리뷰 |
+| `internal/blobstore/` | **실행됨:** 업로드 임시 저장(해시·크기·MIME, HEIC/MOV 등 ISO BMFF 판별), pool 승격(원자적 rename, 0400, 접두 디렉터리별 직렬화), 재개 업로드 부분 파일(`.system/uploads`), JPEG 프리뷰, 선택적 외부 변환기(sips·ffmpeg) |
 | `internal/integrity/` | **실행됨(`verify`):** 읽기 전용 무결성 검사 — DB integrity_check·foreign_key_check, 원본 존재·크기·(`-hash`) SHA-256, 손상 원본의 자산·폴더 보고, 프리뷰 누락·미참조 pool 파일·orphans 집계 |
 | `internal/backup/` | **실행됨(`backup`/`restore`):** `VACUUM INTO` 스냅샷 + 원본 증분 복사(복사 중 해시 검증) + 매니페스트, 백업 대상 마커·잠금. 복원은 전수 검증 → 스테이징 → 세션 폐기·감사 → 저널 → 원자적 rename(기존 데이터 보존). 단계별 크래시·손상 백업·업로드 중 백업 테스트 |
 | `server/maint.go` | **실행됨(콘솔):** `verify`·`backup`·`restore` 명령과 잠금 정책(verify·backup은 서버 실행 중 가능, restore는 중지 필요) |

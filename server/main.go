@@ -223,6 +223,9 @@ type appOptions struct {
 	MinFreeBytes int64
 	Faults       httpapi.FaultInjector // tests only
 	Auth         httpapi.AuthOptions   // zero: production defaults
+	// Converters are the external preview tools (blobstore.FindConverters;
+	// nil: none, HEIC and video previews are unsupported).
+	Converters []blobstore.Converter
 }
 
 // app is a started server: a verified volume, its instance lock, the
@@ -290,6 +293,7 @@ func openApp(ctx context.Context, root string, opt appOptions) (*app, error) {
 		return fail(fmt.Errorf("RECOVERY: startup reconciliation failed; refusing to start: %w", err))
 	}
 	logReconcile(a.report)
+	a.blobs.SetConverters(opt.Converters)
 	dbm, ok := a.meta.(interface{ DB() *sql.DB })
 	if !ok {
 		return fail(fmt.Errorf("metadata store %T has no account database", a.meta))
@@ -303,6 +307,14 @@ func openApp(ctx context.Context, root string, opt appOptions) (*app, error) {
 		MinFreeBytes: opt.MinFreeBytes, IntegrityWarning: !a.report.Healthy(), Faults: opt.Faults, Auth: auth,
 		StartupCheck: &httpapi.StartupCheck{Blobs: a.report.Blobs, Missing: a.report.Missing, SizeMismatch: a.report.SizeMismatch,
 			Orphans: a.report.Orphans, Unexpected: a.report.Unexpected}})
+	rec, err := a.api.RecoverUploads(ctx)
+	if err != nil {
+		return fail(fmt.Errorf("RECOVERY: upload sessions: %w", err))
+	}
+	if rec.Dropped+rec.Truncated+rec.OrphansRemoved+rec.Unexpected > 0 {
+		log.Printf("recovery: upload sessions=%d dropped=%d truncated=%d orphan_parts_removed=%d unexpected=%d",
+			rec.Sessions, rec.Dropped, rec.Truncated, rec.OrphansRemoved, rec.Unexpected)
+	}
 	return a, nil
 }
 
@@ -385,7 +397,14 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	a, err := openApp(context.Background(), root, appOptions{VolumeID: os.Getenv("WITHALBUM_VOLUME_ID"), MinFreeBytes: minFree})
+	converters := blobstore.FindConverters(os.Getenv)
+	for _, c := range converters {
+		log.Printf("previews: %s at %s for %v", c.Name, c.Path, c.Types)
+	}
+	if len(converters) == 0 {
+		log.Printf("previews: no external converter (sips, ffmpeg); HEIC and video originals are stored without a preview")
+	}
+	a, err := openApp(context.Background(), root, appOptions{VolumeID: os.Getenv("WITHALBUM_VOLUME_ID"), MinFreeBytes: minFree, Converters: converters})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -440,6 +459,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go a.maintain(ctx, maintenanceInterval)
+	go a.api.RunPreviews(ctx)
 	go func() {
 		<-ctx.Done()
 		shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

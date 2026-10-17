@@ -96,7 +96,7 @@ WITHALBUM_ROOT=/Volumes/NewSSD/WithAlbum ./withalbum-server restore -from /Volum
 - 절차:
   1. 매니페스트 형식 검사, 스냅샷 DB의 SHA-256이 매니페스트와 같은지, `integrity_check`·`foreign_key_check`, 스키마 버전이 이 바이너리보다 높지 않은지, DB의 blobs 목록이 매니페스트와 정확히 같은지 확인.
   2. `<root>/.system-restore`(스테이징)에 DB·원본(0400)·프리뷰를 복사하며 하나하나 해시 검증. 실패하면 아무것도 활성화하지 않음.
-  3. 스테이징 DB를 이 바이너리 스키마로 마이그레이션하고, **모든 세션과 기기를 폐기**(`revoke_reason=restore`)하고 감사 로그 `storage.restore`를 같은 트랜잭션에 기록, WAL 체크포인트.
+  3. 스테이징 DB를 이 바이너리 스키마로 마이그레이션하고, **모든 세션과 기기를 폐기**(`revoke_reason=restore`)하고 진행 중이던 재개 업로드 세션(부분 파일은 백업 대상이 아님)을 지우고 감사 로그 `storage.restore`를 같은 트랜잭션에 기록, WAL 체크포인트. 앱은 같은 `Idempotency-Key`로 새 업로드 세션을 만들어 다시 보냅니다.
   4. 저널 `<root>/.withalbum-restore.json` 기록 → 기존 `.system`을 보존 이름으로 rename → 스테이징을 `.system`으로 rename → 저널 삭제. 각 단계 fsync.
 - **세션 폐기 이유:** 백업 시점 이후에 해지한 기기(분실한 휴대폰 등)의 세션이 복원으로 되살아나면 안 되기 때문입니다. 복원 후 모든 기기와 웹은 다시 로그인해야 합니다. 비밀번호는 백업 시점의 값으로 돌아갑니다(그 뒤에 바꾼 비밀번호는 무효) — 필요하면 `admin reset-password`.
 - 백업에는 TLS 키(`.system/tls/server.pem`)가 들어가지 않습니다. 복원 후 `-tls`로 기동하면 새 키가 만들어져 모든 기기를 다시 페어링해야 합니다. 같은 키를 유지하려면 기동 전에 `.system.before-restore-<UTC>/tls/server.pem`을 `.system/tls/`로(0600 유지) 옮기세요.

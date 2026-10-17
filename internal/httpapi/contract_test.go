@@ -12,6 +12,7 @@ import (
 	"image/jpeg"
 	"io"
 	"io/fs"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -46,6 +47,8 @@ type contractEnv struct {
 	Root    string
 	Volume  *storage.Volume
 	Meta    *sqlitestore.Store
+	Blobs   *blobstore.Store
+	API     *httpapi.Server
 }
 
 // newContractEnv builds a server on a fresh t.TempDir() volume with the
@@ -103,9 +106,10 @@ func newContractEnvWith(t *testing.T, newStore storeOpener, adjust func(*httpapi
 	if adjust != nil {
 		adjust(&cfg)
 	}
-	raw := httpapi.New(cfg).Handler()
+	api := httpapi.New(cfg)
+	raw := api.Handler()
 	token := loginToken(t, raw, "root", adminPassword)
-	return contractEnv{Handler: asUser(raw, token), Raw: raw, Token: token, Root: vol.Root(), Volume: vol, Meta: store}
+	return contractEnv{Handler: asUser(raw, token), Raw: raw, Token: token, Root: vol.Root(), Volume: vol, Meta: store, Blobs: blobs, API: api}
 }
 
 // runContract pins the observable HTTP behavior (status codes, JSON keys,
@@ -355,7 +359,7 @@ func contractUpload(t *testing.T, env contractEnv) {
 	check := func(what string, r reply, status int, result string, preview bool, folderID string) {
 		t.Helper()
 		m := wantJSON(t, what, r, status)
-		wantKeys(t, what, m, "result", "asset_id", "folder_id", "sha256", "preview_ready")
+		wantKeys(t, what, m, "result", "asset_id", "folder_id", "sha256", "preview_ready", "preview_status")
 		if m["result"] != result || m["sha256"] != sha || m["folder_id"] != folderID || m["preview_ready"] != preview {
 			t.Fatalf("%s: %v", what, m)
 		}
@@ -488,7 +492,7 @@ func contractSync(t *testing.T, env contractEnv) {
 		t.Fatalf("assets %v", assets)
 	}
 	a := assets[picID].(map[string]any)
-	wantKeys(t, "asset", a, "id", "sha256", "filename", "mime_type", "bytes", "preview_ready", "uploaded_at")
+	wantKeys(t, "asset", a, "id", "sha256", "filename", "mime_type", "bytes", "preview_ready", "preview_status", "uploaded_at")
 	if a["id"] != picID || a["sha256"] != shaHex(pic) || a["filename"] != "p.jpg" || a["mime_type"] != "image/jpeg" || a["bytes"] != float64(len(pic)) || a["preview_ready"] != true {
 		t.Fatalf("asset %v", a)
 	}
@@ -642,9 +646,11 @@ func contractConcurrentUploads(t *testing.T, env contractEnv) {
 	folders := []string{createFolder(t, h, "x")["id"].(string), createFolder(t, h, "y")["id"].(string)}
 	pic := jpegBytes(t, 8, 8)
 	const perFolder = 8
+	logs := captureLog(t)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	results := map[string]int{}
+	var failures []string
 	for i := 0; i < perFolder*len(folders); i++ {
 		wg.Add(1)
 		go func(fid string) {
@@ -654,13 +660,16 @@ func contractConcurrentUploads(t *testing.T, env contractEnv) {
 			_ = json.Unmarshal(r.Body, &m)
 			mu.Lock()
 			results[fmt.Sprintf("%d %v", r.Status, m["result"])]++
+			if r.Status >= 300 {
+				failures = append(failures, fmt.Sprintf("%d %s", r.Status, bytes.TrimSpace(r.Body)))
+			}
 			mu.Unlock()
 		}(folders[i%len(folders)])
 	}
 	wg.Wait()
 	want := map[string]int{"201 created": 2, "200 already_present": perFolder*len(folders) - 2}
 	if fmt.Sprint(results) != fmt.Sprint(want) {
-		t.Fatalf("results %v, want %v", results, want)
+		t.Fatalf("results %v, want %v\nfailed replies: %q\nserver log:\n%s", results, want, failures, logs.String())
 	}
 	for _, fid := range folders {
 		m := syncPage(t, h, fid, "")
@@ -675,6 +684,36 @@ func contractConcurrentUploads(t *testing.T, env contractEnv) {
 	if n := countFilesUnder(t, filepath.Join(env.Root, ".system", "incoming")); n != 0 {
 		t.Fatalf("incoming has %d files", n)
 	}
+}
+
+// syncBuffer is a bytes.Buffer safe for concurrent writers.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// captureLog sends the standard logger (the server's log) to a buffer, and
+// also to the original output, until the test ends. Tests of this package
+// do not run in parallel, so swapping the global logger is safe.
+func captureLog(t *testing.T) *syncBuffer {
+	t.Helper()
+	buf := &syncBuffer{}
+	prev := log.Writer()
+	log.SetOutput(io.MultiWriter(prev, buf))
+	t.Cleanup(func() { log.SetOutput(prev) })
+	return buf
 }
 
 // wantNoBlobs asserts that incoming/ and pool/ hold no files.

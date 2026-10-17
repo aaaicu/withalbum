@@ -60,8 +60,18 @@ func MakeJPEGPreview(src, dst string) error {
 	if err != nil {
 		return err
 	}
+	return writeJPEGPreview(original, dst)
+}
+
+// writeJPEGPreview scales img so that its longer side is at most 1600px
+// and writes it as a JPEG to dst (temp file, fsync, rename, directory
+// fsync).
+func writeJPEGPreview(original image.Image, dst string) error {
 	bounds := original.Bounds()
 	w, h := bounds.Dx(), bounds.Dy()
+	if w <= 0 || h <= 0 {
+		return errors.New("empty image")
+	}
 	const maxSide = 1600
 	newW, newH := w, h
 	if w >= h && w > maxSide {

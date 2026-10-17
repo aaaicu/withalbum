@@ -16,14 +16,16 @@
 package blobstore
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
+	"sync"
 	"time"
 
 	"github.com/aaaicu/withalbum/internal/storage"
@@ -46,20 +48,52 @@ const uploadTempPrefix = "upload-"
 
 // Store is safe for concurrent use.
 type Store struct {
-	vol  *storage.Volume
-	root string
+	vol        *storage.Volume
+	root       string
+	converters []Converter // set once with SetConverters, before use
+	// promoteMu serializes Promote per pool prefix directory (the first two
+	// hex digits of the hash). The checks Promote makes on an existing pool
+	// file and the rename that replaces it are not atomic together; without
+	// this, two concurrent Promotes of the same bytes could take each
+	// other's fresh file for a damaged one. One process owns the volume
+	// (instance lock), so an in-process lock is enough.
+	promoteMu [256]sync.Mutex
 }
 
-// New creates .system/incoming, .system/pool and .system/previews inside a
-// verified volume. It never creates the volume root or any missing parent.
+// New creates .system/incoming, .system/pool, .system/previews,
+// .system/uploads (resumable upload sessions) and .system/work (preview
+// converter scratch space) inside a verified volume. It never creates the
+// volume root or any missing parent.
 func New(vol *storage.Volume) (*Store, error) {
 	if err := vol.Check(); err != nil {
 		return nil, err
 	}
 	root := vol.Root()
-	for _, p := range []string{".system", ".system/incoming", ".system/pool", ".system/previews"} {
+	for _, p := range []string{".system", ".system/incoming", ".system/pool", ".system/previews", ".system/uploads", ".system/work"} {
 		if err := storage.MkdirIn(filepath.Join(root, p)); err != nil {
 			return nil, err
+		}
+	}
+	// All 256 prefix directories exist from the start, so storing new bytes
+	// never creates (and syncs) a directory that known bytes would not:
+	// the work, and the time an upload takes, does not depend on whether
+	// the bytes were already stored.
+	for _, top := range []string{".system/pool", ".system/previews"} {
+		created := false
+		for i := 0; i < 256; i++ {
+			dir := filepath.Join(root, filepath.FromSlash(top), fmt.Sprintf("%02x", i))
+			if _, err := os.Lstat(dir); err == nil {
+				continue
+			}
+			if err := storage.MkdirIn(dir); err != nil {
+				return nil, err
+			}
+			created = true
+		}
+		if created {
+			if err := storage.SyncDir(filepath.Join(root, filepath.FromSlash(top))); err != nil {
+				return nil, err
+			}
 		}
 	}
 	return &Store{vol: vol, root: root}, nil
@@ -92,7 +126,7 @@ type StagedFile struct {
 	Path     string
 	SHA256   string // lowercase hex
 	Size     int64
-	MimeType string // http.DetectContentType of the first 512 bytes
+	MimeType string // SniffMIME of the first 512 bytes
 }
 
 // Remove deletes the temp file. It is a no-op after a successful Promote.
@@ -162,7 +196,7 @@ func (s *Store) Stage(r io.Reader, limit int64) (*StagedFile, error) {
 	}
 	staged.SHA256 = hex.EncodeToString(h.Sum(nil))
 	staged.Size = count
-	staged.MimeType = http.DetectContentType(sniff.buf)
+	staged.MimeType = SniffMIME(sniff.buf)
 	return staged, nil
 }
 
@@ -170,6 +204,10 @@ func (s *Store) Stage(r io.Reader, limit int64) (*StagedFile, error) {
 // read-only, renamed into place and the pool directory is fsynced (also the
 // pool itself when the prefix directory is new). sha must be f.SHA256 (the
 // verified hash).
+//
+// Promotes into the same pool prefix directory run one at a time, so a
+// pool file another upload of the same bytes has just put in place is
+// never mistaken for a damaged one.
 //
 // If a pool file for sha already exists (a concurrent upload of the same
 // bytes, or a file left by a crash before the metadata commit) it is re-hashed:
@@ -180,6 +218,15 @@ func (s *Store) Promote(f *StagedFile, sha string) error {
 	if sha != f.SHA256 {
 		return errors.New("blobstore: promote hash does not match staged file")
 	}
+	if len(sha) != 64 {
+		return errors.New("blobstore: promote needs a SHA-256 hex digest")
+	}
+	prefix, err := strconv.ParseUint(sha[:2], 16, 8)
+	if err != nil {
+		return errors.New("blobstore: promote needs a SHA-256 hex digest")
+	}
+	s.promoteMu[prefix].Lock()
+	defer s.promoteMu[prefix].Unlock()
 	dest := s.PoolPath(sha)
 	dir := filepath.Dir(dest)
 	_, statErr := os.Lstat(dir)
@@ -197,6 +244,11 @@ func (s *Store) Promote(f *StagedFile, sha string) error {
 	case ok:
 		// Reuse. The existing file was fsynced by whoever wrote it; sync its
 		// directory entry in case that writer crashed before doing so.
+		// Before that, change the directory the way storing new bytes does
+		// (a name added, a name removed), so that the sync costs the same
+		// and the time of an upload does not tell whether the bytes were
+		// already stored (an UPLOADER must not learn that).
+		equalizeDirWork(dir, dest, sha)
 		return storage.SyncDir(dir)
 	default:
 		if _, err := os.Lstat(dest); err == nil {
@@ -212,6 +264,26 @@ func (s *Store) Promote(f *StagedFile, sha string) error {
 		return err
 	}
 	return storage.SyncDir(dir)
+}
+
+// LinkPrefix names the short-lived extra hard links equalizeDirWork makes
+// in a pool prefix directory: ".link-<sha>-<random>". They are second names
+// of a pool file, never data of their own.
+const LinkPrefix = ".link-"
+
+// equalizeDirWork adds and removes a hard link to the pool file dest in its
+// directory. Nothing else sees the link; a crash can leave it behind, and
+// Reconcile removes it (it is only a second name of a pool file). File
+// systems without hard links (exFAT) skip it.
+func equalizeDirWork(dir, dest, sha string) {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return
+	}
+	link := filepath.Join(dir, LinkPrefix+sha+"-"+hex.EncodeToString(b[:]))
+	if err := os.Link(dest, link); err == nil {
+		_ = os.Remove(link)
+	}
 }
 
 // fileMatches reports whether path is a regular file of the given size whose

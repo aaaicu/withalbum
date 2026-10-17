@@ -36,6 +36,32 @@ Every response carries `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY
 
 Cookies are `Secure` automatically on TLS requests (`HttpOnly` and `SameSite=Strict` always).
 
+## External preview tools (M22)
+
+HEIC and other still images are converted with macOS `sips`, videos with
+`ffmpeg`, only if they are installed (`WITHALBUM_PREVIEW_TOOLS=off`
+disables both). Uploaded files are untrusted input to these tools, so:
+
+- they run directly with an argument list, never through a shell, with a
+  minimal environment (no inherited secrets), no stdin, bounded captured
+  output, a 90 s timeout and their own process group (killed as a whole);
+- they read the original from the pool, where it is mode 0400; its size,
+  mode and modification time are compared before and after each run;
+- they write only into a fresh directory under `.system/work`, removed
+  afterwards and at startup;
+- their output is accepted only if it decodes as a JPEG of sane size and
+  dimensions, and the stored preview is re-encoded by the server;
+- `ffmpeg` may only open local files (`-protocol_whitelist file`) with the
+  usual container demuxers (`-format_whitelist`), so a playlist or concat
+  file disguised as a movie cannot make it read other files or the network;
+  it runs single-threaded with a 256 MiB allocation cap. Go cannot cap a
+  child's total memory without cgo or a shell; conversions run one at a
+  time and still images over 256 MiB are not converted.
+
+Keep the tools updated; decoder vulnerabilities in them are outside the
+server's control. Without the tools nothing is lost: the original is stored
+and its preview reported as "unsupported".
+
 ## Administrator accounts and recovery (console only)
 
 The first administrator can only be created at the server console, never over HTTP:

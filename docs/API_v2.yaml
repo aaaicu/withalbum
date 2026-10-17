@@ -103,7 +103,23 @@ info:
     header Idempotency-Replayed: true) and stores nothing; the same key with
     other bytes is 422 idempotency_key_reused. Keys are remembered 30 days;
     after that a retry is a new request, which content deduplication still
-    answers as already present.
+    answers as already present. Originals over 512 MiB, or on unreliable
+    networks, go through a resumable upload session (POST
+    .../uploads, then PATCH chunks, then POST .../complete) whose
+    Idempotency-Key is the same kind of key with the same scope.
+
+
+    Previews. JPEG, PNG and GIF previews are made during the upload.
+    HEIC/HEIF/AVIF and other stills and videos get theirs from optional
+    external tools (macOS sips, ffmpeg) in a background worker after the
+    commit: the asset arrives with preview_status "pending" and an
+    asset_updated event follows when it is "ready" or "failed". A server
+    without the tool reports "unsupported". An app that can read the folder
+    keeps its temporary copy of an original until the commit succeeded and
+    the preview is no longer pending (ready, or failed/unsupported: then
+    the server keeps the original without a preview and the app shows that
+    state); an UPLOADER cannot see previews and relies on the commit
+    status alone.
 
 
     Errors are {"error": "<code>"}. 401 responses carry
@@ -984,6 +1000,202 @@ paths:
         '503':
           description: 'storage_unavailable, storage_io_error, busy (Retry-After: 1)'
         '507': {description: insufficient_storage (do not retry automatically)}
+  /api/v1/folders/{folder_id}/uploads:
+    parameters:
+      - $ref: '#/components/parameters/FolderID'
+    post:
+      tags: [Assets]
+      summary: Start a resumable upload session (OWNER, CONTRIBUTOR, UPLOADER)
+      description: >-
+        For originals larger than one request (up to 64 GiB) or unreliable
+        networks. The body declares the size and SHA-256 of the whole file
+        and its name; headers Idempotency-Key (required) and X-Device-ID as
+        for the single-request upload. The session belongs to the caller's
+        account, the device of the calling session and this folder: any
+        other caller, device or folder gets 404 upload_not_found for its
+        ID. The Idempotency-Key names the same request as for a
+        single-request upload (same account, device and folder scope):
+        creating again with the same key and the same size and SHA-256
+        returns the existing session (200, open or completed), other
+        content is 422 idempotency_key_reused, and a key already committed
+        is 409 upload_already_committed. Creation reserves the whole size:
+        507 insufficient_storage unless the free space minus the server's
+        reserve and minus what other open sessions still expect can hold
+        it. Sessions expire 24 hours after their last change (creation,
+        chunk, completion); at most 16 open sessions per account.
+        Whether the bytes are already stored anywhere is never revealed:
+        every session must receive every byte.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [bytes, sha256]
+              properties:
+                bytes: {type: integer, minimum: 1, maximum: 68719476736}
+                sha256: {type: string, pattern: '^[0-9a-fA-F]{64}$'}
+                filename: {type: string}
+      responses:
+        '200':
+          description: The existing session of this Idempotency-Key
+          headers:
+            Upload-Offset: {$ref: '#/components/headers/UploadOffset'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UploadSession'}
+        '201':
+          description: Session created at offset 0
+          headers:
+            Upload-Offset: {$ref: '#/components/headers/UploadOffset'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UploadSession'}
+        '400': {description: 'idempotency_key_required, invalid_idempotency_key, invalid_device_id, invalid_json, invalid_bytes, invalid_sha256'}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (VIEWER) or csrf_failed'}
+        '404': {description: folder_not_found}
+        '409': {description: 'upload_already_committed (this key was committed with these bytes)'}
+        '413': {description: file_too_large (over 64 GiB)}
+        '415': {description: json_required}
+        '422': {description: 'idempotency_key_reused (this key names other bytes)'}
+        '429': {description: too_many_uploads}
+        '500': {description: metadata_write_failed}
+        '503': {description: 'storage_unavailable, storage_io_error, busy (Retry-After: 1)'}
+        '507': {description: insufficient_storage (do not retry automatically)}
+  /api/v1/folders/{folder_id}/uploads/{upload_id}:
+    parameters:
+      - $ref: '#/components/parameters/FolderID'
+      - $ref: '#/components/parameters/UploadID'
+    get:
+      tags: [Assets]
+      summary: State and offset of an own upload session
+      description: >-
+        "offset" (also the Upload-Offset header) is how many bytes are
+        durably stored; send the next chunk from there. Use it after a
+        broken connection or a restart of the app.
+      responses:
+        '200':
+          description: The session
+          headers:
+            Upload-Offset: {$ref: '#/components/headers/UploadOffset'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UploadSession'}
+        '401': {description: unauthorized}
+        '403': {description: forbidden (VIEWER)}
+        '404': {description: 'folder_not_found, upload_not_found (unknown, expired, or of another account, device or folder)'}
+    patch:
+      tags: [Assets]
+      summary: Append the next chunk to an own upload session
+      description: >-
+        Headers: Upload-Offset (required, must equal the session's offset;
+        otherwise 409 offset_mismatch with the current offset), optional
+        X-Chunk-SHA256 (SHA-256 of this chunk; on mismatch the chunk is
+        dropped, 422 chunk_hash_mismatch, offset unchanged). The body is
+        the next bytes, at most max_chunk_bytes (512 MiB) and at most what
+        is left of the file. The bytes are fsynced before the offset is
+        recorded and the reply sent. A chunk with X-Chunk-SHA256 is stored
+        completely or not at all; if the connection breaks during a chunk
+        without it, the bytes that arrived are kept (ask GET for the
+        offset). Requests on one session are serialized: a second one
+        while another runs is 409 upload_busy (Retry-After: 1). If the
+        server finds the stored bytes shorter than recorded (lost), it
+        restarts the session: 409 offset_mismatch with offset 0.
+      parameters:
+        - in: header
+          name: Upload-Offset
+          required: true
+          schema: {type: integer, minimum: 0}
+        - in: header
+          name: X-Chunk-SHA256
+          schema: {type: string, pattern: '^[0-9a-fA-F]{64}$'}
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: {type: string, format: binary}
+      responses:
+        '200':
+          description: Chunk stored; the new offset
+          headers:
+            Upload-Offset: {$ref: '#/components/headers/UploadOffset'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UploadSession'}
+        '400': {description: 'invalid_offset, invalid_chunk_sha256, empty_chunk, upload_failed (body cut short)'}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (VIEWER, or role lowered) or csrf_failed'}
+        '404': {description: 'folder_not_found, upload_not_found'}
+        '409':
+          description: 'offset_mismatch (body {"error", "offset"}), upload_busy, upload_completed'
+        '413': {description: chunk_too_large}
+        '422': {description: chunk_hash_mismatch}
+        '500': {description: 'temp_failed, temp_write_failed, file_sync_failed, storage_failed, metadata_write_failed'}
+        '503': {description: 'storage_unavailable, storage_io_error, busy (Retry-After: 1)'}
+        '507': {description: insufficient_storage}
+    delete:
+      tags: [Assets]
+      summary: Cancel an own upload session and delete its stored bytes
+      description: A completed session is only forgotten; its original stays committed.
+      responses:
+        '204': {description: Cancelled}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (VIEWER) or csrf_failed'}
+        '404': {description: 'folder_not_found, upload_not_found'}
+        '409': {description: upload_busy}
+        '503': {description: 'storage_unavailable, storage_io_error, busy'}
+  /api/v1/folders/{folder_id}/uploads/{upload_id}/complete:
+    parameters:
+      - $ref: '#/components/parameters/FolderID'
+      - $ref: '#/components/parameters/UploadID'
+    post:
+      tags: [Assets]
+      summary: Verify and commit a fully received upload session
+      description: >-
+        The server hashes the stored file and compares size and SHA-256
+        with the declaration; on mismatch the stored bytes are discarded
+        and the session restarts at offset 0 (422 hash_mismatch). Then the
+        original is committed exactly like a single-request upload: the
+        permission and the storage volume are checked again inside the
+        commit transaction, the receipt is recorded under the session's
+        Idempotency-Key, and the replies are the same (201/200 with the
+        asset for readers, the same 202 receipt for UPLOADER). Completing
+        a completed session again (a lost response) returns the stored
+        result with Idempotency-Replayed: true. As with a single upload,
+        only a success status means the original is committed.
+      responses:
+        '200':
+          description: already_present (readers only)
+          headers:
+            Idempotency-Replayed: {$ref: '#/components/headers/IdempotencyReplayed'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UploadResult'}
+        '201':
+          description: created (readers only)
+          headers:
+            Idempotency-Replayed: {$ref: '#/components/headers/IdempotencyReplayed'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UploadResult'}
+        '202':
+          description: Generic receipt for upload-only callers
+          headers:
+            Idempotency-Replayed: {$ref: '#/components/headers/IdempotencyReplayed'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UploadReceipt'}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (VIEWER, or role lowered during the upload) or csrf_failed'}
+        '404': {description: 'folder_not_found (also when the membership was removed), upload_not_found'}
+        '409': {description: 'upload_incomplete (body {"error", "offset"}), offset_mismatch (stored bytes lost; offset 0), upload_busy'}
+        '422': {description: 'hash_mismatch (session restarted at offset 0), idempotency_key_reused'}
+        '500': {description: 'storage_failed, metadata_write_failed'}
+        '503': {description: 'storage_unavailable, storage_io_error, busy (Retry-After: 1)'}
+        '507': {description: insufficient_storage}
   /api/v1/folders/{folder_id}/assets/check:
     post:
       tags: [Assets]
@@ -1167,6 +1379,11 @@ components:
       name: asset_id
       required: true
       schema: {type: string}
+    UploadID:
+      in: path
+      name: upload_id
+      required: true
+      schema: {type: string, pattern: '^[0-9a-f]{32}$'}
     InvitationID:
       in: path
       name: invitation_id
@@ -1188,6 +1405,9 @@ components:
       description: 'Chosen by the client per queue item and kept for its retries; 1-128 characters A-Z a-z 0-9 . _ : - (a UUID is recommended). Scoped to account, device and folder.'
       schema: {type: string, pattern: '^[A-Za-z0-9._:-]{1,128}$'}
   headers:
+    UploadOffset:
+      description: Bytes of the upload session durably stored (the offset of the next chunk)
+      schema: {type: integer, minimum: 0}
     IdempotencyReplayed:
       description: '"true" when this is the stored result of an earlier request with the same Idempotency-Key'
       schema: {type: string, enum: ['true']}
@@ -1204,7 +1424,7 @@ components:
         can_upload: {type: boolean}
     Asset:
       type: object
-      required: [id, sha256, filename, mime_type, bytes, preview_ready, uploaded_at]
+      required: [id, sha256, filename, mime_type, bytes, preview_ready, preview_status, uploaded_at]
       properties:
         id: {type: string, description: 'random; valid only under its folder'}
         sha256: {type: string, description: 'of the original, to verify a download'}
@@ -1212,26 +1432,51 @@ components:
         mime_type: {type: string}
         bytes: {type: integer}
         preview_ready: {type: boolean}
+        preview_status: {$ref: '#/components/schemas/PreviewStatus'}
         uploaded_at: {type: string}
+    PreviewStatus:
+      type: string
+      enum: [ready, pending, failed, unsupported]
+      description: >-
+        ready: GET .../preview works (preview_ready is true exactly then).
+        pending: HEIC/HEIF/AVIF and other stills (macOS sips) and videos
+        (ffmpeg) are converted by a background worker after the commit; an
+        asset_updated event follows in the folder's feed when it is done.
+        failed: the converter could not make a preview. unsupported: no
+        converter for this type on this server (the tools are optional).
+        The original is stored unchanged in every case.
+    UploadSession:
+      type: object
+      required: [upload_id, folder_id, bytes, sha256, offset, status, expires_at, max_chunk_bytes]
+      properties:
+        upload_id: {type: string, description: 'random, 32 hex digits; visible only to its account, device and folder'}
+        folder_id: {type: string}
+        bytes: {type: integer, description: declared size of the whole original}
+        sha256: {type: string, description: declared SHA-256 of the whole original}
+        offset: {type: integer, description: bytes durably stored; the next chunk starts here}
+        status: {type: string, enum: [open, completed], description: 'completed: POST .../complete again returns the stored result'}
+        expires_at: {type: string, description: 24 hours after the last change}
+        max_chunk_bytes: {type: integer, description: largest body one PATCH accepts}
     Event:
       type: object
       required: [seq, kind, asset_id, folder_id, uploader_device_id, occurred_at]
       properties:
         seq: {type: integer, minimum: 1}
-        kind: {type: string, enum: [asset_added, asset_removed]}
+        kind: {type: string, enum: [asset_added, asset_removed, asset_updated], description: 'asset_updated: the asset (in "assets") changed, currently its preview_status'}
         asset_id: {type: string}
         folder_id: {type: string}
         uploader_device_id: {type: string, description: 'X-Device-ID label of the upload; "" for asset_removed'}
         occurred_at: {type: string}
     UploadResult:
       type: object
-      required: [result, asset_id, folder_id, sha256, preview_ready]
+      required: [result, asset_id, folder_id, sha256, preview_ready, preview_status]
       properties:
         result: {type: string, enum: [created, already_present]}
         asset_id: {type: string}
         folder_id: {type: string}
         sha256: {type: string}
         preview_ready: {type: boolean}
+        preview_status: {$ref: '#/components/schemas/PreviewStatus'}
     UploadReceipt:
       type: object
       required: [result, folder_id, sha256, bytes]
