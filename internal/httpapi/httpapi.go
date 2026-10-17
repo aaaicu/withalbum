@@ -91,6 +91,9 @@ type Config struct {
 	// TLS is the server's TLS identity shown to administrators (nil: no
 	// TLS). It can also be set later with SetTLSInfo.
 	TLS *TLSInfo
+	// StartupCheck is the startup reconciliation result shown to
+	// administrators (nil: not reported).
+	StartupCheck *StartupCheck
 }
 
 // Server holds the HTTP handlers.
@@ -106,6 +109,7 @@ type Server struct {
 	auth             *Auth
 	members          meta.Memberships
 	tls              *TLSInfo
+	startup          *StartupCheck
 	denials          *denialLog
 }
 
@@ -113,7 +117,7 @@ type Server struct {
 func New(cfg Config) *Server {
 	s := &Server{vol: cfg.Volume, meta: cfg.Meta, blobs: cfg.Blobs, version: cfg.Version,
 		minFree: max(cfg.MinFreeBytes, 0), freeBytes: cfg.FreeBytes, integrityWarning: cfg.IntegrityWarning, faults: cfg.Faults, auth: cfg.Auth,
-		members: cfg.Members, tls: cfg.TLS}
+		members: cfg.Members, tls: cfg.TLS, startup: cfg.StartupCheck}
 	if s.members == nil {
 		s.members, _ = cfg.Meta.(meta.Memberships)
 	}
@@ -158,7 +162,7 @@ func (s *Server) Handler() http.Handler {
 		// calls made after logging in.
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
+		w.Header().Set("Content-Security-Policy", dashboardCSP)
 		_, _ = w.Write(dashboardHTML)
 	})
 	rt.handle("GET /api/v1/health", func(w http.ResponseWriter, r *http.Request) {
@@ -183,7 +187,7 @@ func (s *Server) Handler() http.Handler {
 	rt.handleAlbum("GET /api/v1/folders/{folderID}/assets/{assetID}/preview", s.download(true))
 	s.syncRoutes(rt)
 	s.memberRoutes(rt)
-	rt.handle("GET /api/v1/admin/server/tls", s.serverTLS)
+	s.adminRoutes(rt)
 	return securityHeaders(rt.finish())
 }
 

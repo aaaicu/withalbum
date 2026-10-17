@@ -286,7 +286,35 @@ var (
 	ErrTargetIsOwner  = errors.New("target is the owner")
 	// ErrNewOwnerInactive: the member chosen as new owner cannot log in.
 	ErrNewOwnerInactive = errors.New("new owner account is not active")
+	// ErrNewOwnerNotFound: no account has the ID chosen as new owner.
+	ErrNewOwnerNotFound = errors.New("new owner account not found")
+	// ErrFolderNotArchived: the folder exists but is not archived, so an
+	// administrator may not reassign it (only its owner can transfer it).
+	ErrFolderNotArchived = errors.New("folder is not archived")
 )
+
+// OwnedFolders is what an administrator may know about the folders an
+// account owns: how many are in use, and the IDs of the archived ones.
+// Never names, members or contents.
+type OwnedFolders struct {
+	Active   int
+	Archived []ArchivedFolder
+}
+
+// ArchivedFolder is an archived folder as an administrator sees it.
+type ArchivedFolder struct {
+	ID         string
+	CreatedAt  string
+	ArchivedAt string
+}
+
+// Reassignment is the result of ReassignArchivedOwner.
+type Reassignment struct {
+	FolderID        string
+	PreviousOwnerID string
+	NewOwnerID      string
+	ArchivedAt      string
+}
 
 // Memberships manages invitations, memberships, ownership transfer and
 // archiving. Every write runs in one transaction that re-checks the caller
@@ -324,6 +352,19 @@ type Memberships interface {
 	// ArchiveFolder hides the folder from everyone (data is kept) and revokes
 	// its pending invitations.
 	ArchiveFolder(ctx context.Context, c AlbumChange) error
+	// OwnedFolders reports the folders userID owns (for account
+	// administration: an account that owns folders cannot be disabled).
+	OwnedFolders(ctx context.Context, userID string) (OwnedFolders, error)
+	// ReassignArchivedOwner makes TargetID the owner of the archived folder
+	// FolderID, so that its previous owner's account can be disabled. It is
+	// an administrator's operation: Authorize decides on the caller alone
+	// (the AlbumAccess passed is the zero value). The folder stays archived,
+	// so the new owner gains no access to it; the previous owner does not
+	// become a member, a membership of the new owner is dropped and pending
+	// invitations are revoked. ErrFolderNotFound (unknown),
+	// ErrFolderNotArchived, ErrTargetIsOwner, ErrNewOwnerNotFound,
+	// ErrNewOwnerInactive.
+	ReassignArchivedOwner(ctx context.Context, c AlbumChange) (Reassignment, error)
 }
 
 // MetadataStore is safe for concurrent use. Write methods either apply all of

@@ -30,7 +30,7 @@ On the plain loopback listener, requests whose `Host` is not `localhost` or a lo
 
 ### Response hardening
 
-Every response carries `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Cross-Origin-Resource-Policy: same-origin` and `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'` (the dashboard page sets its own, still with `frame-ancestors 'none'`). Downloaded originals additionally get `sandbox` and `Content-Disposition: attachment`, so a stored HTML or SVG file never runs as a page of the server origin.
+Every response carries `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Cross-Origin-Resource-Policy: same-origin` and `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'` (the dashboard page sets its own: its single inline script and single inline style are allowed by SHA-256 hash only — no `'unsafe-inline'` —, `connect-src 'self'`, `img-src 'none'`, `form-action 'none'`, `frame-ancestors 'none'`, and `require-trusted-types-for 'script'`; the page writes the DOM with `textContent` only). Downloaded originals additionally get `sandbox` and `Content-Disposition: attachment`, so a stored HTML or SVG file never runs as a page of the server origin.
 
 `Strict-Transport-Security: max-age=31536000` (no `includeSubDomains`, no `preload`) is sent only over TLS and only when `Host` is a DNS name other than `localhost`: browsers ignore HSTS for IP addresses and on connections with certificate errors, and HSTS for `localhost` would force HTTPS on every other local server of the machine.
 

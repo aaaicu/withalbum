@@ -1,6 +1,9 @@
 package httpapi
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
 	"net"
 	"net/http"
 	"strings"
@@ -19,6 +22,33 @@ const apiCSP = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; for
 // HTML or SVG file opened directly in a browser gets an opaque origin, so
 // it cannot read the dashboard's cookies or call the API.
 const downloadCSP = apiCSP + "; sandbox"
+
+// dashboardCSP is the policy of the dashboard page. Its one inline <style>
+// and one inline <script> are allowed by their SHA-256 hashes, computed from
+// the embedded page itself, so no other inline script or style, no event
+// handler attribute and no script from anywhere else can run, even if text
+// ever reached the page as markup. The page writes the DOM only through
+// textContent and element construction; Trusted Types (where the browser
+// supports them) additionally refuse every HTML-string sink such as
+// innerHTML. It talks to its own origin only, loads no images and submits
+// no form (login and every change go through fetch with the CSRF header).
+var dashboardCSP = "default-src 'none'; script-src " + inlineHash(dashboardHTML, "script") +
+	"; style-src " + inlineHash(dashboardHTML, "style") +
+	"; connect-src 'self'; img-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" +
+	"; require-trusted-types-for 'script'; trusted-types 'none'"
+
+// inlineHash returns the CSP source of the one <tag>...</tag> element of
+// page. It panics unless there is exactly one, without attributes.
+func inlineHash(page []byte, tag string) string {
+	open, end := []byte("<"+tag+">"), []byte("</"+tag+">")
+	if bytes.Count(page, []byte("<"+tag)) != 1 || bytes.Count(page, open) != 1 || bytes.Count(page, end) != 1 {
+		panic("httpapi: the dashboard needs exactly one plain <" + tag + "> element")
+	}
+	_, rest, _ := bytes.Cut(page, open)
+	body, _, _ := bytes.Cut(rest, end)
+	sum := sha256.Sum256(body)
+	return "'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'"
+}
 
 // hstsMaxAge: one year, without includeSubDomains or preload.
 const hstsMaxAge = "max-age=31536000"

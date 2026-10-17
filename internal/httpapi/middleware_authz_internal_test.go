@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/aaaicu/withalbum/internal/authz"
 )
 
 func wantPanic(t *testing.T, what, contains string, fn func()) {
@@ -45,12 +47,20 @@ func TestRouterRefusesUndeclaredRoutes(t *testing.T) {
 }
 
 // TestRoutePolicyTable pins the protection of the album routes and that
-// only the four expected routes are public.
+// only the four expected routes are public. The only folder route that is
+// not an album route is the administrator's reassignment of archived
+// folders, which gives no access to the folder (admin.go).
 func TestRoutePolicyTable(t *testing.T) {
 	var public []string
 	for _, p := range routePolicies {
 		if p.Access == AccessPublic {
 			public = append(public, p.Pattern)
+		}
+		if p.Pattern == "POST /api/v1/admin/folders/{folderID}/owner" {
+			if p.Access != AccessServer || p.Action != authz.ManageAccounts {
+				t.Errorf("%s is %s %s, want server %s", p.Pattern, p.Access, p.Action, authz.ManageAccounts)
+			}
+			continue
 		}
 		if strings.Contains(p.Pattern, "{folderID}") && p.Access != AccessAlbum {
 			t.Errorf("%s is %s, want album", p.Pattern, p.Access)

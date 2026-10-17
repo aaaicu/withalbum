@@ -300,7 +300,9 @@ func openApp(ctx context.Context, root string, opt appOptions) (*app, error) {
 	}
 	a.auth = auth
 	a.api = httpapi.New(httpapi.Config{Volume: vol, Meta: a.meta, Blobs: a.blobs, Version: version,
-		MinFreeBytes: opt.MinFreeBytes, IntegrityWarning: !a.report.Healthy(), Faults: opt.Faults, Auth: auth})
+		MinFreeBytes: opt.MinFreeBytes, IntegrityWarning: !a.report.Healthy(), Faults: opt.Faults, Auth: auth,
+		StartupCheck: &httpapi.StartupCheck{Blobs: a.report.Blobs, Missing: a.report.Missing, SizeMismatch: a.report.SizeMismatch,
+			Orphans: a.report.Orphans, Unexpected: a.report.Unexpected}})
 	return a, nil
 }
 
