@@ -66,6 +66,8 @@ func openStorageHint(root string, err error) string {
 		return fmt.Sprintf("volume marker %s in %q is unreadable or unsupported; refusing to start.", storage.MarkerName, root)
 	case errors.Is(err, storage.ErrVolumeMismatch):
 		return fmt.Sprintf("storage root %q holds a different volume than WITHALBUM_VOLUME_ID; refusing to start. Check which disk is mounted.", root)
+	case errors.Is(err, storage.ErrRestorePending):
+		return fmt.Sprintf("a restore into %q was interrupted (%s exists). Finish it by running the same withalbum-server restore -from ... command again; nothing else may use the storage until then.", root, storage.RestoreJournalName)
 	case errors.Is(err, storage.ErrNotWritable):
 		return fmt.Sprintf("storage root %q is not writable (read-only mount or permissions).", root)
 	}
@@ -332,6 +334,16 @@ func main() {
 	}
 	if len(os.Args) > 1 && os.Args[1] == "admin" {
 		os.Exit(runAdmin(os.Args[2:], consoleIO()))
+	}
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "verify":
+			os.Exit(runVerify(os.Args[2:], os.Stdout, os.Stderr))
+		case "backup":
+			os.Exit(runBackup(os.Args[2:], os.Stdout, os.Stderr))
+		case "restore":
+			os.Exit(runRestore(os.Args[2:], os.Stdout, os.Stderr))
+		}
 	}
 	showVersion := flag.Bool("version", false, "Print WithAlbum Server version and exit")
 	initStorage := flag.Bool("init-storage", false, "Register the existing WITHALBUM_ROOT directory as the storage volume and exit")

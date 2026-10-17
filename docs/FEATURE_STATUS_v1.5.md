@@ -30,7 +30,8 @@
 | macOS DMG GUI · 공증 | **미구현** | `docs/INSTALL_MACOS.md` | Apple Silicon 실기기 설치·서명 검증 |
 | Linux/Pi용 소스 크로스빌드 | **CI 설정 존재** | `.github/workflows` | 실제 CI 성공·실기기 실행은 별개 |
 | GitHub Releases 자동화 | **설정 존재** | `.goreleaser.yaml` | 실제 tag dry-run·asset·checksums test |
-| 백업/복원 및 안전한 업데이트 | **미구현** | `docs/ROADMAP.md` | 복원 훈련/rollback 실험 |
+| 백업/복원·무결성 검사 | **부분 구현(테스트·로컬 바이너리 스모크 검증, 실기기 미검증)** — `verify [-hash]`(읽기 전용, 같은 크기 손상 감지), `backup`(서버 실행 중, `VACUUM INTO` + 원본 증분 + SHA-256 매니페스트, 대상 마커·잠금, 같은 디스크 경고), `restore`(서버 중지, 전수 검증 → 스테이징 → 세션 전부 폐기 → 저널 → 원자적 교체, 기존 데이터 보존). 업로드 중 백업 일관성·복원 후 권한 동일성·단계별 크래시 재실행 테스트 | `internal/integrity`, `internal/backup`, `server/maint.go`, `docs/BACKUP_RESTORE.md` | 외장 디스크 실기기 복원 훈련, 대용량 소요 시간 |
+| 안전한 업데이트(rollback) | **미구현** | `docs/ROADMAP.md` | 업그레이드/다운그레이드 실험 |
 
 ## 필수 권한 인수 기준
 

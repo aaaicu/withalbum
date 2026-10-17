@@ -41,7 +41,8 @@
 - `internal/authz`: 권한 함수와 테스트. 모든 관리자·앨범 라우트에서 사용.
 - `internal/db`: SQLite 열기·PRAGMA·마이그레이션(0001 schema v1.4, 0002 이관 보조, 0003 `assets.preview_ready`, 0004 `account_bootstrap`, 0005 세션 토큰 컬럼·`auth_refresh_used`, 0006 대기 초대 부분 UNIQUE 인덱스). `docs/schema_v1.4.sql`은 마이그레이션 0001과 동일(정본은 `internal/db/migrations/`). users·audit_log·devices·auth_sessions·folder_members·folder_invitations 사용(`token_sha256`은 미사용, NULL).
 - `docs/API_AUTH_v1.4.yaml`(1.4.3-draft): `/auth/*`·`/me*`·`/admin/users*`·폴더 목록/생성/조회·업로드·sync·원본/프리뷰·초대·멤버·소유권 이전·폴더 보관은 **구현됨**, 자산 목록만 **미구현**. `docs/API_v1.2.yaml`은 폐기(역사).
-- Flutter/iOS/Android, OAuth Drive, 외부 통신, 실시간 푸시, GUI DMG, 신뢰 가능한 백업 복원은 없음.
+- `internal/integrity`(`verify [-hash]`, 읽기 전용) + `internal/backup`(`backup -to`: `VACUUM INTO` 스냅샷·원본 증분·SHA-256 매니페스트, 서버 실행 중 가능 / `restore -from`: 전수 검증·스테이징·세션 전부 폐기·저널·원자적 교체·기존 데이터 보존, 서버 중지 필요) + `server/maint.go`: 테스트(업로드 중 백업, 복원 후 권한 동일성, 단계별 크래시 재실행, 손상 백업 거부)·로컬 바이너리 스모크로 검증. 실기기·대용량 미검증. 절차 `docs/BACKUP_RESTORE.md`.
+- Flutter/iOS/Android, OAuth Drive, 외부 통신, 실시간 푸시, GUI DMG, 원격/클라우드 백업·백업 스케줄러는 없음.
 - README v1.5는 **기획·인수인계 정리판**이고 새 기능 릴리스가 아님.
 
 ## 보안 불변식 (위반하는 변경 금지)
