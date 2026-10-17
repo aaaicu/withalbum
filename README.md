@@ -20,16 +20,17 @@
 - **부분 구현:** 메타데이터는 SQLite(`.system/withalbum.db`, `internal/meta/sqlitestore`)에 저장합니다. 업로드 1건(blob·자산·폴더 연결·시퀀스·이벤트)은 트랜잭션 하나로 커밋되고, 자산 ID는 랜덤이며 폴더마다 따로 발급됩니다(같은 바이트라도 다른 폴더에서는 다른 자산). 새 폴더의 소유자는 만든 사람이고, 이전 버전·이관 데이터의 폴더는 bootstrap 관리자 계정이 소유합니다(처음에는 로그인할 수 없는 잠금 상태의 `admin`, 콘솔 `withalbum-server admin init`으로 인수하면 user_id가 유지되어 그 폴더를 그대로 소유). **이전 버전의 `.system/state.json`만 있는 저장소는 기동을 거부합니다(파일은 변경하지 않음). `withalbum-server migrate-legacy`(점검) → `migrate-legacy -apply`로 무손실 이관한 뒤 기동하세요. 절차·롤백: [`docs/MIGRATION_legacy_state.md`](docs/MIGRATION_legacy_state.md).**
 - **부분 구현(테스트 검증, 실기기 미검증):** 업로드 원자적 커밋·크래시 복구. 성공 응답(200/201)은 원본 파일(임시 파일 fsync → pool rename → 디렉터리 fsync)과 DB 트랜잭션이 모두 디스크에 기록된 뒤에만 보냅니다. 기동 시 재조정이 미완료 업로드 임시 파일을 지우고, DB에 없는 pool 파일은 `.system/orphans/`로 옮기며(삭제 안 함), DB에 있는데 파일이 없거나 크기가 다른 원본은 로그와 `/api/v1/health`의 `integrity: warning`으로 알립니다. 여유 공간이 예약분(`WITHALBUM_MIN_FREE_BYTES`, 기본 1GiB) 아래로 내려갈 업로드는 기록 전에 `507 insufficient_storage`로 거부합니다. 같은 저장소에 서버/이관 명령이 두 개 뜨지 않도록 `.system/withalbum.lock`을 잠급니다. 단계별 장애 주입과 실제 SIGKILL 테스트로 검증했고, 실제 전원 차단·외장 디스크 분리는 미검증입니다.
 - **부분 구현:** 계정 코어. Argon2id 비밀번호 해시(`internal/auth/password`), 사용자 저장소(`internal/users`, 마지막 활성 관리자 보호·감사 로그), 콘솔 명령 `withalbum-server admin init | create-user | reset-password`.
-- **부분 구현(loopback 전용):** HTTP 로그인·기기 세션·계정 관리 API(`/api/v1/auth/login|refresh|logout`, `/api/v1/me`, `/api/v1/me/password`, `/api/v1/me/devices`, `/api/v1/admin/users*`, 규격 [`docs/API_AUTH_v1.4.yaml`](docs/API_AUTH_v1.4.yaml)). access 15분/refresh 30일 회전·재사용 감지, Bearer(앱)·HttpOnly 쿠키+CSRF(웹), 로그인 속도 제한·실패 감사, 비밀번호 재설정·계정 비활성화 시 세션 회수.
-- **부분 구현(테스트·로컬 바이너리 스모크 검증, loopback 전용):** 앨범 ACL. 대시보드 페이지·health·login·refresh를 뺀 모든 API는 세션 필요(없으면 401). 폴더·업로드·동기화·원본/프리뷰는 요청마다 DB의 소유자·멤버십으로 `internal/authz` 판정(`internal/httpapi/middleware_authz.go`, 라우트별 정책 표, 미선언 라우트는 기동 시 panic). 관리자라도 소유·멤버가 아닌 앨범은 404, 역할 부족은 403, 다른 폴더의 자산 ID는 404. UPLOADER는 업로드만 가능하고 응답은 항상 같은 202 영수증. 업로드는 커밋 직전 DB 트랜잭션 안에서 권한을 재확인. 기본 USER는 앨범 생성 불가(`can_create_albums`). 무인증 `/api/v1/assets/{sha}/*`는 제거. 앨범 공유(OWNER만): 등록 계정 초대(7일, 대상 본인만 수락), 초대 취소, 역할 변경·추방(다음 요청부터 반영), 소유권 이전(이전 오너는 CONTRIBUTOR, 1 트랜잭션, 실패 시 롤백), 앨범 보관. 모든 변경은 같은 트랜잭션에서 감사 로그. TLS가 없으므로 서버는 여전히 `127.0.0.1`에서만 listen합니다.
+- **부분 구현:** HTTP 로그인·기기 세션·계정 관리 API(`/api/v1/auth/login|refresh|logout`, `/api/v1/me`, `/api/v1/me/password`, `/api/v1/me/devices`, `/api/v1/admin/users*`, 규격 [`docs/API_AUTH_v1.4.yaml`](docs/API_AUTH_v1.4.yaml)). access 15분/refresh 30일 회전·재사용 감지, Bearer(앱)·HttpOnly 쿠키+CSRF(웹), 로그인 속도 제한·실패 감사, 비밀번호 재설정·계정 비활성화 시 세션 회수.
+- **부분 구현(테스트·로컬 바이너리 스모크 검증):** 앨범 ACL. 대시보드 페이지·health·login·refresh를 뺀 모든 API는 세션 필요(없으면 401). 폴더·업로드·동기화·원본/프리뷰는 요청마다 DB의 소유자·멤버십으로 `internal/authz` 판정(`internal/httpapi/middleware_authz.go`, 라우트별 정책 표, 미선언 라우트는 기동 시 panic). 관리자라도 소유·멤버가 아닌 앨범은 404, 역할 부족은 403, 다른 폴더의 자산 ID는 404. UPLOADER는 업로드만 가능하고 응답은 항상 같은 202 영수증. 업로드는 커밋 직전 DB 트랜잭션 안에서 권한을 재확인. 기본 USER는 앨범 생성 불가(`can_create_albums`). 무인증 `/api/v1/assets/{sha}/*`는 제거. 앨범 공유(OWNER만): 등록 계정 초대(7일, 대상 본인만 수락), 초대 취소, 역할 변경·추방(다음 요청부터 반영), 소유권 이전(이전 오너는 CONTRIBUTOR, 1 트랜잭션, 실패 시 롤백), 앨범 보관. 모든 변경은 같은 트랜잭션에서 감사 로그.
 - **설계만 완료:** Mac 설치 마법사, iOS/Android 앱, 역방향 모바일 동기화, Google Drive 어댑터, 장애 복구.
 - **아직 없음:** 서명·공증된 DMG, 정식 Google Drive OAuth 연결, 모바일 앱, 프로덕션 안정성 보장.
-- **보안 경고:** TLS가 없으므로 HTTP 서버는 의도적으로 `127.0.0.1`에만 바인딩됩니다. **LAN/인터넷에 공개하거나 대체할 수 없는 원본 사진의 단일 보관소로 사용하지 마세요.**
+- **부분 구현(테스트·LAN 바이너리 스모크 검증, 실기기 앱 미검증):** TLS·LAN 게이트(M15). 기본은 `127.0.0.1` 평문 HTTP. LAN 주소(사설 IP 또는 와일드카드)는 `-allow-lan` + `-tls` + 로그인 가능한 활성 SERVER_ADMIN이 모두 있을 때만 listen하고, 하나라도 없으면 기동을 거부합니다. 공인 IP·호스트 이름은 항상 거부. `-tls`는 자체 서명 인증서(`.system/tls/server.pem`, 0600, ECDSA P-256, TLS 1.3 전용)를 만들고, 앱은 공개키 지문(SPKI SHA-256)을 핀닝합니다(`withalbum-server tls`, 대시보드 관리자 화면에 페어링 페이로드). 보안 헤더·원본 다운로드 sandbox·IPv6 /64 속도 제한 키·루프백 Host 검사. 자세한 내용과 보안 점검 결과: [`SECURITY.md`](SECURITY.md).
+- **보안 경고:** **인터넷에 공개(포트포워딩·공개 리버스 프록시)하거나 대체할 수 없는 원본 사진의 단일 보관소로 사용하지 마세요.**
 
 <!-- 구현 범위 확인:
 internal/meta/sqlitestore: 서버가 쓰는 메타데이터 저장소. internal/meta/jsonstore는 서버 기동에 쓰이지 않는다(이관 테스트에서 이전 버전 데이터를 만드는 용도). 이관은 internal/legacyimport가 state.json을 자체 엄격 파서로 읽는다. 현재 전체 파일 한 번 업로드, MAX 512MiB.
 internal/httpapi: API 자산 ID는 랜덤 assets.asset_id(폴더별). SHA-256은 업로드 중복 제거·다운로드 검증용 sha256 필드로만 노출(읽기 권한자에게만). 라우트 보호는 middleware_authz.go의 routePolicies가 단일 출처다. 업로더는 세션의 user_id로 기록(assets.uploaded_by_user_id, folder_assets.added_by_user_id).
-internal/httpapi: TLS 전이므로 loopback 가드를 유지한다(M15).
+server/listen.go: non-loopback listen은 -allow-lan + -tls + 사용 가능한 SERVER_ADMIN 모두 필요(checkListen). 평문 HTTP는 loopback만. 이 조건을 완화하지 말 것.
 SQLite 스키마와 YAML API 문서는 목표 규격으로만 분류할 것. 결과/HTTP 응답이 현재 구현과 다를 수 있다.
 이 패키지는 'v1.5 documentation/handoff'이고 서버 실행파일 기능이 v1.5로 향상되었다는 뜻이 아님.
 -->
@@ -294,7 +295,7 @@ CAS pool 원본에 대해 해시가 같더라도 멀티파일 Live Photo, 메타
 
 | Method | Path | 동작 | 보안 상태 |
 |---|---|---|---|
-| `GET` | `/` | 로컬 브라우저 UI(정적 페이지, 데이터는 로그인 후 API로) | 공개/loopback |
+| `GET` | `/` | 브라우저 UI(정적 페이지, 데이터는 로그인 후 API로) | 공개 |
 | `GET` | `/api/v1/health` | 서버 상태 + `storage: ok\|unavailable` + `integrity: ok\|warning` | 공개 |
 | `POST` | `/api/v1/auth/login`, `/api/v1/auth/refresh` | 로그인·토큰 회전 | 공개(속도 제한) |
 | `GET` | `/api/v1/folders` | 내가 소유하거나 멤버인 폴더만, 내 역할 포함 | 세션 |
@@ -314,7 +315,7 @@ internal/httpapi는 512MiB 일괄 업로드만 지원. 대용량 영상 업로�
 원본 다운로드는 /folders/{folderID}/assets/{assetID}로만, 인증된 앨범 연결(folder_assets, removed_at NULL)·역할을 매 요청 검증한다(M10 구현).
 초대/관리/원본/프리뷰/이벤트 모든 핸들러가 인증 미들웨어를 통과해야 한다.
 새 OpenAPI 명세를 작성할 때 기존 API_v1.2+API_AUTH_v1.4의 차이를 조정하고 계약 테스트 작성.
-네트워크 ACL을 완성하기 전 loopback 제한을 제거하지 말 것. HTTPS/페어링 설계 후 LAN 확장.
+LAN은 TLS(자체 서명 + SPKI 핀닝) + 관리자 + -allow-lan일 때만(M15). 인터넷 공개·리버스 프록시 모드는 미지원.
 -->
 
 ## 7. macOS 최우선 설치 · Linux/Pi 배포 · 오픈소스 공개
@@ -374,7 +375,7 @@ GitHub에 곧바로 public push, Release 발행, 실제 원본 정리/삭제 등
 
 | 경로 | 역할 / 구현 상태 |
 |---|---|
-| `server/main.go` | **실행됨:** 설정·기동만 (환경변수, `-init-storage`, `migrate-legacy`·`admin`·`verify`·`backup`·`restore` 서브커맨드, 볼륨 검증, loopback 가드, 저장소 조립) |
+| `server/main.go` | **실행됨:** 설정·기동만 (환경변수, `-init-storage`, `migrate-legacy`·`admin`·`verify`·`backup`·`restore`·`tls` 서브커맨드, `-tls`/`-allow-lan`, 볼륨 검증, 저장소 조립). listen 게이트·TLS 기동은 `server/listen.go` |
 | `server/admin.go` | **실행됨(콘솔):** `admin init`(bootstrap 관리자 인수) / `create-user` / `reset-password`. 저장소 잠금 필요(서버 중지 상태), 비밀번호는 에코 없는 TTY 2회 입력 또는 stdin 한 줄 |
 | `internal/auth/password/` | **실행됨(콘솔):** Argon2id PHC 해시(기본 m=64MiB,t=3,p=2), 상수시간 검증, 정규형·파라미터 상한 검사, 잠금 값(`!` 접두) 항상 거부, 재해시 필요 판정, 비밀번호 정책 |
 | `internal/users/` | **실행됨:** 사용자 저장소(생성·조회·비활성·역할·앨범 생성 권한·비밀번호), bootstrap 인수 1회, 마지막 활성 관리자 보호, 감사 로그(`internal/audit`). 콘솔 명령과 `/api/v1/admin/users*`에서 사용 |

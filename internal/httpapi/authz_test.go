@@ -261,7 +261,7 @@ func TestUploaderLearnsNothing(t *testing.T) {
 				}
 			}
 		})
-		if strings.Join(hdr, ",") != "Cache-Control,Content-Type,Pragma" {
+		if strings.Join(hdr, ",") != "Cache-Control,Content-Security-Policy,Content-Type,Cross-Origin-Resource-Policy,Pragma,Referrer-Policy,X-Content-Type-Options,X-Frame-Options" {
 			t.Fatalf("%s: headers %v", name, hdr)
 		}
 	}

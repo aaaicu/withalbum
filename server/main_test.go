@@ -18,26 +18,6 @@ import (
 	"github.com/aaaicu/withalbum/internal/storage"
 )
 
-func TestLocalOnly(t *testing.T) {
-	for _, tt := range []struct {
-		addr    string
-		allowed bool
-	}{
-		{"127.0.0.1:8787", true},
-		{"localhost:8787", true},
-		{"[::1]:8787", true},
-		{"0.0.0.0:8787", false},
-		{":8787", false},
-		{"192.168.0.21:8787", false},
-		{"[::]:8787", false},
-		{"badaddr", false},
-	} {
-		if got := loopbackOnly(tt.addr); got != tt.allowed {
-			t.Errorf("loopbackOnly(%q) = %v, want %v", tt.addr, got, tt.allowed)
-		}
-	}
-}
-
 func newTestVolume(t *testing.T) *storage.Volume {
 	t.Helper()
 	root := t.TempDir()

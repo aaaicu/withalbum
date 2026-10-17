@@ -13,11 +13,19 @@ import (
 	"github.com/aaaicu/withalbum/internal/storage"
 )
 
+// previewSlots bounds concurrent preview decodes. A decoded image of the
+// largest accepted size (40 megapixels) can take a few hundred MiB (16-bit
+// PNG), so parallel uploads must not each decode one at the same time.
+var previewSlots = make(chan struct{}, 1)
+
 // MakePreview writes the JPEG preview for the pooled original with the given
 // hash. It returns an error for files that are not decodable images. A
 // panic in an image decoder is returned as an error too: a preview is
 // derived data and must never take the upload of the original down with it.
+// Previews are made one at a time (previewSlots).
 func (s *Store) MakePreview(sha string) (err error) {
+	previewSlots <- struct{}{}
+	defer func() { <-previewSlots }()
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("preview: decoder panic: %v", r)

@@ -3,8 +3,9 @@
 // Every route needs a session except the dashboard page, health, login and
 // refresh, and every folder and asset route is authorized per request
 // against the owner and memberships stored in the database
-// (middleware_authz.go). There is no TLS yet (M15), so the server still
-// listens on loopback only. Never publish its port.
+// (middleware_authz.go). The server speaks plain HTTP on loopback only;
+// on a LAN address it requires TLS (server/main.go, internal/tlsid). Never
+// publish its port to the internet.
 package httpapi
 
 import (
@@ -14,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -89,6 +91,9 @@ type Config struct {
 	// Meta, which must then implement meta.Memberships (Handler panics
 	// otherwise).
 	Members meta.Memberships
+	// TLS is the server's TLS identity shown to administrators (nil: no
+	// TLS). It can also be set later with SetTLSInfo.
+	TLS *TLSInfo
 }
 
 // Server holds the HTTP handlers.
@@ -103,13 +108,14 @@ type Server struct {
 	faults           FaultInjector
 	auth             *Auth
 	members          meta.Memberships
+	tls              *TLSInfo
 }
 
 // New returns a Server for cfg.
 func New(cfg Config) *Server {
 	s := &Server{vol: cfg.Volume, meta: cfg.Meta, blobs: cfg.Blobs, version: cfg.Version,
 		minFree: max(cfg.MinFreeBytes, 0), freeBytes: cfg.FreeBytes, integrityWarning: cfg.IntegrityWarning, faults: cfg.Faults, auth: cfg.Auth,
-		members: cfg.Members}
+		members: cfg.Members, tls: cfg.TLS}
 	if s.members == nil {
 		s.members, _ = cfg.Meta.(meta.Memberships)
 	}
@@ -151,7 +157,6 @@ func (s *Server) Handler() http.Handler {
 		// calls made after logging in.
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
 		_, _ = w.Write(dashboardHTML)
 	})
@@ -177,7 +182,8 @@ func (s *Server) Handler() http.Handler {
 	rt.handleAlbum("GET /api/v1/folders/{folderID}/assets/{assetID}/original", s.download(false))
 	rt.handleAlbum("GET /api/v1/folders/{folderID}/assets/{assetID}/preview", s.download(true))
 	s.memberRoutes(rt)
-	return rt.finish()
+	rt.handle("GET /api/v1/admin/server/tls", s.serverTLS)
+	return securityHeaders(rt.finish())
 }
 
 // metaReadFailed replies to an unexpected metadata read error.
@@ -595,8 +601,16 @@ func (s *Server) download(preview bool) albumHandler {
 			w.Header().Set("Content-Type", "image/jpeg")
 		} else {
 			w.Header().Set("Content-Type", asset.MimeType)
+			// The original is served as stored, whatever its type: never
+			// as a document of this origin (stored HTML or SVG must not
+			// run script next to the dashboard's session).
+			w.Header().Set("Content-Security-Policy", downloadCSP)
+			disposition := mime.FormatMediaType("attachment", map[string]string{"filename": asset.Filename})
+			if disposition == "" {
+				disposition = "attachment"
+			}
+			w.Header().Set("Content-Disposition", disposition)
 		}
-		w.Header().Set("X-Content-Type-Options", "nosniff")
 		http.ServeFile(w, r, path)
 	}
 }

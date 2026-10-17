@@ -386,6 +386,17 @@ func usableAdmin(u User) bool {
 	return u.Role == RoleServerAdmin && u.Status == StatusActive && !u.PasswordLocked
 }
 
+// UsableAdminCount counts the administrators who can log in: active
+// SERVER_ADMIN accounts whose password is not locked (the unclaimed
+// bootstrap account does not count).
+func (s *Store) UsableAdminCount(ctx context.Context) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM users
+		WHERE server_role = 'SERVER_ADMIN' AND status = 'active' AND substr(password_hash, 1, 1) != ?`,
+		password.LockedPrefix).Scan(&n)
+	return n, err
+}
+
 // requireOtherAdmin returns ErrLastAdmin when no usable administrator other
 // than id exists.
 func requireOtherAdmin(ctx context.Context, tx *sql.Tx, id string) error {

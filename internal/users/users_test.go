@@ -451,3 +451,29 @@ func TestSetPermissionsIsAtomic(t *testing.T) {
 		t.Fatalf("List = %+v, %v", list, err)
 	}
 }
+
+// TestUsableAdminCount: only active administrators with a usable password
+// count (the LAN listen gate in server/main.go relies on it).
+func TestUsableAdminCount(t *testing.T) {
+	ctx := context.Background()
+	sqlDB, s, _ := setup(t)
+	count := func(want int) {
+		t.Helper()
+		if n, err := s.UsableAdminCount(ctx); err != nil || n != want {
+			t.Fatalf("UsableAdminCount = %d, %v, want %d", n, err, want)
+		}
+	}
+	count(0) // only the locked bootstrap account
+	claim(t, s, "alice")
+	count(1)
+	create(t, s, "bob", RoleUser)
+	count(1)
+	carol := create(t, s, "carol", RoleServerAdmin)
+	count(2)
+	if err := s.SetStatus(ctx, carol.ID, StatusDisabled, Console); err != nil {
+		t.Fatal(err)
+	}
+	count(1)
+	exec(t, sqlDB, "UPDATE users SET password_hash = '!locked' WHERE login_name = 'alice'")
+	count(0)
+}

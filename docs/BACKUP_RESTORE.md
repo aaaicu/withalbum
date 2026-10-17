@@ -99,6 +99,7 @@ WITHALBUM_ROOT=/Volumes/NewSSD/WithAlbum ./withalbum-server restore -from /Volum
   3. 스테이징 DB를 이 바이너리 스키마로 마이그레이션하고, **모든 세션과 기기를 폐기**(`revoke_reason=restore`)하고 감사 로그 `storage.restore`를 같은 트랜잭션에 기록, WAL 체크포인트.
   4. 저널 `<root>/.withalbum-restore.json` 기록 → 기존 `.system`을 보존 이름으로 rename → 스테이징을 `.system`으로 rename → 저널 삭제. 각 단계 fsync.
 - **세션 폐기 이유:** 백업 시점 이후에 해지한 기기(분실한 휴대폰 등)의 세션이 복원으로 되살아나면 안 되기 때문입니다. 복원 후 모든 기기와 웹은 다시 로그인해야 합니다. 비밀번호는 백업 시점의 값으로 돌아갑니다(그 뒤에 바꾼 비밀번호는 무효) — 필요하면 `admin reset-password`.
+- 백업에는 TLS 키(`.system/tls/server.pem`)가 들어가지 않습니다. 복원 후 `-tls`로 기동하면 새 키가 만들어져 모든 기기를 다시 페어링해야 합니다. 같은 키를 유지하려면 기동 전에 `.system.before-restore-<UTC>/tls/server.pem`을 `.system/tls/`로(0600 유지) 옮기세요.
 - 백업 이후에 올라온 사진은 복원된 라이브러리에 없습니다. `-replace`로 덮었다면 `.system.before-restore-<UTC>/pool`에 남아 있습니다.
 - 복원 후 저장소 루트에 `.withalbum-restore.lock`(복원 명령끼리의 잠금)이 남습니다. 지워도 됩니다.
 

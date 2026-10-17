@@ -1,7 +1,7 @@
 # 위드앨범(WithAlbum) 계정·오너·초대·권한 설계 v1.4
 
 - 기준: 2026-10-17
-- 상태: **P0 확정 설계 / 정책 함수·계정 코어·HTTP 로그인·기기 세션·계정 관리 API·앨범 ACL(폴더·업로드·동기화·다운로드)·초대·역할 변경·추방·소유권 이전·보관 구현**(테스트·로컬 바이너리 스모크 검증, loopback 전용).
+- 상태: **P0 확정 설계 / 정책 함수·계정 코어·HTTP 로그인·기기 세션·계정 관리 API·앨범 ACL(폴더·업로드·동기화·다운로드)·초대·역할 변경·추방·소유권 이전·보관 구현**(테스트·로컬 바이너리 스모크 검증).
 - 적용 대상: `SELF_HOSTED` Mac mini 우선 (동일 Go 서버 코어를 Linux/Raspberry Pi에도 적용).
 - Google Drive 지원: 아래 **[Drive 별도 제한]**을 반드시 확인. 네이티브 ACL과 동일하지 않다.
 
@@ -101,7 +101,7 @@ Request → HTTPS 및 세션 검증 → user 활성 확인 → folder_id/asset_i
 - 비밀번호: **Argon2id + 계정별 임의 salt**, 파라미터 버전 저장. **사진 무결성용 SHA-256을 비밀번호 해시로 사용하지 않는다**.
 - 모바일: 단기 access token + 기기별 회전 가능한 refresh token, 서버는 refresh token의 해시만 저장. iOS Keychain/Android Keystore-backed storage에 보관.
 - 웹 대시보드: Secure/HttpOnly/SameSite 쿠키와 CSRF 보호. 로컬 API에서 부실한 CORS/브라우저 토큰 저장을 피한다.
-- LAN에서도 비밀번호 또는 세션이 전송된다면 **검증된 TLS**가 필요하다. 안전한 서버 인증서 페어링과 원격 접속 방식은 구현 전 별도로 확정.
+- LAN에서도 비밀번호 또는 세션이 전송된다면 **검증된 TLS**가 필요하다. 구현(M15): 서버 자체 서명 인증서 + 앱의 SPKI SHA-256 핀닝(페어링 페이로드는 콘솔 `withalbum-server tls`·관리자 대시보드). LAN listen은 `-allow-lan` + `-tls` + 로그인 가능한 SERVER_ADMIN이 모두 있을 때만, 평문 HTTP는 loopback만. 인터넷 원격 접속 방식은 미정.
 - 관리자 로그인 속도 제한, 계정 잠금 남용 완화, 기기 토큰 개별 해지, 이벤트 감사 로그, 비밀번호 변경 시 활성 세션 재검증.
 - 관리자 초기화 경로는 **서버 물리 콘솔에 접근할 수 있는 운영자**에게만 허용. 외부 요청으로 초기 관리자 선점 불가.
 
@@ -155,7 +155,7 @@ Drive의 개인 My Drive ACL 역할은 `owner`, `writer`, `commenter`, `reader` 
   - 감사: 로그인 성공/실패(사유·IP, 비밀번호 제외), 제한 시작(차단 1회당 1행), 로그아웃, 기기 해지, refresh 재사용, 비밀번호 변경·재설정(폐기된 세션 수), 계정 생성·비활성·권한 변경(HTTP 관리자 행위자 포함).
   - 세션 회수: 콘솔·관리자 비밀번호 재설정은 모든 세션, 본인 비밀번호 변경(`POST /me/password`)은 현재 세션 외 전부, 계정 비활성화는 모든 세션을 같은 트랜잭션에서 폐기(`session.RevokeUserTx`). 재활성화해도 이전 세션은 살아나지 않는다.
   - 관리자 API: `GET/POST /admin/users`, `GET/PATCH /admin/users/{id}`(status), `PATCH /admin/users/{id}/permissions`(server_role·can_create_albums 한 트랜잭션). SERVER_ADMIN 아니면 403. 최초 관리자는 여전히 콘솔 `admin init`만.
-- **앨범 ACL 구현(HTTP, 테스트·로컬 바이너리 스모크 검증, loopback 전용):**
+- **앨범 ACL 구현(HTTP, 테스트·로컬 바이너리 스모크 검증):**
   - 라우트 정책 표(`internal/httpapi/middleware_authz.go` `routePolicies`): 모든 라우트가 public / session / server(액션) / album(액션) 중 하나로 선언된다. 선언 없는 라우트를 등록하거나 선언된 라우트를 등록하지 않으면 핸들러 구성 시 panic. 공개는 대시보드 페이지(정적), `GET /api/v1/health`, `POST /api/v1/auth/login|refresh` 4개뿐이고, 그 밖의 `/api/v1/*`(알 수 없는 경로 포함)는 세션 없이 401.
   - album 라우트: 세션 → 요청마다 DB에서 `folders.owner_user_id`와 `folder_members`(`GetFolderAccess`) → `authz.Allowed`. 판정 순서와 응답(D12): 폴더 없음·보관됨·소유/멤버 아님 → **404 `folder_not_found`**(SERVER_ADMIN도 동일, 존재 여부 비노출) → 멤버지만 역할이 액션을 허용하지 않음 → **403 `forbidden`** → 자산 조회. UPLOADER의 읽기 시도는 자산 ID가 있든 없든 같은 403이라 존재를 추론할 수 없다.
   - 폴더 목록은 소유·멤버 폴더만(`ListFoldersFor`), 각 항목은 이름·`role`·`can_read`·`can_upload`만. 폴더 생성은 SERVER_ADMIN 또는 `can_create_albums`, 쓰기 트랜잭션 안에서 다시 확인하고 생성자를 유일 OWNER로 기록.
@@ -171,9 +171,9 @@ Drive의 개인 My Drive ACL 역할은 `owner`, `writer`, `commenter`, `reader` 
   - 역할 변경(`PATCH /folders/{id}/members/{uid}`)·추방(`DELETE`): 대상이 오너면 409 `target_is_owner`, 멤버가 아니면 404 `member_not_found`. 다음 요청부터 새 역할로 판정(하향 → 403, 추방 → 404, 업로드 중 추방 → 커밋 재확인에서 404).
   - 소유권 이전(`POST /folders/{id}/owner`, `new_owner_user_id`): 새 오너는 **현재 멤버이며 활성 계정**이어야 한다(아니면 404 `member_not_found` / 409 `user_inactive`). 앨범을 동의 없는 계정에 떠넘기지 않기 위해 멤버로 제한했다. 1 트랜잭션: 새 오너 멤버십 삭제 → `owner_user_id` 변경 → 이전 오너를 **CONTRIBUTOR** 멤버로 삽입(트리거 순서) → 대기 초대 전부 취소 → 감사. 중간 실패는 전부 롤백되고 오너는 항상 1명(실패 주입 테스트).
   - 보관(`DELETE /folders/{id}`): `archived_at` 설정 + 대기 초대 취소 + 감사. 파일·행은 남고 모든 라우트에서 404(오너 포함). 복원 API는 없다. **한계:** 보관된 앨범도 소유로 남아 그 오너 계정은 비활성화할 수 없다(트리거 `cannot_disable_owner`); 관리자 복구 기능은 후속.
-- **미구현:** 초대 거절(초대받은 사람이 직접 거절)·멤버 스스로 탈퇴, 보관 앨범 복원, TLS, 앱 UX, Drive 계정 연동, 로그인 성공 시 Argon2id 파라미터 재해시, 오래된 세션 행 정리, 관리자에 의한 타인 기기 목록/해지.
+- **미구현:** 초대 거절(초대받은 사람이 직접 거절)·멤버 스스로 탈퇴, 보관 앨범 복원, 앱 UX(핀닝 구현 포함), Drive 계정 연동, 로그인 성공 시 Argon2id 파라미터 재해시, 오래된 세션 행 정리, 관리자에 의한 타인 기기 목록/해지.
 - 구현 순서: SQLite 트랜잭션 및 마이그레이션 → 최초 관리자 생성/로그인 → 권한 미들웨어 → 폴더 오너/멤버 권한 → 초대/수락/회수 → 전체 통합 테스트 → Mac LAN 테스트.
-- **중요:** TLS가 없어서(M15) 서버는 `127.0.0.1`만 바인딩되며 사용자 데이터나 외부 접근에 사용하면 안 된다.
+- **중요:** LAN 공개는 위 TLS 게이트에서만 가능하다(SECURITY.md). 인터넷 공개·대체 불가능한 원본의 유일 저장소로 사용하면 안 된다.
 
 ## 공식 기술 근거
 

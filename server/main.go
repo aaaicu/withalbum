@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -28,25 +29,18 @@ import (
 	"github.com/aaaicu/withalbum/internal/meta/jsonstore"
 	"github.com/aaaicu/withalbum/internal/meta/sqlitestore"
 	"github.com/aaaicu/withalbum/internal/storage"
+	"github.com/aaaicu/withalbum/internal/tlsid"
 )
 
-// This is a localhost development server, NOT a production service. Every
-// route except the dashboard page, health and login requires a session, and
-// folder and asset routes are authorized per request (album ACL), but there
-// is no TLS yet (M15). Never publish its port.
+// This is a development server, NOT a production service. Every route
+// except the dashboard page, health, login and refresh requires a session,
+// and folder and asset routes are authorized per request (album ACL). Plain
+// HTTP is served on loopback only; a LAN listener needs -allow-lan, -tls and
+// a usable administrator (listen.go). Never publish its port to the
+// internet.
 
 // Set with -ldflags "-X main.version=<version>" by the release builder.
 var version = "dev"
-
-// Keep the server strictly on the local machine until TLS (M15) exists:
-// passwords and session tokens must not cross a network in clear text.
-func loopbackOnly(addr string) bool {
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		return false
-	}
-	return host == "localhost" || (net.ParseIP(host) != nil && net.ParseIP(host).IsLoopback())
-}
 
 // openStorageHint explains a storage.Open failure in operator terms.
 func openStorageHint(root string, err error) string {
@@ -239,6 +233,7 @@ type app struct {
 	meta   meta.MetadataStore
 	blobs  *blobstore.Store
 	report *blobstore.ReconcileReport
+	auth   *httpapi.Auth
 	api    *httpapi.Server
 }
 
@@ -303,6 +298,7 @@ func openApp(ctx context.Context, root string, opt appOptions) (*app, error) {
 	if err != nil {
 		return fail(fmt.Errorf("AUTH: %w", err))
 	}
+	a.auth = auth
 	a.api = httpapi.New(httpapi.Config{Volume: vol, Meta: a.meta, Blobs: a.blobs, Version: version,
 		MinFreeBytes: opt.MinFreeBytes, IntegrityWarning: !a.report.Healthy(), Faults: opt.Faults, Auth: auth})
 	return a, nil
@@ -343,10 +339,14 @@ func main() {
 			os.Exit(runBackup(os.Args[2:], os.Stdout, os.Stderr))
 		case "restore":
 			os.Exit(runRestore(os.Args[2:], os.Stdout, os.Stderr))
+		case "tls":
+			os.Exit(runTLSInfo(os.Args[2:], os.Stdout, os.Stderr))
 		}
 	}
 	showVersion := flag.Bool("version", false, "Print WithAlbum Server version and exit")
 	initStorage := flag.Bool("init-storage", false, "Register the existing WITHALBUM_ROOT directory as the storage volume and exit")
+	useTLS := flag.Bool("tls", false, "Serve HTTPS with the server's self-signed certificate (created in .system/tls on first use); clients pin its key fingerprint")
+	allowLAN := flag.Bool("allow-lan", false, "Allow a non-loopback WITHALBUM_LISTEN address (private LAN address or wildcard). Requires -tls and an active server administrator")
 	flag.Parse()
 	if *showVersion {
 		fmt.Println("withalbum-server " + version)
@@ -371,12 +371,13 @@ func main() {
 		return
 	}
 	// Validate the configuration before touching the storage.
-	addr := os.Getenv("WITHALBUM_LISTEN")
-	if addr == "" {
-		addr = "127.0.0.1:8787"
+	lc := listenConfig{Addr: listenAddr(), AllowLAN: *allowLAN, TLS: *useTLS}
+	if flag.NArg() != 0 {
+		log.Fatalf("unexpected arguments %q", flag.Args())
 	}
-	if !loopbackOnly(addr) {
-		log.Fatalf("SECURITY: refusing non-loopback address %q (there is no TLS yet, so passwords and tokens would cross the network in clear text)", addr)
+	// The administrator condition needs the database; check the rest first.
+	if _, err := checkListen(lc, 1); err != nil {
+		log.Fatalf("SECURITY: %v", err)
 	}
 	minFree, err := minFreeBytes(os.Getenv("WITHALBUM_MIN_FREE_BYTES"))
 	if err != nil {
@@ -387,6 +388,11 @@ func main() {
 		log.Fatal(err)
 	}
 	defer a.Close()
+	lan, err := a.listenAllowed(context.Background(), lc)
+	if err != nil {
+		a.Close()
+		log.Fatalf("SECURITY: %v", err)
+	}
 	if free, err := a.vol.FreeBytes(); err != nil {
 		log.Printf("free space: unknown (%v); uploads are not pre-checked, a full disk still answers 507", err)
 	} else if free <= uint64(minFree) {
@@ -394,7 +400,41 @@ func main() {
 	} else {
 		log.Printf("free space: %d bytes, reserve %d", free, minFree)
 	}
-	server := &http.Server{Addr: addr, Handler: a.api.Handler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 20}
+	var tlsConfig *tls.Config
+	if lc.TLS {
+		id, err := tlsid.LoadOrCreate(a.vol.Root(), certHosts(lc.Addr), time.Now())
+		if err != nil {
+			a.Close()
+			log.Fatalf("TLS: %v (file %s; it must be a regular file with mode 0600. Never delete it casually: a new key means pairing every device again)", err, tlsid.Path(a.vol.Root()))
+		}
+		switch {
+		case id.Created:
+			log.Printf("TLS: created a new key pair in %s (mode 0600). Pair devices with the fingerprint below.", tlsid.Path(a.vol.Root()))
+		case id.Renewed:
+			log.Printf("TLS: re-issued the certificate with the same key; the pin did not change.")
+		}
+		urls := serverURLs(lc.Addr, net.InterfaceAddrs)
+		writeFingerprints(log.Writer(), id, urls)
+		a.api.SetTLSInfo(tlsInfo(id, urls))
+		tlsConfig = tlsid.ServerConfig(id)
+	}
+	handler := a.api.Handler()
+	if !lc.TLS {
+		handler = loopbackHostOnly(handler)
+	}
+	server := newHTTPServer(handler, tlsConfig)
+	ln, err := net.Listen("tcp", lc.Addr)
+	if err != nil {
+		a.Close()
+		log.Fatal(err)
+	}
+	// "localhost" is resolved by the system; refuse if it did not bind to a
+	// loopback address (for example an altered hosts file).
+	if err := checkBoundAddr(ln.Addr(), lan); err != nil {
+		ln.Close()
+		a.Close()
+		log.Fatalf("SECURITY: %v", err)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go func() {
@@ -405,8 +445,24 @@ func main() {
 			log.Printf("shutdown: %v", err)
 		}
 	}()
-	log.Printf("EXPERIMENTAL / LOOPBACK ONLY, NO TLS: listen=%s root=%s volume_id=%s", addr, a.vol.Root(), a.vol.ID())
-	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	switch {
+	case lan:
+		log.Printf("EXPERIMENTAL / LAN, TLS ONLY: listen=%s root=%s volume_id=%s. Do not forward this port from the internet.", ln.Addr(), a.vol.Root(), a.vol.ID())
+		if scope, _ := scopeOf(lc.Addr); scope == scopeWildcard {
+			log.Printf("WARNING: listening on every interface (%s); make sure no interface is reachable from the internet.", lc.Addr)
+		}
+	case lc.TLS:
+		log.Printf("EXPERIMENTAL / LOOPBACK ONLY, TLS: listen=%s root=%s volume_id=%s", ln.Addr(), a.vol.Root(), a.vol.ID())
+	default:
+		log.Printf("EXPERIMENTAL / LOOPBACK ONLY, PLAIN HTTP: listen=%s root=%s volume_id=%s", ln.Addr(), a.vol.Root(), a.vol.ID())
+	}
+	if lc.TLS {
+		err = server.ServeTLS(ln, "", "")
+	} else {
+		err = server.Serve(ln)
+	}
+	if err != nil && !errors.Is(err, http.ErrServerClosed) {
+		a.Close()
 		log.Fatal(err)
 	}
 }

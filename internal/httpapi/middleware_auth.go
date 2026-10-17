@@ -28,9 +28,9 @@ import (
 //   - withalbum_refresh HttpOnly, SameSite=Strict, Path=/api/v1/auth/, 30 days
 //   - withalbum_csrf    readable by the page, SameSite=Strict, Path=/, 30 days
 //
-// Secure is set when the request arrived over TLS. The server only listens
-// on loopback until TLS exists (M15), and browsers treat http://localhost as
-// a secure context; with TLS every cookie becomes Secure.
+// Secure is set when the request arrived over TLS, which every non-loopback
+// listener requires (server/main.go). Plain HTTP is served on loopback only,
+// where browsers treat http://localhost as a secure context.
 //
 // A request authenticated by cookie must send the CSRF token in X-CSRF-Token
 // for every method except GET, HEAD and OPTIONS (403 csrf_failed otherwise).
@@ -103,8 +103,9 @@ func principal(id session.Identity) authz.Principal {
 	return authz.Principal{UserID: id.UserID, Active: true, ServerRole: authz.ServerRole(id.ServerRole), CanCreateAlbums: id.CanCreateAlbums}
 }
 
-// clientIP is the TCP peer address. Forwarding headers are not trusted (no
-// reverse proxy support yet).
+// clientIP is the TCP peer address, also on a LAN listener. Forwarding
+// headers (X-Forwarded-For, Forwarded, X-Real-IP) are never trusted: there
+// is no reverse proxy mode, so a client cannot choose its rate-limit key.
 func clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {

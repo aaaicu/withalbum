@@ -22,6 +22,19 @@ WITHALBUM_ROOT="$HOME/WithAlbumTest" ./withalbum-server
 
 브라우저에서 `http://127.0.0.1:8787`을 엽니다.
 
+## 같은 집 LAN의 기기에서 접속하기 (TLS 필수)
+
+평문 HTTP는 이 컴퓨터(loopback)에서만 열립니다. 휴대폰 등 LAN 기기를 연결하려면 먼저 콘솔에서 관리자를 만들고(`withalbum-server admin init -login <이름>`), Mac의 사설 IP(예: 시스템 설정 > 네트워크)로 TLS를 켜서 시작합니다.
+
+```bash
+WITHALBUM_ROOT="$HOME/WithAlbumTest" WITHALBUM_LISTEN="192.168.0.10:8787" ./withalbum-server -tls -allow-lan
+```
+
+- 조건(`-allow-lan`, `-tls`, 로그인 가능한 관리자) 중 하나라도 없거나 주소가 공인 IP·호스트 이름이면 기동을 거부합니다.
+- 첫 기동 때 `.system/tls/server.pem`(0600)에 자체 서명 인증서가 만들어지고, 로그에 **공개키 지문(SPKI SHA-256)**과 페어링 페이로드(`withalbum://pair?...`)가 나옵니다. 실행 중에도 `withalbum-server tls`로 다시 볼 수 있습니다. 앱은 이 지문으로만 서버를 신뢰합니다.
+- 브라우저는 자체 서명 인증서라 경고를 표시합니다. 관리 화면은 가능하면 이 Mac에서 여세요.
+- 공유기에서 이 포트를 포트포워딩하지 마세요(인터넷 공개 미지원). 자세한 내용: [`SECURITY.md`](../SECURITY.md).
+
 ## 로그인할 때 자동 시작 (실험용 LaunchAgent)
 
 ```bash
