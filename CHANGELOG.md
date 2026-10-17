@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Changed (M23, dashboard design)
+- 내장 관리 화면을 SEED Design 토큰 기반 "보관 그린" 디자인으로 재구성: 상단 바(로고·서버 상태 칩·사용자), 왼쪽 관리 메뉴(개요·내 앨범·기기 / 관리자: 저장장치·사용자·백업·복구·서버 설정, 주소 `#해시`로 이동·뒤로 가기), 카드 본문, 라이트/다크(`prefers-color-scheme`), 시스템 서체, 인라인 SVG 아이콘, 터치 44px, 모든 입력에 보이는 라벨. 기존 기능은 모두 유지.
+- 저장장치 오류 화면: `health`·`/admin/server/storage`의 `storage: unavailable`이면 상단 "저장 중단됨" 칩, 개요 상태 카드(모든 사용자), 저장장치 화면 경고·점검 결과·다시 시작 단계·재검사(관리자). API 변경 없음.
+- 공통 상태 카드(무슨 일·데이터 안전·재시도·다음 행동): 디스크 분리, 서버 오프라인, 세션 만료, 권한 변경, 초대 만료, 빈 앨범, 원본 검증 실패.
+- 문구 규칙: "업로드 완료" 제거. 파일 보내기 테스트는 브라우저에서 계산한 SHA-256을 `X-Content-SHA256`으로 보내고, 서버 결과가 일치할 때만 방패 아이콘과 "원본 보관됨"을 표시(업로드 전용 앨범은 "서버가 받았어요"). 테스트 `TestDashboardDesignRules`가 문구·아이콘 접근성·원격 리소스·이모지·다크 토큰을 고정.
+- SEED Design(Apache-2.0) 토큰 출처를 `docs/OPEN_SOURCE_DECISIONS.md`에 표기.
+
 ### Added (M22, resumable uploads / HEIC and video previews)
 - 재개 가능한 업로드 세션: `POST /api/v1/folders/{id}/uploads`(전체 `bytes`·`sha256`·`filename`, `Idempotency-Key` 필수), `GET|PATCH|DELETE .../uploads/{uid}`, `POST .../uploads/{uid}/complete`. 세션은 만든 계정·세션 기기·폴더에만 보이고 그 밖에는 404 `upload_not_found`. 같은 키·같은 내용 재생성은 같은 세션(200), 다른 내용 422, 이미 커밋된 키 409 `upload_already_committed`. 생성 시 전체 크기만큼 여유 공간을 예약(다른 열린 세션의 남은 바이트 포함, 부족하면 507), 단일 요청 업로드도 예약분을 침범하지 않음. 청크는 `Upload-Offset`이 현재 오프셋과 같아야 하고(아니면 409 `offset_mismatch`+현재 오프셋), 선택 `X-Chunk-SHA256` 불일치는 422 `chunk_hash_mismatch`(버림), fsync 후 오프셋 기록. 해시 없는 청크가 끊기면 도착분 보존. 같은 세션 동시 요청 409 `upload_busy`. 완료 시 저장 파일 전체를 다시 해시해 선언과 비교(불일치 422 `hash_mismatch`, 세션 0부터), 단일 업로드와 같은 커밋 경로(트랜잭션 안 권한·볼륨 재확인, 영수증, UPLOADER 202). 완료 재시도는 저장된 결과(`Idempotency-Replayed: true`). 계정당 열린 세션 16개(429 `too_many_uploads`), 세션당 최대 64GiB, 청크 최대 512MiB, 24시간(마지막 변경 기준) 만료 후 6시간 주기 정리에 합류. 기동 시 부분 파일을 기록 오프셋으로 절단·바이트 잃은 세션 삭제·고아 부분 파일 삭제.
 - HEIC/영상 프리뷰: 선택적 외부 변환기(macOS `sips`, `ffmpeg`; `WITHALBUM_PREVIEW_TOOLS`/`WITHALBUM_SIPS`/`WITHALBUM_FFMPEG`). 해당 형식은 `preview_status: "pending"`으로 커밋되고 백그라운드 워커가 변환 후 `ready`/`failed`를 기록하며 그 바이트를 가진 모든 폴더에 `asset_updated` 이벤트를 남김. 도구가 없으면 `unsupported`(원본만 보존). 자산·업로드 결과에 `preview_status` 추가.
