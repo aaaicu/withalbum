@@ -38,8 +38,8 @@ func TestEmbeddedMigrationsAreContiguous(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ms) != 8 || LatestVersion() != 8 {
-		t.Fatalf("got %d migrations, LatestVersion %d; want 8", len(ms), LatestVersion())
+	if len(ms) != 9 || LatestVersion() != 9 {
+		t.Fatalf("got %d migrations, LatestVersion %d; want 9", len(ms), LatestVersion())
 	}
 }
 
@@ -412,5 +412,63 @@ func TestMigration0004RecordsExistingBootstrapAccount(t *testing.T) {
 	var n int
 	if err := empty.QueryRow("SELECT count(*) FROM account_bootstrap").Scan(&n); err != nil || n != 0 {
 		t.Fatalf("account_bootstrap rows %d, %v", n, err)
+	}
+}
+
+// TestMigration0009AllowsDeclinedInvitations: the rebuilt folder_invitations
+// keeps every row and column, accepts 'declined', still refuses unknown
+// statuses and still allows only one pending invitation per folder and
+// account, while a declined one does not block a new one.
+func TestMigration0009AllowsDeclinedInvitations(t *testing.T) {
+	ctx := context.Background()
+	sqlDB, _ := openTemp(t)
+	migrateTo(t, sqlDB, 8)
+	addUser(t, sqlDB, "owner", "active")
+	addUser(t, sqlDB, "alice", "active")
+	addUser(t, sqlDB, "bob", "active")
+	mustExec(t, sqlDB, "INSERT INTO folders(folder_id, folder_name, owner_user_id) VALUES ('f1', 'Trip', 'owner')")
+	expectReject(t, sqlDB, "CHECK constraint", `INSERT INTO folder_invitations(invitation_id, folder_id, invited_user_id, inviter_user_id, role, status, expires_at)
+		VALUES ('old', 'f1', 'alice', 'owner', 'VIEWER', 'declined', 'x')`)
+	mustExec(t, sqlDB, `INSERT INTO folder_invitations(invitation_id, folder_id, invited_user_id, inviter_user_id, role, status, expires_at, accepted_at, created_at) VALUES
+		('i1', 'f1', 'alice', 'owner', 'VIEWER', 'pending', 'e1', NULL, 'c1'),
+		('i2', 'f1', 'bob', 'owner', 'CONTRIBUTOR', 'accepted', 'e2', 'a2', 'c2'),
+		('i3', 'f1', 'bob', 'owner', 'UPLOADER', 'revoked', 'e3', NULL, 'c3')`)
+	if err := Migrate(ctx, sqlDB); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	rows, err := sqlDB.Query(`SELECT invitation_id || folder_id || invited_user_id || inviter_user_id || role || COALESCE(token_sha256, '-') ||
+		status || expires_at || COALESCE(accepted_at, '-') || created_at FROM folder_invitations ORDER BY invitation_id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, s)
+	}
+	rows.Close()
+	if strings.Join(got, ",") != "i1f1aliceownerVIEWER-pendinge1-c1,i2f1bobownerCONTRIBUTOR-acceptede2a2c2,i3f1bobownerUPLOADER-revokede3-c3" {
+		t.Fatalf("rows after migration: %v", got)
+	}
+	var n int
+	if err := sqlDB.QueryRow("SELECT count(*) FROM sqlite_schema WHERE tbl_name = 'folder_invitations' AND type = 'index' AND name IN ('idx_invites_by_recipient', 'idx_invites_one_pending', 'idx_invites_by_folder')").Scan(&n); err != nil || n != 3 {
+		t.Fatalf("indexes %d, %v", n, err)
+	}
+	if err := sqlDB.QueryRow("SELECT count(*) FROM sqlite_schema WHERE name LIKE 'folder_invitations_%'").Scan(&n); err != nil || n != 0 {
+		t.Fatalf("old table left behind: %d, %v", n, err)
+	}
+	expectReject(t, sqlDB, "CHECK constraint", "UPDATE folder_invitations SET status = 'bogus' WHERE invitation_id = 'i1'")
+	expectReject(t, sqlDB, "UNIQUE constraint", `INSERT INTO folder_invitations(invitation_id, folder_id, invited_user_id, inviter_user_id, role, expires_at)
+		VALUES ('i4', 'f1', 'alice', 'owner', 'VIEWER', 'e4')`)
+	mustExec(t, sqlDB, "UPDATE folder_invitations SET status = 'declined' WHERE invitation_id = 'i1'")
+	mustExec(t, sqlDB, `INSERT INTO folder_invitations(invitation_id, folder_id, invited_user_id, inviter_user_id, role, expires_at)
+		VALUES ('i4', 'f1', 'alice', 'owner', 'VIEWER', 'e4')`)
+	expectReject(t, sqlDB, "FOREIGN KEY", "DELETE FROM users WHERE user_id = 'alice'")
+	mustExec(t, sqlDB, "DELETE FROM folders WHERE folder_id = 'f1'")
+	if err := sqlDB.QueryRow("SELECT count(*) FROM folder_invitations").Scan(&n); err != nil || n != 0 {
+		t.Fatalf("ON DELETE CASCADE lost: %d rows, %v", n, err)
 	}
 }

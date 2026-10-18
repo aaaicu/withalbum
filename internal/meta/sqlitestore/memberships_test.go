@@ -510,3 +510,110 @@ func TestArchiveFolder(t *testing.T) {
 		t.Fatal("folder row removed or archive not audited")
 	}
 }
+
+// TestDeclineInvitation: only the invitee declines, once; a declined
+// invitation is gone for accept and revoke, leaves both lists, and the
+// owner can invite the same account again. A failure before COMMIT leaves
+// the invitation pending.
+func TestDeclineInvitation(t *testing.T) {
+	e := newMemberEnv(t)
+	ctx := t.Context()
+	inv, err := e.s.CreateInvitation(ctx, e.by("owner", authz.InviteMember, e.ids["alice"], authz.Viewer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decline := func(login string, before func() error) error {
+		return e.s.DeclineInvitation(ctx, meta.AlbumChange{ActorID: e.ids[login], TargetID: inv.ID, Authorize: active, BeforeCommit: before})
+	}
+	if err := e.s.DeclineInvitation(ctx, meta.AlbumChange{ActorID: e.ids["alice"], TargetID: inv.ID}); err == nil {
+		t.Fatal("decline without Authorize succeeded")
+	}
+	for _, login := range []string{"owner", "bob"} {
+		if err := decline(login, nil); !errors.Is(err, meta.ErrNotInvitee) {
+			t.Fatalf("decline as %s: %v", login, err)
+		}
+	}
+	if err := e.s.DeclineInvitation(ctx, meta.AlbumChange{ActorID: e.ids["alice"], TargetID: "nope", Authorize: active}); !errors.Is(err, meta.ErrInvitationNotFound) {
+		t.Fatalf("unknown: %v", err)
+	}
+	boom := errors.New("boom")
+	if err := decline("alice", func() error { return boom }); !errors.Is(err, boom) {
+		t.Fatalf("fault: %v", err)
+	}
+	if n := count(t, e.s, "SELECT count(*) FROM folder_invitations WHERE invitation_id = ? AND status = 'pending'", inv.ID); n != 1 || e.audits(t, "invitation.decline") != 0 {
+		t.Fatalf("rolled-back decline left pending=%d, %d audit rows", n, e.audits(t, "invitation.decline"))
+	}
+	if err := decline("alice", nil); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(t, e.s, "SELECT count(*) FROM folder_invitations WHERE invitation_id = ? AND status = 'declined'", inv.ID); n != 1 || e.audits(t, "invitation.decline") != 1 {
+		t.Fatalf("declined rows %d, audits %d", n, e.audits(t, "invitation.decline"))
+	}
+	if err := decline("alice", nil); !errors.Is(err, meta.ErrInvitationGone) {
+		t.Fatalf("decline twice: %v", err)
+	}
+	if _, err := e.s.AcceptInvitation(ctx, meta.AlbumChange{ActorID: e.ids["alice"], TargetID: inv.ID, Authorize: active}); !errors.Is(err, meta.ErrInvitationGone) {
+		t.Fatalf("accept declined: %v", err)
+	}
+	if err := e.s.RevokeInvitation(ctx, e.by("owner", authz.InviteMember, inv.ID, "")); !errors.Is(err, meta.ErrInvitationGone) {
+		t.Fatalf("revoke declined: %v", err)
+	}
+	if e.role(t, "alice") != "" {
+		t.Fatal("declining made a membership")
+	}
+	for _, list := range []func() ([]meta.Invitation, error){
+		func() ([]meta.Invitation, error) { return e.s.ListFolderInvitations(ctx, e.folder) },
+		func() ([]meta.Invitation, error) { return e.s.ListInvitationsFor(ctx, e.ids["alice"]) },
+	} {
+		if l, err := list(); err != nil || len(l) != 0 {
+			t.Fatalf("declined invitation listed: %v %v", l, err)
+		}
+	}
+	again, err := e.s.CreateInvitation(ctx, e.by("owner", authz.InviteMember, e.ids["alice"], authz.Contributor))
+	if err != nil {
+		t.Fatalf("invite again after decline: %v", err)
+	}
+	if _, err := e.s.AcceptInvitation(ctx, meta.AlbumChange{ActorID: e.ids["alice"], TargetID: again.ID, Authorize: active}); err != nil || e.role(t, "alice") != "CONTRIBUTOR" {
+		t.Fatalf("accept new invitation: %v, role %q", err, e.role(t, "alice"))
+	}
+}
+
+// TestConcurrentAcceptAndDecline: of an accept and a decline racing on the
+// same invitation exactly one wins and the invitation's state matches it.
+func TestConcurrentAcceptAndDecline(t *testing.T) {
+	e := newMemberEnv(t)
+	for round := 0; round < 10; round++ {
+		if round > 0 {
+			if _, err := e.s.db.Exec("DELETE FROM folder_members WHERE folder_id = ?", e.folder); err != nil {
+				t.Fatal(err)
+			}
+		}
+		inv, err := e.s.CreateInvitation(t.Context(), e.by("owner", authz.InviteMember, e.ids["alice"], authz.Viewer))
+		if err != nil {
+			t.Fatal(err)
+		}
+		c := meta.AlbumChange{ActorID: e.ids["alice"], TargetID: inv.ID, Authorize: active}
+		var wg sync.WaitGroup
+		var acceptErr, declineErr error
+		wg.Add(2)
+		go func() { defer wg.Done(); _, acceptErr = e.s.AcceptInvitation(t.Context(), c) }()
+		go func() { defer wg.Done(); declineErr = e.s.DeclineInvitation(t.Context(), c) }()
+		wg.Wait()
+		var status string
+		if err := e.s.db.QueryRow("SELECT status FROM folder_invitations WHERE invitation_id = ?", inv.ID).Scan(&status); err != nil {
+			t.Fatal(err)
+		}
+		switch {
+		case acceptErr == nil && errors.Is(declineErr, meta.ErrInvitationGone):
+			if status != "accepted" || e.role(t, "alice") != "VIEWER" {
+				t.Fatalf("round %d: accept won but status %q role %q", round, status, e.role(t, "alice"))
+			}
+		case declineErr == nil && errors.Is(acceptErr, meta.ErrInvitationGone):
+			if status != "declined" || e.role(t, "alice") != "" {
+				t.Fatalf("round %d: decline won but status %q role %q", round, status, e.role(t, "alice"))
+			}
+		default:
+			t.Fatalf("round %d: accept %v, decline %v", round, acceptErr, declineErr)
+		}
+	}
+}

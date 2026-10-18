@@ -736,6 +736,9 @@ paths:
     get:
       tags: [Invitations]
       summary: Pending, unexpired invitations of the album (OWNER only)
+      description: >-
+        Only invitations still waiting for an answer. Accepted ones show up
+        as members; revoked, expired and declined ones are left out.
       responses:
         '200':
           description: Oldest first
@@ -796,7 +799,7 @@ paths:
         '401': {description: unauthorized}
         '403': {description: 'forbidden (member, not owner) or csrf_failed'}
         '404': {description: 'folder_not_found, invitation_not_found (unknown or of another album)'}
-        '410': {description: 'invitation_gone (already accepted, revoked or expired)'}
+        '410': {description: 'invitation_gone (already accepted, revoked, expired or declined)'}
   /api/v1/invitations:
     get:
       tags: [Invitations]
@@ -839,7 +842,28 @@ paths:
         '403': {description: 'forbidden (the invitation names another account; administrators included) or csrf_failed'}
         '404': {description: invitation_not_found}
         '409': {description: already_member}
-        '410': {description: 'invitation_gone (accepted, revoked, expired, album archived or owner changed)'}
+        '410': {description: 'invitation_gone (accepted, revoked, expired, declined, album archived or owner changed)'}
+  /api/v1/invitations/{invitation_id}/decline:
+    post:
+      tags: [Invitations]
+      summary: Decline an invitation as its named recipient
+      description: >-
+        Decided like accept, in one transaction: invitation marked declined,
+        audit row (invitation.decline: album, role and inviter; no secret).
+        Nothing is written when it is refused. A declined invitation is no
+        longer pending: it leaves the caller's and the owner's invitation
+        lists (the owner is not told it was declined, it is simply no longer
+        waiting) and the owner may invite the same account again. No request
+        body. Cookie sessions need X-CSRF-Token.
+      parameters:
+        - $ref: '#/components/parameters/InvitationID'
+      responses:
+        '204': {description: Declined (audited); no membership is created}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (the invitation names another account; administrators included) or csrf_failed'}
+        '404': {description: invitation_not_found}
+        '410': {description: 'invitation_gone (accepted, revoked, expired, already declined, album archived or owner changed)'}
+        '503': {description: 'storage_unavailable, storage_io_error, busy'}
   /api/v1/folders/{folder_id}/members/{user_id}:
     parameters:
       - $ref: '#/components/parameters/FolderID'

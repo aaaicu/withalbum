@@ -69,6 +69,7 @@ sequenceDiagram
 - `POST /api/v1/folders`: 관리자 또는 `can_create_albums` 부여된 일반 사용자만. 생성한 사람이 `owner_user_id`.
 - `POST /api/v1/folders/{id}/invitations`: OWNER가 **서버에 등록된 계정 ID**를 지정하고 ROLE을 선택. 이름 없는 공개 초대 링크는 기본 비활성.
 - `POST /api/v1/invitations/{id}/accept`: 대상 계정이 본인 세션으로 수락해야 멤버십 생성. 수락 전 접근 불가.
+- `POST /api/v1/invitations/{id}/decline`: 대상 계정이 본인 세션으로 거절. 멤버십은 생기지 않고 초대는 더 이상 대기 상태가 아니다.
 - 서버에 아직 없는 친구를 초대하려면 오너가 관리자에게 계정 발급 요청하거나 초대 대상자가 관리자 승인 가입을 한다. **앨범 초대만으로 서버 회원가입 권한을 우회하지 않는다**.
 - 초대는 만료·일회성·대상 계정 고정, 수락·취소 기록이 남아야 한다.
 
@@ -168,7 +169,8 @@ Drive의 개인 My Drive ACL 역할은 `owner`, `writer`, `commenter`, `reader` 
   - 관리 라우트는 모두 OWNER만(`authz` 액션 `InviteMember`·`ListMembers`·`ChangeMemberRole`·`RevokeMember`·`TransferOwner`·`DeleteAlbum`). 멤버는 403, 비멤버·관리자는 404. 쓰기는 요청 진입 판정 + **같은 쓰기 트랜잭션 안에서 계정·세션·소유자·멤버십을 다시 읽어 재판정**하고, 변경과 `audit_log` 행을 함께 커밋한다(토큰·비밀 값은 기록하지 않음).
   - 초대(`POST /folders/{id}/invitations`): 대상은 `user_id`로 지정한 **활성·로그인 가능한 등록 계정**. 없는 계정·비활성·잠금 계정은 똑같은 404 `invitee_not_found`(상태 비노출). 오너·기존 멤버는 409 `already_member`, 같은 앨범·대상의 대기 초대는 1개(409 `invitation_pending`, 부분 UNIQUE 인덱스, 마이그레이션 0006). 만료 7일(`meta.InvitationTTL`), 만료는 **조회·수락 시 판정**하고 만료된 대기 행은 같은 대상을 다시 초대할 때 `expired`로 바꾼다. 초대는 계정이 고정되고 수락에 그 계정의 세션이 필요하므로 **베어러 토큰이 없다**(`token_sha256`는 NULL, 공개 초대 링크는 지원하지 않음). 초대 ID는 128비트 랜덤.
   - 수락(`POST /invitations/{id}/accept`): 1 트랜잭션(멤버십 생성 + `accepted` + 감사). 없는 ID 404, 다른 계정(관리자 포함) 403, 이미 수락·취소·만료·앨범 보관·작성자가 더 이상 오너가 아님 410 `invitation_gone`. 동시 수락은 1건만 성공. 수락 전에는 앨범이 404.
-  - 대기 초대 목록: 본인 것만(`GET /invitations`), 오너는 앨범의 대기 초대(`GET /folders/{id}/invitations`)·취소(`DELETE .../invitations/{iid}`, 이미 끝난 초대 410).
+  - 거절(`POST /invitations/{id}/decline`, 마이그레이션 0009가 `folder_invitations.status`에 `declined` 추가): 수락과 같은 판정 — 없는 ID 404, 다른 계정(관리자·오너 포함) 403, 이미 수락·취소·만료·거절·앨범 보관·작성자가 더 이상 오너가 아님 410 `invitation_gone`(이 경우 아무것도 쓰지 않음, 만료된 행도 그대로). 1 트랜잭션(`declined` + 감사 `invitation.decline`: 앨범·역할·보낸 사람, 토큰·비밀 없음), 응답 204(앨범 정보 없음). 수락과 거절이 겹치면 하나만 성공. 거절된 초대는 대기 상태가 아니므로 본인 목록과 오너의 대기 목록에서 빠지고(오너에게 "거절함"을 따로 알리지 않음 — 대기 초대가 사라질 뿐), 대기 초대 부분 UNIQUE 인덱스에 걸리지 않아 오너가 같은 계정을 다시 초대할 수 있다. 거절된 초대의 취소는 410.
+  - 대기 초대 목록: 본인 것만(`GET /invitations`), 오너는 앨범의 대기 초대(`GET /folders/{id}/invitations`, 수락·취소·만료·거절된 초대는 빠짐)·취소(`DELETE .../invitations/{iid}`, 이미 끝난 초대 410).
   - 역할 변경(`PATCH /folders/{id}/members/{uid}`)·추방(`DELETE`): 대상이 오너면 409 `target_is_owner`, 멤버가 아니면 404 `member_not_found`. 다음 요청부터 새 역할로 판정(하향 → 403, 추방 → 404, 업로드 중 추방 → 커밋 재확인에서 404).
   - 소유권 이전(`POST /folders/{id}/owner`, `new_owner_user_id`): 새 오너는 **현재 멤버이며 활성 계정**이어야 한다(아니면 404 `member_not_found` / 409 `user_inactive`). 앨범을 동의 없는 계정에 떠넘기지 않기 위해 멤버로 제한했다. 1 트랜잭션: 새 오너 멤버십 삭제 → `owner_user_id` 변경 → 이전 오너를 **CONTRIBUTOR** 멤버로 삽입(트리거 순서) → 대기 초대 전부 취소 → 감사. 중간 실패는 전부 롤백되고 오너는 항상 1명(실패 주입 테스트).
   - 보관(`DELETE /folders/{id}`): `archived_at` 설정 + 대기 초대 취소 + 감사. 파일·행은 남고 모든 라우트에서 404(오너 포함). 복원 API는 없다. **한계:** 보관된 앨범도 소유로 남아 그 오너 계정은 비활성화할 수 없다(트리거 `cannot_disable_owner`); 관리자 복구 기능은 후속.
@@ -180,7 +182,7 @@ Drive의 개인 My Drive ACL 역할은 `owner`, `writer`, `commenter`, `reader` 
   - 세션 절대 만료 90일, 로그인 성공 시 파라미터가 다르면 재해시(`account.password_rehash`), 6시간마다 30일 지난 폐기·만료 세션 행·만료된 used refresh·30일 지난 업로드 영수증 정리(기기 행은 유지).
   - 관리자: `GET /admin/users/{uid}/devices`, `DELETE /admin/users/{uid}/devices/{did}`(`device.admin_revoke`, 행위자 = 관리자). 앨범 열람권은 여전히 없음.
   - 감사: 본인 비밀번호 변경 실패(`account.password_change` denied), 권한 거부 요약(`access.denied`: 계정·라우트·상태별 첫 거부를 즉시, 이후 10분 창 동안은 개수만 세어 다음 행의 `suppressed_before`로). 401은 기록하지 않는다(행위자 없음, DB 쓰기 폭주 방지).
-- **미구현:** 초대 거절(초대받은 사람이 직접 거절)·멤버 스스로 탈퇴, 보관 앨범 복원·관리자 복구(설계 메모: 마일스톤 M16 파일), 앱 UX(핀닝 구현 포함), Drive 계정 연동, 이벤트 보존 기간·삭제(409 경로만 구현).
+- **미구현:** 멤버 스스로 탈퇴, 보관 앨범 복원·관리자 복구(설계 메모: 마일스톤 M16 파일), 앱 UX(핀닝 구현 포함), Drive 계정 연동, 이벤트 보존 기간·삭제(409 경로만 구현).
 - 구현 순서: SQLite 트랜잭션 및 마이그레이션 → 최초 관리자 생성/로그인 → 권한 미들웨어 → 폴더 오너/멤버 권한 → 초대/수락/회수 → 전체 통합 테스트 → Mac LAN 테스트.
 - **중요:** LAN 공개는 위 TLS 게이트에서만 가능하다(SECURITY.md). 인터넷 공개·대체 불가능한 원본의 유일 저장소로 사용하면 안 된다.
 
