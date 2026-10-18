@@ -3,6 +3,7 @@ package httpapi_test
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aaaicu/withalbum/internal/auth/ratelimit"
 )
@@ -27,6 +28,44 @@ func TestRefreshGraceOverHTTP(t *testing.T) {
 	wantStatus(t, "session works", e.call(t, "GET", "/api/v1/me", nil, bearer(retry.body["access_token"].(string))), 200, "")
 	wantStatus(t, "third use", e.call(t, "POST", "/api/v1/auth/refresh", map[string]string{"refresh_token": refresh}, nil), 401, "unauthorized")
 	wantStatus(t, "session revoked", e.call(t, "GET", "/api/v1/me", nil, bearer(retry.body["access_token"].(string))), 401, "unauthorized")
+}
+
+// TestSessionExpiresAt: login and every refresh report the same absolute end
+// of the session (login + 90 days), for apps and browsers.
+func TestSessionExpiresAt(t *testing.T) {
+	e := newAuthEnv(t, ratelimit.Config{})
+	loginAt := e.clock.Now()
+	r := e.login(t, "member", userPassword, "ios")
+	wantStatus(t, "login", r, 200, "")
+	end, ok := r.body["session_expires_at"].(string)
+	if !ok {
+		t.Fatalf("login reply without session_expires_at: %s", r.raw)
+	}
+	got, err := time.Parse(time.RFC3339, end)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := loginAt.Add(90 * 24 * time.Hour); got.After(want) || want.Sub(got) >= time.Second {
+		t.Fatalf("session_expires_at %v, want %v", got, want)
+	}
+	refresh := r.body["refresh_token"].(string)
+	for range 3 {
+		e.clock.Add(20 * 24 * time.Hour)
+		next := e.call(t, "POST", "/api/v1/auth/refresh", map[string]string{"refresh_token": refresh}, nil)
+		wantStatus(t, "refresh", next, 200, "")
+		if next.body["session_expires_at"] != end {
+			t.Fatalf("session_expires_at moved on refresh: %v, want %s", next.body["session_expires_at"], end)
+		}
+		if re, _ := time.Parse(time.RFC3339, next.body["refresh_expires_at"].(string)); re.After(got) {
+			t.Fatalf("refresh_expires_at %v after the session end %v", re, got)
+		}
+		refresh = next.body["refresh_token"].(string)
+	}
+	web := e.login(t, "member", userPassword, "web")
+	wantStatus(t, "web login", web, 200, "")
+	if _, ok := web.body["session_expires_at"].(string); !ok {
+		t.Fatalf("web login reply without session_expires_at: %s", web.raw)
+	}
 }
 
 // TestAdminDeviceRoutes: a SERVER_ADMIN lists and revokes another account's
