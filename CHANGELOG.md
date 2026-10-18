@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+아래 [0.1.0-alpha.1] 초안 이후의 변경을 여기에 적습니다.
+
+## [0.1.0-alpha.1] — 미발행 (초안: 태그·GitHub Release 없음)
+
+> 첫 prerelease 후보. 발행 전까지 이 섹션은 바뀔 수 있습니다. 발행 시 날짜를 적고 "미발행"을 지웁니다. 실기기 검증 결과는 `docs/releases/v0.1.0-alpha.1.md`.
+
+### 요약
+- Mac mini 우선 셀프호스팅 서버의 첫 실험판: SQLite 메타데이터, SHA-256 원본 보관(원자적 커밋·기동 재조정), 계정·기기 세션(Argon2id, 회전 refresh), 앨범 ACL(OWNER/CONTRIBUTOR/VIEWER/UPLOADER)·초대·소유권 이전, sync API v2(cursor·tombstone·멱등 업로드), 재개 업로드, HEIC/영상 프리뷰(선택 도구), 백업·복원·무결성 검사, TLS·LAN 게이트, 내장 관리 화면과 설치 화면.
+- 공식 API 규격: `docs/API_v2.yaml` (2.0.0-draft).
+- 실험판입니다: 인터넷 공개 금지, 대체 불가능한 원본의 유일한 보관소로 쓰지 말 것, 서명·공증되지 않은 macOS 바이너리. 자세한 제약은 README "Known limitations".
+
+### Added (release prep, M18)
+- 토큰 응답 `session_expires_at`: 세션 절대 만료(로그인 + 90일). 로그인과 모든 refresh(유예 refresh 포함) 응답에서 같은 값이며 `refresh_expires_at`은 이 값을 넘지 않음. 앱은 더 이상 로그인 시각으로 계산할 필요 없음.
+- 원본 다운로드 Range 규격 명시(`docs/API_v2.yaml`): 단일 범위 206 + `Content-Range`, 끝 초과 범위는 마지막 바이트로 제한, 접미 범위, 여러 범위는 `multipart/byteranges`, 만족 불가·형식 오류·bytes 외 단위는 416 + `Content-Range: bytes */<크기>`(본문은 짧은 text/plain), `If-Range`(Last-Modified), 304. 접근 검사가 먼저(UPLOADER 403·비멤버 404 불변). 테스트 `TestOriginalRange`로 고정. 동작 변경 없음.
+- API 규격 Sync model 문단에 `asset_updated` 이벤트(적용 규칙 포함) 추가.
+- 릴리스 패키징: `NOTICE`, `third_party/go-modules/`(링크되는 Go 모듈·표준 라이브러리 라이선스, `scripts/third-party-licenses.sh`로 생성·`--check`), `third_party/seed-design/`(Apache-2.0 전문). 압축 파일에 CHANGELOG·SECURITY·백업/실기기 점검 문서 포함.
+- `scripts/release-dryrun.sh`: GoReleaser 없이 같은 5개 압축 파일과 `checksums.txt`를 저장소 밖에 만들고 대상·플래그·버전 문자열·포함 파일·경로 누출을 검사.
+- `docs/MACMINI_E2E_CHECKLIST.md`: Mac mini 실기기 점검 절차와 결과표.
+
+### Changed (release prep, M18)
+- `.goreleaser.yaml`: `-trimpath`, `mod_timestamp`, 라이선스 확인 훅, `release.prerelease: "true"`·`draft: true`(이전 `auto`는 접미사 없는 태그를 정식 릴리스로 냈을 것).
+- `release.yml`: `vX.Y.Z-접미사` 태그만, 형식 검사·`docs/releases/<태그>.md` 필수·gofmt·vet·`-race` 테스트·라이선스 확인 후 초안 prerelease. `ci.yml`에 라이선스 확인.
+- `scripts/install-macos.sh`: 저장소 인자 생략 시 설치 화면이 등록한 설정 파일의 저장소를 사용(LaunchAgent에 `WITHALBUM_ROOT` 없음, `WITHALBUM_CONFIG` 전달), 미등록이면 설치 모드 안내(코드는 0700 로그에만), 설정 파일과 다른 루트를 주면 경고, `--lan ADDR:PORT`(`-tls -allow-lan`, 관리자 필요), `ThrottleInterval` 30초.
+
 ### Changed (upload contract fixes)
 - 커밋된 `Idempotency-Key`로 업로드 세션을 다시 만들 때(세션이 24시간 만료·정리·완료 후 취소되었거나 단일 요청 업로드의 키) 409 `upload_already_committed` 대신 **저장된 커밋 결과**를 단일 업로드 재응답과 같은 형태로 돌려줌: 읽기 권한자 201 `created`/200 `already_present` + `asset_id`, UPLOADER 202 영수증(`asset_id` 없음), `Idempotency-Replayed: true`, 세션은 만들지 않음. 현재 역할 기준(권한을 잃었으면 403/404). 결과는 영수증을 찾은 같은 트랜잭션에서 읽음(`meta.UploadCommittedError`). 영수증 보존 기간(30일)이 지나면 새 요청 — 새 세션, 커밋은 `already_present`.
 - `asset_updated` 이벤트의 `uploader_device_id`: 비어 있던 값 대신 그 자산을 그 폴더에 올린 업로드의 기기 라벨(같은 자산의 `asset_added`와 같은 값). `asset_removed`는 계속 "".

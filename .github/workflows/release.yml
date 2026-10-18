@@ -1,16 +1,26 @@
 name: GitHub Release
 on:
   push:
-    tags: ['v*']
+    # Pre-release tags only (v0.1.0-alpha.1, v0.2.0-rc.1, ...): a plain
+    # vX.Y.Z tag does not start this workflow.
+    tags: ['v*.*.*-*']
 permissions:
   contents: write
 jobs:
   release:
-    # This repository currently contains an unauthenticated local-only PoC.
-    # Only push pre-release tags until authentication and restore testing are done.
-    name: Multi-platform releases
+    # Experimental self-hosted server, not tested on real hardware for
+    # every platform: every release is a prerelease and starts as a draft
+    # that the owner reviews and publishes (docs/RELEASING.md).
+    name: Multi-platform prerelease (draft)
     runs-on: ubuntu-latest
     steps:
+      - name: Refuse anything but a pre-release tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z.-]+$ ]]; then
+            echo "::error::$TAG is not a pre-release tag (vX.Y.Z-suffix)"; exit 1
+          fi
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -18,11 +28,20 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - run: go test ./...
+      - name: Release notes must exist
+        env:
+          TAG: ${{ github.ref_name }}
+        run: test -s "docs/releases/$TAG.md" || { echo "::error::docs/releases/$TAG.md is missing"; exit 1; }
+      - name: Require gofmt
+        run: test -z "$(gofmt -l .)"
+      - run: go vet ./...
+      - run: go test -race -count=1 ./...
+      - name: Third-party licenses are up to date
+        run: bash scripts/third-party-licenses.sh --check
       - uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
           version: '~> v2'
-          args: release --clean
+          args: release --clean --release-notes docs/releases/${{ github.ref_name }}.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

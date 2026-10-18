@@ -46,8 +46,9 @@ SQLite 스키마와 YAML API 문서는 목표 규격으로만 분류할 것. 결
 | [GitHub 모든 버전·릴리스 노트](../../releases) | 버전별 변경 내용과 설치 파일 | **미게시** |
 | [Mac mini 설치](docs/INSTALL_MACOS.md) | Apple Silicon(`darwin_arm64`) 최우선; Intel도 목표 | 개발자용 CLI/LaunchAgent |
 | [Linux·Raspberry Pi 설치](docs/INSTALL_LINUX.md) | Linux AMD64/ARM64/ARMv7, systemd | 개발자용 |
-| [배포 파이프라인](docs/RELEASING.md) | GitHub Actions · GoReleaser · checksum | 골격 구성 |
-| [릴리스 노트 예시](docs/releases/EXAMPLE_RELEASE_NOTES.md) | 알파 릴리스 설명 문구 | 예시 문서 |
+| [배포 파이프라인](docs/RELEASING.md) | GitHub Actions · GoReleaser · checksum · `scripts/release-dryrun.sh` | prerelease(초안)만, dry-run 검증 |
+| [v0.1.0-alpha.1 릴리스 노트](docs/releases/v0.1.0-alpha.1.md) | 첫 prerelease 후보 | **초안, 미발행** |
+| [Mac mini 실기기 점검](docs/MACMINI_E2E_CHECKLIST.md) | 설치·자동 시작·디스크 분리·재부팅·전원 차단·백업·LAN TLS | 절차만, 실기기 결과 없음 |
 
 <!-- 릴리스 요구사항:
 GitHub Releases는 git의 'release/' 폴더가 아니라 GitHub Releases 화면이다.
@@ -56,6 +57,18 @@ GitHub Releases는 git의 'release/' 폴더가 아니라 GitHub Releases 화면�
 실제 리포지터리가 만들어지면 GitHub URL, go.mod placeholder, workflow 동작, README 링크를 갱신한다.
 미서명 바이너리와 실제 Mac 실기기 테스트 여부를 명시한다.
 -->
+
+### Known limitations (알려진 제약, v0.1.0-alpha.1 기준)
+
+- **실험판(prerelease)**입니다. 인터넷 공개 금지, 대체 불가능한 원본의 유일한 보관소로 쓰지 말 것. alpha 동안 데이터 형식·API가 바뀔 수 있습니다.
+- **실기기 미검증:** Mac mini + 외장 디스크에서의 설치·launchd 자동 시작·디스크 분리/재연결·재부팅·전원 차단·백업 복원은 절차([`docs/MACMINI_E2E_CHECKLIST.md`](docs/MACMINI_E2E_CHECKLIST.md))만 있고 결과가 없습니다. Intel Mac·Linux·Raspberry Pi는 크로스빌드만 확인했습니다.
+- macOS 바이너리는 **서명·공증되지 않은 ZIP**입니다. DMG/PKG, 메뉴바 앱, 로그인 전 상시 실행(시스템 서비스)은 없습니다. `scripts/install-macos.sh`의 LaunchAgent는 사용자가 로그인한 세션에서만 동작합니다.
+- 외장 디스크를 다시 연결했을 때 장치 번호(st_dev)가 바뀌면 서버를 재시작해야 쓰기가 재개될 수 있습니다(fail closed 유지). 디스크 UUID 대조는 없고, 볼륨 마커를 복사한 다른 디스크는 구분하지 못할 수 있습니다.
+- 백업은 수동 명령(`backup -to`)뿐입니다. 예약 실행·원격/클라우드 백업·보존 정책은 없습니다.
+- LAN은 자체 서명 TLS + 공개키 지문 핀만 지원합니다(브라우저 경고). 앱의 핀닝은 실기기에서 검증하지 않았습니다. 인터넷 접속·원격 중계는 없습니다.
+- HEIC·영상 미리보기는 `sips`/`ffmpeg`가 있을 때만 만들어집니다(없으면 원본만 보관, `unsupported`). Linux 외부 도구는 미검증입니다.
+- 모바일 앱, Google Drive 모드, 실시간 푸시, 초대 거절·자진 탈퇴·보관 복원은 없습니다.
+- 원본 다운로드의 416 응답 본문은 JSON 오류 객체가 아닌 짧은 text/plain입니다(`docs/API_v2.yaml`).
 
 ### 프로젝트 최상위 실행 명령
 
@@ -406,10 +419,12 @@ GitHub에 곧바로 public push, Release 발행, 실제 원본 정리/삭제 등
 | `internal/storage/` | **부분 구현:** 볼륨 마커 생성(`-init-storage`)/검증/쓰기 직전 재확인(st_dev). 실기기 미검증, 디스크 UUID 대조 없음 |
 | `internal/authz/policy.go`, `policy_test.go` | **실행됨:** 역할 판정·단위 테스트. 모든 관리자·앨범 라우트가 매 요청 사용 |
 | `go.mod` | Go 모듈 버전, GitHub 주소 정하면 `module` 변경 필요 |
-| `.goreleaser.yaml` | 5개 CPU/OS 조합 릴리스 압축 산출물 설정 |
+| `.goreleaser.yaml` | 5개 CPU/OS 조합 릴리스 압축 산출물 설정(prerelease·초안만, `-trimpath`, `main.version`) |
+| `scripts/release-dryrun.sh`, `scripts/third-party-licenses.sh` | GoReleaser 없이 같은 산출물·체크섬을 만들어 검사(저장소 밖) / 링크되는 Go 모듈 라이선스 수집·확인 |
+| `NOTICE`, `third_party/` | 제3자 고지: Go 모듈·표준 라이브러리 라이선스(`go-modules/`), SEED Design 토큰 Apache-2.0(`seed-design/`) |
 | `.github/workflows/ci.yml`, `release.yml` | 테스트/크로스빌드 및 태그 릴리스 CI/CD |
 | `.github/release.yml` | GitHub 릴리스 노트 분류 예시 |
-| `scripts/install-macos.sh`, `install-linux.sh` | 개발용 백그라운드 실행 설치 스크립트, 정식 설치기 아님 |
+| `scripts/install-macos.sh`, `install-linux.sh` | 개발용 백그라운드 실행 설치 스크립트, 정식 설치기 아님(macOS: 설치 화면 설정 파일 또는 `WITHALBUM_ROOT`, `--lan`) |
 | `Makefile`, `.env.example`, `.gitignore` | 개발 명령·환경·제외 경로 |
 | `LICENSE`, `SECURITY.md` | AGPL-3.0 라이선스, 현재 시제품 보안 경고 |
 

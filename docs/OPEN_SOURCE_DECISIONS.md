@@ -9,7 +9,7 @@
 
 ## 서드파티 의존성 (AGPL-3.0 호환성 확인)
 
-`go.mod`/`go.sum`에 버전 고정. 모두 허용형(permissive) 라이선스로 AGPL-3.0 프로젝트에 포함·배포할 수 있으며, 바이너리 배포 시 각 저작권 고지를 함께 제공해야 한다(릴리스 패키징에서 처리 예정).
+`go.mod`/`go.sum`에 버전 고정. 모두 허용형(permissive) 라이선스로 AGPL-3.0 프로젝트에 포함·배포할 수 있으며, 바이너리 배포 시 각 저작권 고지를 함께 제공해야 한다: 릴리스 압축 파일의 `NOTICE`와 `third_party/go-modules/`(링크되는 모듈만 모아 `scripts/third-party-licenses.sh`로 생성, CI·릴리스에서 `--check`).
 
 | 모듈 | 버전 | 라이선스 | 용도 |
 |---|---|---|---|
@@ -38,4 +38,4 @@
 | 사용 범위 | 시맨틱 색 토큰(라이트·다크), 타입 스케일(t2–t10), dimension(간격)·radius·shadow 값 |
 | 변경 | 브랜드 계열(`bg-brand-solid`·`bg-brand-weak`·`fg-brand`·`fg-brand-contrast`·`stroke-brand-weak`)을 SEED 팔레트 green 계열(라이트 `#00745F`, 다크 `#117956`)로 교체한 WithAlbum "보관 그린" 테마. 원격 글꼴(Pretendard) 대신 시스템 서체 스택, 작은 필수 글자는 대비 4.5:1을 위해 `fg-neutral-subtle` 대신 `fg-neutral-muted` 사용 |
 
-Apache-2.0 파생물은 AGPL-3.0 프로젝트에 포함할 수 있다(Apache-2.0은 GPLv3 계열과 호환). 바이너리 배포 시 다른 의존성 고지와 함께 Apache-2.0 전문을 동봉한다(릴리스 패키징에서 처리 예정).
+Apache-2.0 파생물은 AGPL-3.0 프로젝트에 포함할 수 있다(Apache-2.0은 GPLv3 계열과 호환). 바이너리 배포 시 다른 의존성 고지와 함께 Apache-2.0 전문을 동봉한다: `third_party/seed-design/`(출처·변경 내용·라이선스 전문)과 `NOTICE`.
