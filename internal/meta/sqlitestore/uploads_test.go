@@ -204,8 +204,12 @@ func TestCommitCompletesUploadSession(t *testing.T) {
 	if err := e.s.DeleteUploadSession(ctx, ref); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := e.s.CreateUploadSession(ctx, e.req("d1", "k1", sha(1), 1000)); !errors.Is(err, meta.ErrUploadCommitted) {
+	var committed *meta.UploadCommittedError
+	if _, _, _, err := e.s.CreateUploadSession(ctx, e.req("d1", "k1", sha(1), 1000)); !errors.Is(err, meta.ErrUploadCommitted) || !errors.As(err, &committed) {
 		t.Fatalf("session for a committed key: %v", err)
+	}
+	if r := committed.Result; !r.Replayed || r.Result != meta.ResultCreated || r.Asset.ID != res.Asset.ID || r.Asset.SHA256 != sha(1) {
+		t.Fatalf("stored result of a committed key: %+v", r)
 	}
 	if _, _, _, err := e.s.CreateUploadSession(ctx, e.req("d1", "k1", sha(2), 1000)); !errors.Is(err, meta.ErrIdempotencyMismatch) {
 		t.Fatalf("session for a committed key, other bytes: %v", err)
@@ -244,8 +248,9 @@ func TestCommitCompletesUploadSession(t *testing.T) {
 func TestPreviewStatusUpdatesEveryFolder(t *testing.T) {
 	e := newUploadEnv(t)
 	ctx := t.Context()
+	device := map[string]string{e.folder: "phone-a", e.folder2: "phone-b"}
 	for i, f := range []string{e.folder, e.folder2} {
-		if _, err := e.s.CommitUpload(ctx, meta.CommitRequest{FolderID: f, UserID: e.owner,
+		if _, err := e.s.CommitUpload(ctx, meta.CommitRequest{FolderID: f, UserID: e.owner, DeviceID: device[f],
 			Asset: meta.Asset{SHA256: sha(7), Filename: "a.heic", MimeType: "image/heic", Bytes: 10, PreviewStatus: meta.PreviewStatusPending}}); err != nil {
 			t.Fatalf("commit %d: %v", i, err)
 		}
@@ -272,7 +277,8 @@ func TestPreviewStatusUpdatesEveryFolder(t *testing.T) {
 		}
 		last := page.Events[len(page.Events)-1]
 		a := page.Assets[last.AssetID]
-		if last.Kind != meta.EventAssetUpdated || !a.PreviewReady || a.PreviewStatus != meta.PreviewStatusReady {
+		// The event names the device that added the asset to this folder.
+		if last.Kind != meta.EventAssetUpdated || !a.PreviewReady || a.PreviewStatus != meta.PreviewStatusReady || last.UploaderDeviceID != device[f] {
 			t.Fatalf("folder %s: last event %+v asset %+v", f, last, a)
 		}
 	}

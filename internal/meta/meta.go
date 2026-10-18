@@ -76,7 +76,9 @@ const (
 	EventAssetAdded   = "asset_added"   // written by CommitUpload
 	EventAssetRemoved = "asset_removed" // written by RemoveAsset
 	// EventAssetUpdated: the asset's metadata changed (currently only its
-	// preview status, written by SetPreviewStatus); read it again.
+	// preview status, written by SetPreviewStatus); read it again. Its
+	// UploaderDeviceID is that of the asset's asset_added event in the same
+	// folder (the server made the change, no device did).
 	EventAssetUpdated = "asset_updated"
 )
 
@@ -144,11 +146,23 @@ var (
 	ErrUploadConflict = errors.New("upload session changed")
 	// ErrUploadCommitted: the idempotency key of a new session was already
 	// committed with the same bytes (by a single request or a session that
-	// has since been pruned).
+	// has since been pruned). CreateUploadSession returns it as an
+	// *UploadCommittedError carrying the stored outcome.
 	ErrUploadCommitted = errors.New("upload already committed")
 	// ErrTooManyUploads: the account has MaxOpenUploads open sessions.
 	ErrTooManyUploads = errors.New("too many open upload sessions")
 )
+
+// UploadCommittedError is ErrUploadCommitted with the stored outcome of the
+// committed request, as a replay of it: Result is what CommitUpload would
+// answer for the same request again (Replayed set, Asset as it is now). It
+// is read in the transaction that found the receipt, after Authorize.
+type UploadCommittedError struct {
+	Result CommitResult
+}
+
+func (e *UploadCommittedError) Error() string { return ErrUploadCommitted.Error() }
+func (e *UploadCommittedError) Unwrap() error { return ErrUploadCommitted }
 
 // Upload session states (UploadSession.Status).
 const (
@@ -528,7 +542,8 @@ type MetadataStore interface {
 	// session included). An expired session of the key is replaced; its ID
 	// is returned in replaced so the caller can delete its file.
 	// ErrIdempotencyMismatch (the key names other bytes, in a session or a
-	// receipt), ErrUploadCommitted, ErrTooManyUploads, ErrFolderNotFound,
+	// receipt), *UploadCommittedError (ErrUploadCommitted: the key's receipt
+	// says these bytes were committed), ErrTooManyUploads, ErrFolderNotFound,
 	// and the errors of Authorize and Reserve, wrapped.
 	CreateUploadSession(ctx context.Context, req NewUploadSession) (us UploadSession, created bool, replaced string, err error)
 	// GetUploadSession returns the session if it belongs to ref's account,
