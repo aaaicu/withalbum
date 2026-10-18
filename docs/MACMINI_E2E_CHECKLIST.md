@@ -130,7 +130,7 @@ LaunchAgent는 **사용자가 로그인한 세션**에서만 실행됩니다(로
 | 5.9 | `launchctl kickstart -k gui/$(id -u)/org.withalbum.server; sleep 5; wa_health; wa_login e2eadmin; wa_upload "$E2E/x.bin"` | 재시작 후 `storage ok`. 업로드는 새 키라 `HTTP 201`, 5.8에서 같은 파일이 이미 올라갔다면 `HTTP 200 already_present` | |
 | 5.10 | 디스크 없이 시작: 디스크 분리 → `launchctl kickstart -k gui/$(id -u)/org.withalbum.server; sleep 5; tail -3 ~/Library/Logs/WithAlbum/error.log; ls /Volumes` | `does not exist ... registered by the setup screen ... connect the disk` 로그 반복(30초 간격), `$ROOT`가 생기지 않음 | |
 | 5.11 | 디스크 연결 → 60초 대기 → `wa_health` | KeepAlive 재시도로 자동 기동, `storage ok`. 걸린 시간 기록 | |
-| 5.12 | 결론 기록: "디스크 재연결 시 재시작 필요: 예/아니오(조건: ____)" | 결과에 따라 문서·대시보드 문구 유지 또는 수정 필요 여부를 progress.md에 남김 | |
+| 5.12 | 결론 기록: "디스크 재연결 시 재시작 필요: 예/아니오(조건: ____)" | 결과에 따라 문서·대시보드 문구 유지 또는 수정 필요 여부를 운영 기록에 남김 | |
 
 ## 6. 재부팅 복구
 
@@ -202,7 +202,7 @@ LAN 리스너에는 설치 화면이 없습니다. 2장(또는 3장)에서 관�
 | 10.4 | 5장 디스크 분리 중 대시보드 "저장 중단됨" 화면 | |
 | 10.5 | 9장 LAN TLS에서 `https://localhost:8787/` 대시보드(자체 서명 경고 문구 기록) | |
 
-## 11. 결과 요약 (릴리스 노트·progress.md로 옮길 표)
+## 11. 결과 요약 (릴리스 노트·운영 기록로 옮길 표)
 
 | 장 | 항목 | 결과 (통과/실패/미검증) | 근거 요약 |
 |---|---|---|---|
