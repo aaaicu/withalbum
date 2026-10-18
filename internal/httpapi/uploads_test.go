@@ -235,7 +235,12 @@ func TestResumableUploadRoundTrip(t *testing.T) {
 	if got := do(t, env.Handler, "GET", "/api/v1/folders/"+fid+"/assets/"+assetID+"/original", nil, nil); got.Status != 200 {
 		t.Fatalf("original after cancel: %d", got.Status)
 	}
-	wantError(t, "create for a committed key", c.create(key, body, ""), 409, "upload_already_committed")
+	// The session is gone but the key's receipt is not: creating again
+	// answers the stored result like a replayed single upload.
+	r = c.create(key, body, "")
+	if again := wantJSON(t, "create for a committed key", r, 201); again["asset_id"] != assetID || r.Header.Get("Idempotency-Replayed") != "true" {
+		t.Fatalf("create for a committed key %v %v", again, r.Header)
+	}
 }
 
 // TestResumableUploadFinalHashMismatch: bytes that do not hash to the
@@ -355,6 +360,114 @@ func TestResumableUploaderReceiptAndRecheck(t *testing.T) {
 	wantJSON(t, "complete again", up.complete(id), 202)
 	if e.events(t, e.family) != before+1 {
 		t.Fatal("completion did not add the asset")
+	}
+}
+
+// expireUploads makes every upload session of the database expired.
+func expireUploads(t *testing.T, env contractEnv) {
+	t.Helper()
+	if _, err := env.Meta.DB().Exec("UPDATE upload_sessions SET expires_at = ?",
+		time.Now().Add(-time.Hour).UTC().Format("2006-01-02T15:04:05.000000000Z")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestCommittedKeyAfterSessionExpiry: once a session's commit is stored
+// and the session itself has expired (pruned or not), creating a session
+// with the same key answers the stored result as a replay, under the
+// caller's current role: the asset for a reader, the bare 202 receipt for
+// an UPLOADER. Nothing is written. After the receipt's retention the key
+// is a new request: a new session, and the commit finds the bytes already
+// in the folder.
+func TestCommittedKeyAfterSessionExpiry(t *testing.T) {
+	e := newACLEnv(t)
+	client := func(login string) sessionClient {
+		return sessionClient{t: t, h: e.Raw, folder: e.family, hdr: map[string]string{"Authorization": "Bearer " + e.tokens[login]}}
+	}
+	sessions := func() int {
+		var n int
+		if err := e.Meta.DB().QueryRow("SELECT COUNT(*) FROM upload_sessions").Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	commit := func(c sessionClient, key string, body []byte, status int) map[string]any {
+		t.Helper()
+		id := wantJSON(t, key+" create", c.create(key, body, ""), 201)["upload_id"].(string)
+		sendAll(t, c, id, body, 0, 1000)
+		return wantJSON(t, key+" complete", c.complete(id), status)
+	}
+	replay := func(what string, r reply, status int) map[string]any {
+		t.Helper()
+		m := wantJSON(t, what, r, status)
+		if r.Header.Get("Idempotency-Replayed") != "true" || r.Header.Get("Upload-Offset") != "" {
+			t.Fatalf("%s: headers %v", what, r.Header)
+		}
+		return m
+	}
+
+	contrib := client("contributor")
+	body := randomBytes(t, 2500)
+	assetID := commit(contrib, "c1", body, 201)["asset_id"].(string)
+	// Expired, not pruned yet.
+	expireUploads(t, e.contractEnv)
+	events, before := e.events(t, e.family), sessions()
+	m := replay("expired session", contrib.create("c1", body, ""), 201)
+	wantKeys(t, "replay", m, "result", "asset_id", "folder_id", "sha256", "preview_ready", "preview_status")
+	if m["result"] != "created" || m["asset_id"] != assetID || m["sha256"] != shaHex(body) || m["folder_id"] != e.family {
+		t.Fatalf("replay %v", m)
+	}
+	// Pruned.
+	if n, err := e.API.PruneUploads(t.Context(), time.Now()); err != nil || n != 1 {
+		t.Fatalf("prune %d %v", n, err)
+	}
+	if m := replay("pruned session", contrib.create("c1", body, ""), 201); m["asset_id"] != assetID {
+		t.Fatalf("replay after prune %v", m)
+	}
+	wantError(t, "same key, other bytes", contrib.create("c1", randomBytes(t, 2500), ""), 422, "idempotency_key_reused")
+	if e.events(t, e.family) != events || sessions() != before-1 {
+		t.Fatal("a replay wrote rows")
+	}
+
+	// UPLOADER: the receipt only, whatever the folder holds.
+	up := client("uploader")
+	upBody := randomBytes(t, 1800)
+	commit(up, "u1", upBody, 202)
+	expireUploads(t, e.contractEnv)
+	if _, err := e.API.PruneUploads(t.Context(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	m = replay("uploader replay", up.create("u1", upBody, ""), 202)
+	wantKeys(t, "uploader replay", m, "result", "folder_id", "sha256", "bytes")
+	if m["result"] != "accepted" || m["sha256"] != shaHex(upBody) || m["bytes"] != float64(len(upBody)) {
+		t.Fatalf("uploader replay %v", m)
+	}
+	// The current role decides, as for any replay.
+	e.setMember(t, "uploader", "CONTRIBUTOR")
+	if m := replay("promoted", up.create("u1", upBody, ""), 201); m["asset_id"] == nil {
+		t.Fatalf("promoted replay %v", m)
+	}
+	e.setMember(t, "uploader", "VIEWER")
+	wantError(t, "now a viewer", up.create("u1", upBody, ""), 403, "forbidden")
+	e.setMember(t, "uploader", "")
+	wantError(t, "no longer a member", up.create("u1", upBody, ""), 404, "folder_not_found")
+	e.setMember(t, "uploader", "UPLOADER")
+
+	// Past the receipts' retention the key is a new request.
+	if _, err := e.Meta.PruneUploadReceipts(t.Context(), time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	r := contrib.create("c1", body, "")
+	st := wantJSON(t, "after retention", r, 201)
+	if st["status"] != "open" || st["offset"] != float64(0) || r.Header.Get("Idempotency-Replayed") != "" {
+		t.Fatalf("after retention %v %v", st, r.Header)
+	}
+	sendAll(t, contrib, st["upload_id"].(string), body, 0, 1000)
+	if m := wantJSON(t, "commit after retention", contrib.complete(st["upload_id"].(string)), 200); m["result"] != "already_present" || m["asset_id"] != assetID {
+		t.Fatalf("commit after retention %v", m)
+	}
+	if e.events(t, e.family) != events+1 { // only the uploader's asset was added
+		t.Fatalf("events %d, want %d", e.events(t, e.family), events+1)
 	}
 }
 

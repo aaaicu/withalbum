@@ -150,10 +150,11 @@ func (s *Server) createUpload(w http.ResponseWriter, r *http.Request, a albumReq
 	if !s.storageReady(w) {
 		return
 	}
+	canRead := false
 	us, created, replaced, err := s.meta.CreateUploadSession(r.Context(), meta.NewUploadSession{
 		UserID: a.P.UserID, SessionID: a.ID.SessionID, DeviceID: a.ID.DeviceID, FolderID: a.Folder.Folder.ID,
 		Key: key, SHA256: req.SHA256, TotalBytes: req.Bytes, Filename: storedFilename(req.Filename, req.SHA256), DeviceLabel: deviceLabel,
-		Authorize: recheck(authz.UploadAsset, nil),
+		Authorize: recheck(authz.UploadAsset, &canRead),
 		Reserve: func(reserved int64) error {
 			free, err := s.freeBytes()
 			if errors.Is(err, storage.ErrFreeSpaceUnsupported) {
@@ -169,6 +170,7 @@ func (s *Server) createUpload(w http.ResponseWriter, r *http.Request, a albumReq
 			return nil
 		},
 	})
+	var committed *meta.UploadCommittedError
 	switch {
 	case err == nil:
 	case errors.Is(err, errNoRoom):
@@ -177,8 +179,12 @@ func (s *Server) createUpload(w http.ResponseWriter, r *http.Request, a albumReq
 	case errors.Is(err, meta.ErrIdempotencyMismatch):
 		errorReply(w, 422, "idempotency_key_reused")
 		return
-	case errors.Is(err, meta.ErrUploadCommitted):
-		errorReply(w, 409, "upload_already_committed")
+	case errors.As(err, &committed):
+		// The key was committed and its session is gone (expired, pruned or
+		// cancelled after completion): answer the stored result exactly as
+		// a replayed single-request upload, under the caller's current
+		// role (an UPLOADER gets the 202 receipt).
+		uploadReply(w, a.Folder.Folder.ID, req.SHA256, req.Bytes, committed.Result, canRead)
 		return
 	case errors.Is(err, meta.ErrTooManyUploads):
 		errorReply(w, 429, "too_many_uploads")

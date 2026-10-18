@@ -106,7 +106,13 @@ info:
     answers as already present. Originals over 512 MiB, or on unreliable
     networks, go through a resumable upload session (POST
     .../uploads, then PATCH chunks, then POST .../complete) whose
-    Idempotency-Key is the same kind of key with the same scope.
+    Idempotency-Key is the same kind of key with the same scope. Creating
+    a session with a key that was already committed (its session expired
+    or was removed) returns that stored result in the same form as a
+    replayed single-request upload, so a client never loses the result of
+    a commit it did not hear about. Every replay answers under the
+    caller's current role: an upload-only caller (UPLOADER) gets the 202
+    receipt and never an asset_id.
 
 
     Previews. JPEG, PNG and GIF previews are made during the upload.
@@ -115,11 +121,14 @@ info:
     commit: the asset arrives with preview_status "pending" and an
     asset_updated event follows when it is "ready" or "failed". A server
     without the tool reports "unsupported". An app that can read the folder
-    keeps its temporary copy of an original until the commit succeeded and
-    the preview is no longer pending (ready, or failed/unsupported: then
-    the server keeps the original without a preview and the app shows that
-    state); an UPLOADER cannot see previews and relies on the commit
-    status alone.
+    lightens its own temporary copy of an original only after the remote
+    original's SHA-256 is verified (a success reply whose folder_id and
+    sha256 match the local values) and its preview_status is not
+    "pending": "ready", or "failed"/"unsupported", where the server keeps
+    the original without a preview and the app keeps its own thumbnail and
+    shows that state. An UPLOADER cannot see previews and relies on the
+    verified 202 receipt alone. Originals in the device's own photo
+    library are never deleted.
 
 
     Errors are {"error": "<code>"}. 401 responses carry
@@ -1017,8 +1026,23 @@ paths:
         single-request upload (same account, device and folder scope):
         creating again with the same key and the same size and SHA-256
         returns the existing session (200, open or completed), other
-        content is 422 idempotency_key_reused, and a key already committed
-        is 409 upload_already_committed. Creation reserves the whole size:
+        content is 422 idempotency_key_reused. A key whose upload was
+        already committed and whose session is gone (expired after 24
+        hours, pruned, cancelled after completion, or a single-request
+        upload) creates no session: the stored commit result is returned
+        exactly as a replayed single-request upload (201 created / 200
+        already_present with the asset for callers who can read the folder,
+        the 202 receipt without asset_id for UPLOADER; header
+        Idempotency-Replayed: true, no Upload-Offset; the asset as it is
+        now, under the caller's current role, so a caller who lost upload
+        permission gets 403/404). Nothing is written. A client tells this
+        reply from a session by the Idempotency-Replayed header (or the
+        "result" field) and treats it as the reply to POST .../complete.
+        This lasts as long as the key's receipt (30 days after the commit);
+        after that the key is a new request: a new session is created (201
+        at offset 0), every byte must be sent again, and the commit answers
+        already_present (or 202) if the folder still holds the bytes.
+        Creation reserves the whole size:
         507 insufficient_storage unless the free space minus the server's
         reserve and minus what other open sessions still expect can hold
         it. Sessions expire 24 hours after their last change (creation,
@@ -1040,24 +1064,45 @@ paths:
                 filename: {type: string}
       responses:
         '200':
-          description: The existing session of this Idempotency-Key
+          description: >-
+            The existing session of this Idempotency-Key (UploadSession,
+            with Upload-Offset), or the replayed result already_present of a
+            committed key (UploadResult, Idempotency-Replayed: true; readers
+            only)
           headers:
             Upload-Offset: {$ref: '#/components/headers/UploadOffset'}
+            Idempotency-Replayed: {$ref: '#/components/headers/IdempotencyReplayed'}
           content:
             application/json:
-              schema: {$ref: '#/components/schemas/UploadSession'}
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/UploadSession'
+                  - $ref: '#/components/schemas/UploadResult'
         '201':
-          description: Session created at offset 0
+          description: >-
+            Session created at offset 0 (UploadSession, with Upload-Offset),
+            or the replayed result created of a committed key (UploadResult,
+            Idempotency-Replayed: true; readers only)
           headers:
             Upload-Offset: {$ref: '#/components/headers/UploadOffset'}
+            Idempotency-Replayed: {$ref: '#/components/headers/IdempotencyReplayed'}
           content:
             application/json:
-              schema: {$ref: '#/components/schemas/UploadSession'}
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/UploadSession'
+                  - $ref: '#/components/schemas/UploadResult'
+        '202':
+          description: The replayed receipt of a committed key for upload-only callers (always Idempotency-Replayed true)
+          headers:
+            Idempotency-Replayed: {$ref: '#/components/headers/IdempotencyReplayed'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UploadReceipt'}
         '400': {description: 'idempotency_key_required, invalid_idempotency_key, invalid_device_id, invalid_json, invalid_bytes, invalid_sha256'}
         '401': {description: unauthorized}
-        '403': {description: 'forbidden (VIEWER) or csrf_failed'}
+        '403': {description: 'forbidden (VIEWER, also for a committed key) or csrf_failed'}
         '404': {description: folder_not_found}
-        '409': {description: 'upload_already_committed (this key was committed with these bytes)'}
         '413': {description: file_too_large (over 64 GiB)}
         '415': {description: json_required}
         '422': {description: 'idempotency_key_reused (this key names other bytes)'}
@@ -1465,7 +1510,7 @@ components:
         kind: {type: string, enum: [asset_added, asset_removed, asset_updated], description: 'asset_updated: the asset (in "assets") changed, currently its preview_status'}
         asset_id: {type: string}
         folder_id: {type: string}
-        uploader_device_id: {type: string, description: 'X-Device-ID label of the upload; "" for asset_removed'}
+        uploader_device_id: {type: string, description: 'X-Device-ID label of the upload that added the asset to this folder: on asset_added, and on asset_updated the same label as that asset_added (the server made the change, no device did; "" when the upload sent none); always "" for asset_removed'}
         occurred_at: {type: string}
     UploadResult:
       type: object

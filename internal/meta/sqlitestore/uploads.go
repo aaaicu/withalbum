@@ -101,7 +101,13 @@ func (s *Store) createUploadSession(ctx context.Context, req meta.NewUploadSessi
 	case err == nil && rc.SHA256 != req.SHA256:
 		return meta.UploadSession{}, false, "", meta.ErrIdempotencyMismatch
 	case err == nil:
-		return meta.UploadSession{}, false, "", meta.ErrUploadCommitted
+		// Committed already (its session, if any, is gone): answer the
+		// stored outcome like a replayed commit, read in this transaction.
+		a, err := assetByID(ctx, tx, rc.AssetID)
+		if err != nil {
+			return meta.UploadSession{}, false, "", err
+		}
+		return meta.UploadSession{}, false, "", &meta.UploadCommittedError{Result: meta.CommitResult{Result: rc.Result, Asset: a, Replayed: true}}
 	case !errors.Is(err, meta.ErrReceiptNotFound):
 		return meta.UploadSession{}, false, "", err
 	}
@@ -267,16 +273,21 @@ func (s *Store) setPreviewStatus(ctx context.Context, sha, status string) (int, 
 	defer tx.Rollback()
 	// The folders holding an asset of these bytes whose preview is pending,
 	// read before the update changes which assets are pending.
-	rows, err := tx.QueryContext(ctx, `SELECT fa.folder_id, fa.asset_id FROM assets a JOIN folder_assets fa ON fa.asset_id = a.asset_id
+	// Each event carries the uploader label of its folder link (the device
+	// that added the asset there), like that asset's asset_added event.
+	rows, err := tx.QueryContext(ctx, `SELECT fa.folder_id, fa.asset_id, fa.uploader_device_label FROM assets a JOIN folder_assets fa ON fa.asset_id = a.asset_id
 		WHERE a.original_sha256 = ? AND a.preview_state = 'pending' AND fa.removed_at IS NULL ORDER BY fa.folder_id, fa.asset_id`, sha)
 	if err != nil {
 		return 0, err
 	}
-	type link struct{ folder, asset string }
+	type link struct {
+		folder, asset string
+		device        sql.NullString
+	}
 	var links []link
 	for rows.Next() {
 		var l link
-		if err := rows.Scan(&l.folder, &l.asset); err != nil {
+		if err := rows.Scan(&l.folder, &l.asset, &l.device); err != nil {
 			rows.Close()
 			return 0, err
 		}
@@ -302,7 +313,7 @@ func (s *Store) setPreviewStatus(ctx context.Context, sha, status string) (int, 
 			return 0, err
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO folder_changes (folder_id, seq, event_type, asset_id, occurred_at, uploader_device_label)
-			VALUES (?, ?, ?, ?, ?, NULL)`, l.folder, seq, meta.EventAssetUpdated, l.asset, ts); err != nil {
+			VALUES (?, ?, ?, ?, ?, ?)`, l.folder, seq, meta.EventAssetUpdated, l.asset, ts, l.device); err != nil {
 			return 0, err
 		}
 	}

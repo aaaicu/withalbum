@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Changed (upload contract fixes)
+- 커밋된 `Idempotency-Key`로 업로드 세션을 다시 만들 때(세션이 24시간 만료·정리·완료 후 취소되었거나 단일 요청 업로드의 키) 409 `upload_already_committed` 대신 **저장된 커밋 결과**를 단일 업로드 재응답과 같은 형태로 돌려줌: 읽기 권한자 201 `created`/200 `already_present` + `asset_id`, UPLOADER 202 영수증(`asset_id` 없음), `Idempotency-Replayed: true`, 세션은 만들지 않음. 현재 역할 기준(권한을 잃었으면 403/404). 결과는 영수증을 찾은 같은 트랜잭션에서 읽음(`meta.UploadCommittedError`). 영수증 보존 기간(30일)이 지나면 새 요청 — 새 세션, 커밋은 `already_present`.
+- `asset_updated` 이벤트의 `uploader_device_id`: 비어 있던 값 대신 그 자산을 그 폴더에 올린 업로드의 기기 라벨(같은 자산의 `asset_added`와 같은 값). `asset_removed`는 계속 "".
+- 문서: 앱 임시 사본 정리 조건을 "원격 원본 SHA-256 검증 완료 + `preview_status`가 `pending`이 아님(`failed`/`unsupported`면 앱이 자체 썸네일 보관)"으로 `CLAUDE.md`·`docs/API_v2.yaml`·`docs/CLIENT_SYNC_STATES.md`에서 통일. `CLIENT_SYNC_STATES.md`에 NEEDS_ATTENTION(자동 재시도 금지 사유와 사용자 조치 → READY)·RETRY_WAIT·READY→HASHING 전이 반영.
+
 ### Added (M24, setup screen on this Mac)
 - 설치 모드: 등록된 저장소가 없거나(기본 루트·`WITHALBUM_ROOT`가 미등록) 관리자가 없을 때, **평문 루프백 리스너에서만** 설치 화면(`/setup`)을 제공. `-tls`·`-allow-lan`·비루프백 주소에서는 설치 모드로 뜨지 않음. 별도 라우트 표(`httpapi.SetupRoutes`)로 정상 라우트 표와 분리.
 - 1회용 설치 코드: 콘솔에만 출력, 12자(60비트), 메모리에 SHA-256만, 30분, 첫 정답에 소모, 5회 오입력 시 잠김(재시작 필요), 상수시간 비교. 코드 입력 전에는 어떤 정보도 응답하지 않음. 설치 세션 쿠키(HttpOnly, SameSite=Strict, Path=/setup, 1시간) + CSRF 헤더, JSON 전용, 다른 출처(Origin/Sec-Fetch-Site) 거부, 기존 Host 검사(421) 유지, 해시 기반 CSP.
