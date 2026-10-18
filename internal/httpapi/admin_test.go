@@ -119,6 +119,19 @@ func TestDashboardDesignRules(t *testing.T) {
 	if !strings.Contains(page, "보관됨") {
 		t.Error(`page never says "보관됨"`)
 	}
+	// Only what the server does: accounts are made by an administrator (no
+	// sign-up requests to approve), an UPLOADER sees none of the album (not
+	// even its own uploads), and the album role names are 오너/참여/보기/업로드 전용.
+	for _, bad := range []string{"가입 요청", "승인 대기", "자기가 올린 사진만 보여요", "소유자", "'편집'"} {
+		if strings.Contains(page, bad) {
+			t.Errorf("page says %q", bad)
+		}
+	}
+	for _, want := range []string{"OWNER: '오너'", "CONTRIBUTOR: '참여'", "VIEWER: '보기'", "UPLOADER: '업로드 전용'"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("page lacks role name %q", want)
+		}
+	}
 	// Every icon is inline SVG hidden from assistive technology.
 	svgs := regexp.MustCompile(`<svg[^>]*>`).FindAllString(page, -1)
 	if len(svgs) < 10 {
