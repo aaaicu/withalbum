@@ -446,7 +446,7 @@
           </section>
           <section class="card">
             <div class="card-head"><h2 class="t-h2">받은 초대</h2></div>
-            <p class="note">나에게 온 앨범 초대입니다. 수락하면 해당 역할로 앨범에 참여합니다.</p>
+            <p class="note">나에게 온 앨범 초대입니다. 수락하면 해당 역할로 앨범에 참여하고, 거절하면 초대가 사라집니다.</p>
             <ul class="rows" id="myInvites"></ul>
           </section>
         </div>
@@ -945,8 +945,22 @@
         $('myInvites').append(el('li', {className: 'row'}, el('span', {className: 'row-icon'}, icon('mail', 'i20')),
           el('div', {className: 'row-text'}, el('div', {className: 'row-title', text: inv.folder_name + ' · ' + (ROLE[inv.role] || inv.role)}),
             el('div', {className: 'row-meta', text: '보낸 사람 ' + inv.inviter_display_name + ' · 만료 ' + fmtTime(inv.expires_at)})),
+          button('거절', () => declineInvite(inv), 'btn btn-outline btn-pill'),
           button('수락', () => acceptInvite(inv), 'btn btn-weak btn-pill')));
       });
+    }
+    // declineInvite: the invitation leaves this list and the owner's waiting
+    // list; the owner can invite again later. Nothing of the album is shown.
+    async function declineInvite(inv) {
+      if (!confirm(inv.folder_name + ' 앨범 초대를 거절할까요? 거절하면 이 초대는 사라지고, 다시 참여하려면 오너가 새로 초대해야 해요.')) return;
+      try {
+        await api('/api/v1/invitations/' + enc(inv.id) + '/decline', json('POST', {}));
+        await reload();
+        say(inv.folder_name + ' 앨범 초대를 거절했어요.');
+      } catch (err) {
+        if (err instanceof ApiError && err.code === 'invitation_gone') { say('이미 처리되었거나 만료된 초대예요.'); reload(); }
+        else fail(err);
+      }
     }
     async function acceptInvite(inv) {
       try {

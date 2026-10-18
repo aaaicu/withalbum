@@ -384,6 +384,7 @@ func TestMembershipFaultRollsBack(t *testing.T) {
 			wantError(t, name, e.asJSON(t, "owner", req[0], req[1], req[2]), c.status, c.code)
 		}
 		wantError(t, "accept", e.as(t, "outsider", "POST", "/api/v1/invitations/"+id+"/accept", nil, nil), c.status, c.code)
+		wantError(t, "decline", e.as(t, "outsider", "POST", "/api/v1/invitations/"+id+"/decline", nil, nil), c.status, c.code)
 		e.faults.set(httpapi.FaultMembershipBeforeCommit, nil)
 		if after := snapshot(); after != before {
 			t.Fatalf("state changed by failed writes:\n%s\n%s", before, after)
@@ -475,5 +476,93 @@ func TestAuditRowsCarryNoSecrets(t *testing.T) {
 	}
 	if strings.Join(got, ",") != "invitation.create,invitation.accept,member.role_change,folder.transfer_owner" {
 		t.Fatalf("audit actions %v", got)
+	}
+}
+
+// TestInvitationDecline: the named recipient declines with its own session,
+// decided like accept — unknown 404, another account's 403 (the server
+// administrator and the owner included), accepted/revoked/expired/declined
+// or archived 410 — in one transaction with an audit row. A declined
+// invitation leaves both lists and the owner can invite again.
+func TestInvitationDecline(t *testing.T) {
+	e := newACLEnv(t)
+	f := "/api/v1/folders/" + e.family
+	decline := func(login, id string) reply {
+		return e.as(t, login, "POST", "/api/v1/invitations/"+id+"/decline", nil, nil)
+	}
+	id := e.invite(t, "outsider", "CONTRIBUTOR")
+	for _, login := range []string{"owner", "contributor", "viewer", "uploader", "root"} {
+		wantError(t, "decline as "+login, decline(login, id), 403, "forbidden")
+	}
+	wantError(t, "unknown", decline("outsider", "0123456789abcdef0123456789abcdef"), 404, "invitation_not_found")
+	wantError(t, "no session", do(t, e.Raw, "POST", "/api/v1/invitations/"+id+"/decline", nil, nil), 401, "unauthorized")
+	if e.audits(t, "invitation.decline") != 0 {
+		t.Fatal("refused declines were audited")
+	}
+	if r := decline("outsider", id); r.Status != 204 || len(r.Body) != 0 {
+		t.Fatalf("decline %d %s", r.Status, r.Body)
+	}
+	wantError(t, "decline again", decline("outsider", id), 410, "invitation_gone")
+	wantError(t, "accept declined", e.as(t, "outsider", "POST", "/api/v1/invitations/"+id+"/accept", nil, nil), 410, "invitation_gone")
+	wantError(t, "revoke declined", e.as(t, "owner", "DELETE", f+"/invitations/"+id, nil, nil), 410, "invitation_gone")
+	wantError(t, "no access", e.as(t, "outsider", "GET", f, nil, nil), 404, "folder_not_found")
+	for who, path := range map[string]string{"outsider": "/api/v1/invitations", "owner": f + "/invitations"} {
+		if l := wantJSON(t, "list "+who, e.as(t, who, "GET", path, nil, nil), 200)["invitations"].([]any); len(l) != 0 {
+			t.Fatalf("declined invitation listed for %s: %v", who, l)
+		}
+	}
+	if e.audits(t, "invitation.decline") != 1 {
+		t.Fatal("decline not audited once")
+	}
+	var actor, target, details string
+	if err := e.Meta.DB().QueryRow("SELECT actor_user_id, target_id, details_json FROM audit_log WHERE action = 'invitation.decline'").Scan(&actor, &target, &details); err != nil {
+		t.Fatal(err)
+	}
+	if actor != e.ids["outsider"] || target != id || !strings.Contains(details, e.family) || !strings.Contains(details, e.ids["owner"]) {
+		t.Fatalf("audit row actor %q target %q details %s", actor, target, details)
+	}
+	for login, tok := range e.tokens {
+		if strings.Contains(details, tok) {
+			t.Fatalf("decline audit carries the token of %s", login)
+		}
+	}
+
+	// The owner may invite the declining account again (the pending UNIQUE
+	// index only covers pending rows), and the new invitation works.
+	again := e.invite(t, "outsider", "VIEWER")
+	if again == id {
+		t.Fatal("same invitation id")
+	}
+	wantJSON(t, "accept new", e.as(t, "outsider", "POST", "/api/v1/invitations/"+again+"/accept", nil, nil), 200)
+	// After accepting, declining the accepted invitation is 410 and the
+	// membership stays.
+	wantError(t, "decline accepted", decline("outsider", again), 410, "invitation_gone")
+	if r := e.as(t, "outsider", "GET", f, nil, nil); r.Status != 200 {
+		t.Fatalf("member lost access: %d", r.Status)
+	}
+
+	// Revoked, expired and archived invitations are 410 too, and nothing is
+	// written for them.
+	revoked := e.invite(t, "root", "VIEWER")
+	if r := e.as(t, "owner", "DELETE", f+"/invitations/"+revoked, nil, nil); r.Status != 204 {
+		t.Fatalf("revoke %d", r.Status)
+	}
+	wantError(t, "decline revoked", decline("root", revoked), 410, "invitation_gone")
+	expired := e.invite(t, "root", "VIEWER")
+	if _, err := e.Meta.DB().Exec("UPDATE folder_invitations SET expires_at = '2020-01-01T00:00:00.000000000Z' WHERE invitation_id = ?", expired); err != nil {
+		t.Fatal(err)
+	}
+	wantError(t, "decline expired", decline("root", expired), 410, "invitation_gone")
+	var status string
+	if err := e.Meta.DB().QueryRow("SELECT status FROM folder_invitations WHERE invitation_id = ?", expired).Scan(&status); err != nil || status != "pending" {
+		t.Fatalf("expired invitation rewritten to %q, %v", status, err)
+	}
+	archived := e.invite(t, "root", "VIEWER")
+	if r := e.as(t, "owner", "DELETE", f, nil, nil); r.Status != 204 {
+		t.Fatalf("archive %d", r.Status)
+	}
+	wantError(t, "decline archived", decline("root", archived), 410, "invitation_gone")
+	if e.audits(t, "invitation.decline") != 1 {
+		t.Fatal("a refused decline was audited")
 	}
 }

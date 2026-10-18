@@ -266,36 +266,57 @@ func (s *Store) AcceptInvitation(ctx context.Context, c meta.AlbumChange) (meta.
 	return fa, classify(err)
 }
 
-func (s *Store) acceptInvitation(ctx context.Context, c meta.AlbumChange) (meta.FolderAccess, error) {
+// inviteeTx starts the write transaction of an invitee's answer and decides
+// it: the caller's account and session, the invitation (ErrInvitationNotFound),
+// c.Authorize, the invitee (ErrNotInvitee) and whether the invitation can
+// still be answered (ErrInvitationGone). The caller must roll tx back.
+func (s *Store) inviteeTx(ctx context.Context, c meta.AlbumChange) (*sql.Tx, meta.Invitation, meta.FolderAccess, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return meta.FolderAccess{}, err
+		return nil, meta.Invitation{}, meta.FolderAccess{}, err
 	}
-	defer tx.Rollback()
+	inv, fa, err := decideInvitee(ctx, tx, c)
+	if err != nil {
+		tx.Rollback()
+		return nil, meta.Invitation{}, meta.FolderAccess{}, err
+	}
+	return tx, inv, fa, nil
+}
+
+func decideInvitee(ctx context.Context, tx *sql.Tx, c meta.AlbumChange) (meta.Invitation, meta.FolderAccess, error) {
 	p, err := principalTx(ctx, tx, c.ActorID, c.SessionID)
 	if err != nil {
-		return meta.FolderAccess{}, err
+		return meta.Invitation{}, meta.FolderAccess{}, err
 	}
 	inv, err := getInvitation(ctx, tx, c.TargetID)
 	if err != nil {
-		return meta.FolderAccess{}, err
+		return meta.Invitation{}, meta.FolderAccess{}, err
 	}
 	fa, err := getFolderAccess(ctx, tx, inv.FolderID, c.ActorID)
 	archived := errors.Is(err, meta.ErrFolderNotFound)
 	if err != nil && !archived {
-		return meta.FolderAccess{}, err
+		return meta.Invitation{}, meta.FolderAccess{}, err
 	}
 	if err := c.Authorize(p, fa.Access); err != nil {
-		return meta.FolderAccess{}, fmt.Errorf("authorize: %w", err)
+		return meta.Invitation{}, meta.FolderAccess{}, fmt.Errorf("authorize: %w", err)
 	}
 	if inv.InviteeID != c.ActorID {
-		return meta.FolderAccess{}, meta.ErrNotInvitee
+		return meta.Invitation{}, meta.FolderAccess{}, meta.ErrNotInvitee
 	}
 	// Only the folder's current owner can have invited: a transfer revokes
 	// pending invitations, and this also covers rows written otherwise.
 	if archived || inv.Status != meta.InvitationPending || inv.InviterID != fa.Access.OwnerID {
-		return meta.FolderAccess{}, meta.ErrInvitationGone
+		return meta.Invitation{}, meta.FolderAccess{}, meta.ErrInvitationGone
 	}
+	return inv, fa, nil
+}
+
+func (s *Store) acceptInvitation(ctx context.Context, c meta.AlbumChange) (meta.FolderAccess, error) {
+	tx, inv, fa, err := s.inviteeTx(ctx, c)
+	if err != nil {
+		return meta.FolderAccess{}, err
+	}
+	defer tx.Rollback()
 	if fa.Access.OwnerID == c.ActorID || fa.Access.HasMembership {
 		return meta.FolderAccess{}, meta.ErrAlreadyMember
 	}
@@ -325,6 +346,41 @@ func (s *Store) acceptInvitation(ctx context.Context, c meta.AlbumChange) (meta.
 	}
 	fa.Access.HasMembership, fa.Access.MemberRole = true, inv.Role
 	return fa, nil
+}
+
+// DeclineInvitation implements meta.Memberships. Like AcceptInvitation,
+// an expired or stale invitation is reported (ErrInvitationGone) and left as
+// it is. The audit row names the folder, the role and the inviter.
+func (s *Store) DeclineInvitation(ctx context.Context, c meta.AlbumChange) error {
+	if c.Authorize == nil {
+		return errors.New("sqlitestore: AlbumChange.Authorize is required")
+	}
+	return classify(s.declineInvitation(ctx, c))
+}
+
+func (s *Store) declineInvitation(ctx context.Context, c meta.AlbumChange) error {
+	tx, inv, _, err := s.inviteeTx(ctx, c)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, "UPDATE folder_invitations SET status = 'declined' WHERE invitation_id = ? AND status = 'pending'", inv.ID)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil || n != 1 {
+		return fmt.Errorf("decline invitation: %d rows changed: %v", n, err)
+	}
+	if err := recordAlbum(ctx, tx, c.ActorID, "invitation.decline", "invitation", inv.ID,
+		map[string]any{"folder_id": inv.FolderID, "role": string(inv.Role), "inviter_user_id": inv.InviterID}); err != nil {
+		return err
+	}
+	if c.BeforeCommit != nil {
+		if err := c.BeforeCommit(); err != nil {
+			return fmt.Errorf("before commit: %w", err)
+		}
+	}
+	return tx.Commit()
 }
 
 // ListMembers implements meta.Memberships.

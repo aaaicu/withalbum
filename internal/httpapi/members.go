@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/aaaicu/withalbum/internal/auth/session"
 	"github.com/aaaicu/withalbum/internal/authz"
 	"github.com/aaaicu/withalbum/internal/meta"
 )
@@ -30,6 +31,7 @@ func (s *Server) memberRoutes(rt *router) {
 	rt.handleAlbum("DELETE /api/v1/folders/{folderID}/invitations/{invitationID}", s.revokeInvitation)
 	rt.handle("GET /api/v1/invitations", s.listMyInvitations)
 	rt.handle("POST /api/v1/invitations/{invitationID}/accept", s.acceptInvitation)
+	rt.handle("POST /api/v1/invitations/{invitationID}/decline", s.declineInvitation)
 }
 
 type invitationJSON struct {
@@ -257,27 +259,49 @@ func (s *Server) listMyInvitations(w http.ResponseWriter, r *http.Request) {
 	jsonReply(w, 200, map[string]any{"invitations": invitationsView(list)})
 }
 
-// acceptInvitation: only the invited account, while the invitation is
-// pending, unexpired and was written by the folder's current owner. Unknown
-// invitation 404, another account's 403, used/revoked/expired 410.
-func (s *Server) acceptInvitation(w http.ResponseWriter, r *http.Request) {
-	id, _ := IdentityFrom(r.Context())
-	p := principal(id)
-	if !s.storageReady(w) {
-		return
-	}
-	fa, err := s.members.AcceptInvitation(r.Context(), meta.AlbumChange{ActorID: id.UserID, SessionID: id.SessionID,
-		TargetID: r.PathValue("invitationID"),
+// inviteeChange is the AlbumChange of the invitee's answer to invitation
+// invitationID: the store decides on the invitation and the folder inside
+// the transaction; here only that the caller's account is active.
+func (s *Server) inviteeChange(id session.Identity, invitationID string) meta.AlbumChange {
+	return meta.AlbumChange{ActorID: id.UserID, SessionID: id.SessionID, TargetID: invitationID,
 		Authorize: func(p authz.Principal, _ authz.AlbumAccess) error {
 			if !p.Active {
 				return errDenied
 			}
 			return nil
 		},
-		BeforeCommit: func() error { return s.fault(FaultMembershipBeforeCommit) }})
+		BeforeCommit: func() error { return s.fault(FaultMembershipBeforeCommit) }}
+}
+
+// acceptInvitation: only the invited account, while the invitation is
+// pending, unexpired and was written by the folder's current owner. Unknown
+// invitation 404, another account's 403, used/revoked/expired/declined 410.
+func (s *Server) acceptInvitation(w http.ResponseWriter, r *http.Request) {
+	id, _ := IdentityFrom(r.Context())
+	p := principal(id)
+	if !s.storageReady(w) {
+		return
+	}
+	fa, err := s.members.AcceptInvitation(r.Context(), s.inviteeChange(id, r.PathValue("invitationID")))
 	if err != nil {
 		membershipError(w, "accept invitation", err)
 		return
 	}
 	jsonReply(w, 200, folderView(p, fa))
+}
+
+// declineInvitation: decided exactly like acceptInvitation (404, 403 for
+// another account including administrators, 410). The invitation stops
+// being pending, so it leaves the owner's list and the owner may invite the
+// same account again. The reply says nothing about the album.
+func (s *Server) declineInvitation(w http.ResponseWriter, r *http.Request) {
+	id, _ := IdentityFrom(r.Context())
+	if !s.storageReady(w) {
+		return
+	}
+	if err := s.members.DeclineInvitation(r.Context(), s.inviteeChange(id, r.PathValue("invitationID"))); err != nil {
+		membershipError(w, "decline invitation", err)
+		return
+	}
+	w.WriteHeader(204)
 }

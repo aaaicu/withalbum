@@ -331,6 +331,7 @@ const (
 	InvitationAccepted = "accepted"
 	InvitationRevoked  = "revoked"
 	InvitationExpired  = "expired"
+	InvitationDeclined = "declined" // by the invitee
 )
 
 // InvitationTTL is how long an invitation can be accepted.
@@ -365,7 +366,7 @@ type Member struct {
 
 // AlbumChange is a membership write made by an authenticated user.
 type AlbumChange struct {
-	FolderID  string // "" for AcceptInvitation (taken from the invitation)
+	FolderID  string // "" for Accept/DeclineInvitation (taken from the invitation)
 	ActorID   string // users.user_id of the caller
 	SessionID string // the caller's session, see NewFolder.SessionID
 	// TargetID is the user (invitee, member, new owner) or the invitation
@@ -390,7 +391,8 @@ var (
 	ErrAlreadyMember      = errors.New("already owner or member")
 	ErrInvitationPending  = errors.New("a pending invitation exists")
 	ErrInvitationNotFound = errors.New("invitation not found")
-	// ErrInvitationGone: accepted, revoked or expired; it cannot be used.
+	// ErrInvitationGone: accepted, revoked, expired or declined; it cannot
+	// be used.
 	ErrInvitationGone = errors.New("invitation no longer valid")
 	// ErrNotInvitee: the invitation names another account.
 	ErrNotInvitee     = errors.New("invitation is addressed to another account")
@@ -450,6 +452,13 @@ type Memberships interface {
 	// ErrInvitationNotFound, ErrNotInvitee, ErrInvitationGone (also when the
 	// folder was archived or its owner changed), ErrAlreadyMember.
 	AcceptInvitation(ctx context.Context, c AlbumChange) (FolderAccess, error)
+	// DeclineInvitation marks invitation TargetID declined, as the caller.
+	// It is decided like AcceptInvitation: ErrInvitationNotFound,
+	// ErrNotInvitee, ErrInvitationGone (also when the folder was archived
+	// or its owner changed). Nothing is written unless it is declined; a
+	// declined invitation is no longer pending, so the owner may invite the
+	// same account again.
+	DeclineInvitation(ctx context.Context, c AlbumChange) error
 	// ListMembers returns the owner first, then the members by join time.
 	ListMembers(ctx context.Context, folderID string) ([]Member, error)
 	// SetMemberRole changes member TargetID's role. ErrMemberNotFound,
