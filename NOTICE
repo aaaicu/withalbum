@@ -1,0 +1,28 @@
+WithAlbum Server
+https://github.com/aaaicu/withalbum
+
+WithAlbum Server is free software licensed under the GNU Affero General
+Public License, version 3 (see LICENSE). The complete corresponding source
+code of every release is available from the repository above, at the tag
+of the release.
+
+This distribution includes material from third parties, under their own
+licenses:
+
+1. SEED Design tokens
+   Copyright Daangn Market Co., Ltd.
+   Licensed under the Apache License, Version 2.0.
+   Colour, type, spacing, radius and shadow values of the built-in web
+   pages are derived (and modified) from SEED Design
+   (https://github.com/daangn/seed-design).
+   See third_party/seed-design/.
+
+2. Go standard library and Go modules compiled into the binary
+   (BSD-3-Clause, MIT; SQLite is in the public domain).
+   The list of modules and versions is third_party/go-modules/MODULES.txt;
+   each module's license and notice files are in
+   third_party/go-modules/<module path>/.
+
+Unless required by applicable law or agreed to in writing, all of the
+above is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS
+OF ANY KIND.

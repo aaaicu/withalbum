@@ -1,6 +1,14 @@
-# GoReleaser v2. This currently publishes an INSECURE LOCAL PROTOTYPE only.
+# GoReleaser v2. Pre-release builds of an experimental self-hosted server:
+# every GitHub release is a prerelease and starts as a draft (see
+# docs/RELEASING.md). scripts/release-dryrun.sh builds the same archives
+# without GoReleaser and reads the archive file list below; keep the
+# "files:" entries plain paths or globs (no src/dst).
 version: 2
 project_name: withalbum-server
+before:
+  hooks:
+    # Release archives carry the license files of every linked Go module.
+    - bash scripts/third-party-licenses.sh --check
 builds:
   - id: withalbum-server
     main: ./server
@@ -13,8 +21,13 @@ builds:
       - linux_amd64_v1
       - linux_arm64
       - linux_arm_7
+    flags:
+      - -trimpath
+    # -version prints "withalbum-server <version>": the tag without the
+    # leading "v" (tag v0.1.0-alpha.1 -> 0.1.0-alpha.1), as in archive names.
     ldflags:
       - -s -w -X main.version={{.Version}}
+    mod_timestamp: '{{ .CommitTimestamp }}'
 archives:
   - id: withalbum-archives
     formats: [tar.gz]
@@ -24,18 +37,24 @@ archives:
         formats: [zip]
     files:
       - LICENSE
+      - NOTICE
       - README.md
-      - src: docs/INSTALL_MACOS.md
-        dst: docs
-      - src: docs/INSTALL_LINUX.md
-        dst: docs
-      - src: scripts/install-macos.sh
-        dst: scripts
-      - src: scripts/install-linux.sh
-        dst: scripts
+      - CHANGELOG.md
+      - SECURITY.md
+      - docs/INSTALL_MACOS.md
+      - docs/INSTALL_LINUX.md
+      - docs/BACKUP_RESTORE.md
+      - docs/MACMINI_E2E_CHECKLIST.md
+      - docs/OPEN_SOURCE_DECISIONS.md
+      - scripts/install-macos.sh
+      - scripts/install-linux.sh
+      - third_party/**/*
 checksum:
   name_template: checksums.txt
+  algorithm: sha256
 changelog:
+  # Release notes come from docs/releases/<tag>.md (--release-notes in
+  # .github/workflows/release.yml); this list is not used then.
   use: git
   sort: asc
   filters:
@@ -44,4 +63,6 @@ changelog:
       - '^test:'
       - '^chore:'
 release:
-  prerelease: auto
+  # Never a full release: there is no 1.0 and no signed installer.
+  prerelease: "true"
+  draft: true

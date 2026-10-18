@@ -87,7 +87,7 @@ func clearCookies(w http.ResponseWriter, r *http.Request) {
 // browsers get cookies and only the CSRF token in the body.
 func (s *Server) tokenReply(w http.ResponseWriter, r *http.Request, t session.Tokens, id session.Identity) {
 	body := map[string]any{"device_id": t.DeviceID, "access_expires_at": ts(t.AccessExpires),
-		"refresh_expires_at": ts(t.RefreshExpires), "user": identityUser(id)}
+		"refresh_expires_at": ts(t.RefreshExpires), "session_expires_at": ts(t.SessionExpires), "user": identityUser(id)}
 	if t.CSRFToken != "" {
 		now := time.Now()
 		setCookie(w, r, cookieAccess, t.AccessToken, "/api/", t.AccessExpires.Sub(now), true)

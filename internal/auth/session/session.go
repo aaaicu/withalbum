@@ -222,6 +222,9 @@ type Tokens struct {
 	AccessExpires  time.Time
 	RefreshToken   string
 	RefreshExpires time.Time
+	// SessionExpires is the absolute end of the session (login +
+	// DefaultAbsoluteTTL): the same on every refresh of the session.
+	SessionExpires time.Time
 	CSRFToken      string // browser sessions only
 }
 
@@ -429,6 +432,7 @@ func (s *Service) newCredentials(browser bool, end time.Time) (Tokens, error) {
 		}
 	}
 	now := s.now()
+	t.SessionExpires = end
 	t.AccessExpires = now.Add(s.accessTTL)
 	t.RefreshExpires = now.Add(s.refreshTTL)
 	if t.RefreshExpires.After(end) {
@@ -448,7 +452,13 @@ func nullableHash(token string) sql.NullString {
 }
 
 func (s *Service) create(ctx context.Context, userID string, req LoginRequest) (Tokens, error) {
-	t, err := s.newCredentials(req.Platform == PlatformWeb, s.now().Add(s.absoluteTTL))
+	// The stored creation time decides the absolute end on every refresh
+	// (rotate), so the end reported now is computed from the same value.
+	created, err := parseTime(fmtTime(s.now()))
+	if err != nil {
+		return Tokens{}, err
+	}
+	t, err := s.newCredentials(req.Platform == PlatformWeb, created.Add(s.absoluteTTL))
 	if err != nil {
 		return Tokens{}, err
 	}
@@ -458,7 +468,7 @@ func (s *Service) create(ctx context.Context, userID string, req LoginRequest) (
 	if t.SessionID, err = newID(); err != nil {
 		return Tokens{}, err
 	}
-	now := fmtTime(s.now())
+	now := fmtTime(created)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Tokens{}, err

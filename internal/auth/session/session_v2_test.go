@@ -107,6 +107,9 @@ func TestRefreshAbsoluteExpiry(t *testing.T) {
 	login := e.clk.Now()
 	tok := e.mustLogin(t)
 	end := login.Add(session.DefaultAbsoluteTTL)
+	if !tok.SessionExpires.Equal(end) {
+		t.Fatalf("session end at login %v, want %v", tok.SessionExpires, end)
+	}
 	for e.clk.Now().Add(20 * 24 * time.Hour).Before(end) {
 		e.clk.Add(20 * 24 * time.Hour)
 		next, _, err := e.svc.Refresh(ctx, session.RefreshRequest{RefreshToken: tok.RefreshToken})
@@ -115,6 +118,9 @@ func TestRefreshAbsoluteExpiry(t *testing.T) {
 		}
 		if next.RefreshExpires.After(end) {
 			t.Fatalf("refresh window %v ends after the absolute end %v", next.RefreshExpires, end)
+		}
+		if !next.SessionExpires.Equal(end) {
+			t.Fatalf("session end after a refresh %v, want the fixed absolute end %v", next.SessionExpires, end)
 		}
 		tok = next
 	}
@@ -216,5 +222,25 @@ func TestPrune(t *testing.T) {
 	e.clk.Add(31 * 24 * time.Hour)
 	if r, err := e.svc.Prune(ctx); err != nil || r.Sessions != 1 {
 		t.Fatalf("prune expired session: %+v %v", r, err)
+	}
+}
+
+// TestSessionExpiresFixedAcrossGrace: the absolute end reported by a refresh
+// in the grace window (lost response) is still the one of the login.
+func TestSessionExpiresFixedAcrossGrace(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	first := e.mustLogin(t)
+	e.clk.Add(time.Hour)
+	if _, _, err := e.svc.Refresh(ctx, session.RefreshRequest{RefreshToken: first.RefreshToken}); err != nil {
+		t.Fatal(err)
+	}
+	e.clk.Add(5 * time.Second)
+	retry, _, err := e.svc.Refresh(ctx, session.RefreshRequest{RefreshToken: first.RefreshToken})
+	if err != nil {
+		t.Fatalf("retry within grace: %v", err)
+	}
+	if first.SessionExpires.IsZero() || !retry.SessionExpires.Equal(first.SessionExpires) {
+		t.Fatalf("session end moved: login %v, grace refresh %v", first.SessionExpires, retry.SessionExpires)
 	}
 }

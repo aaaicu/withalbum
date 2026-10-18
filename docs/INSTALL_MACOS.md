@@ -55,15 +55,31 @@ WITHALBUM_ROOT="$HOME/WithAlbumTest" WITHALBUM_LISTEN="192.168.0.10:8787" ./with
 
 ## 로그인할 때 자동 시작 (실험용 LaunchAgent)
 
+`scripts/install-macos.sh`는 `$HOME/.local/share/withalbum-server/`에 실행 파일을 설치하고 `~/Library/LaunchAgents/org.withalbum.server.plist`(사용자 LaunchAgent)를 만듭니다. 로그는 `~/Library/Logs/WithAlbum/`(0700: 설치 코드가 적힐 수 있음)에 남습니다. 저장소를 정하는 방법은 둘 중 하나입니다.
+
 ```bash
-# 외장하드가 마운트되어 있고 지정 폴더가 이미 있을 때만 실행. 먼저 한 번 초기화:
+# A) 설치 화면으로 등록한 저장소(설정 파일)를 그대로 사용 — 저장소 인자 없음
+bash scripts/install-macos.sh ./withalbum-server
+#    아직 등록 전이면 설치 모드로 뜹니다. 코드는 로그에만 있습니다:
+grep "SETUP: open" ~/Library/Logs/WithAlbum/error.log | tail -1
+
+# B) 콘솔로 초기화한 저장소를 고정(WITHALBUM_ROOT) — 먼저 한 번 초기화
 WITHALBUM_ROOT="/Volumes/ExternalSSD/WithAlbum" ./withalbum-server -init-storage
 bash scripts/install-macos.sh ./withalbum-server "/Volumes/ExternalSSD/WithAlbum"
+
+# LAN(TLS)으로 제공: 관리자가 있어야 함(설치 완료 또는 admin init 후)
+bash scripts/install-macos.sh --lan 192.168.0.10:8787 ./withalbum-server
 ```
 
-스크립트는 `$HOME/.local/share/withalbum-server/`에 실행 파일을 설치하고 `~/Library/LaunchAgents/`에 사용자 LaunchAgent를 만듭니다. 이 방식은 **사용자가 로그인한 세션**에서만 실행되며, 로그인 전이나 사용자 로그아웃 후 상시 실행은 보장하지 않습니다. 최종 Mac 버전에서는 서명된 앱, Service Management와 시스템 수준의 백그라운드 실행을 검토합니다.
+- A는 LaunchAgent에 `WITHALBUM_ROOT`를 넣지 않으므로, 서버가 설정 파일(`~/Library/Application Support/WithAlbum/server.json`, `WITHALBUM_CONFIG`를 지정해 설치했다면 그 경로)의 루트와 볼륨 ID를 씁니다. 설정 파일의 루트가 없으면(디스크 미연결) 서버는 설치 모드가 아니라 종료합니다.
+- B는 `WITHALBUM_ROOT`가 설정 파일보다 우선합니다. 설정 파일이 다른 루트를 가리키면 스크립트가 경고합니다.
+- `--lan`은 `-tls -allow-lan`과 `WITHALBUM_LISTEN=<주소>`로 실행합니다. 지문은 `WITHALBUM_LISTEN=<주소> ~/.local/share/withalbum-server/withalbum-server tls`.
+- `KeepAlive`로 종료되면 다시 실행하고(`ThrottleInterval` 30초), 디스크가 없으면 30초마다 시도하며 종료합니다. 설치 코드가 잠기거나 만료되면 `launchctl kickstart -k gui/$(id -u)/org.withalbum.server`로 새 코드를 받습니다.
+- 제거: `launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/org.withalbum.server.plist` 후 plist와 설치된 실행 파일 삭제.
 
-> **부분 구현(실기기 미검증):** 루트가 없거나 마커가 없으면 기동하지 않고, 실행 중 마커가 사라지거나 루트의 장치 번호(st_dev)가 바뀌면 업로드를 `503 storage_unavailable`로 거부합니다. 디스크를 다시 연결한 뒤에는 서버를 재시작해야 합니다(LaunchAgent의 KeepAlive가 재시작하지만, 디스크가 없으면 계속 종료됩니다). 디스크 UUID 대조와 본격적인 원본 복구는 아직 미구현이며, 마커 파일을 복사한 다른 디스크는 구분하지 못할 수 있습니다.
+이 방식은 **사용자가 로그인한 세션**에서만 실행되며, 로그인 전이나 사용자 로그아웃 후 상시 실행은 보장하지 않습니다. 최종 Mac 버전에서는 서명된 앱, Service Management와 시스템 수준의 백그라운드 실행을 검토합니다. 실기기 점검 절차: [`MACMINI_E2E_CHECKLIST.md`](MACMINI_E2E_CHECKLIST.md).
+
+> **부분 구현(실기기 미검증):** 루트가 없거나 마커가 없으면 기동하지 않고, 실행 중 마커가 사라지거나 루트의 장치 번호(st_dev)가 바뀌면 업로드를 `503 storage_unavailable`로 거부합니다. 다시 연결한 디스크의 장치 번호가 바뀌었으면 서버를 재시작해야 합니다. 실행 중인 서버는 503으로 버티며 종료하지 않으므로 KeepAlive가 재시작하지 않습니다: `launchctl kickstart -k gui/$(id -u)/org.withalbum.server`(재연결 후 재시작이 실제로 필요한지는 `MACMINI_E2E_CHECKLIST.md` 5장에서 측정). 디스크 UUID 대조와 본격적인 원본 복구는 아직 미구현이며, 마커 파일을 복사한 다른 디스크는 구분하지 못할 수 있습니다.
 
 ## 향후 정식 Mac 버전
 
