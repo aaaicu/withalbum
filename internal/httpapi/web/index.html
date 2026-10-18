@@ -27,7 +27,7 @@
       --x1: 4px; --x1_5: 6px; --x2: 8px; --x2_5: 10px; --x3: 12px; --x3_5: 14px; --x4: 16px; --x5: 20px; --x6: 24px; --x10: 40px;
       --r1_5: 6px; --r2: 8px; --r2_5: 10px; --r3: 12px; --r4: 16px; --r-full: 9999px;
       --shadow-s2: 0 2px 10px 0 #0000001a; --shadow-dialog: 0 4px 16px #0000001f; --overlay: #00000074;
-      --stroke-control: #b0b3ba; --switch-off: #d1d3d8; --fg-toast-link: #93e5c0;
+      --stroke-control: #b0b3ba; --fg-toast-link: #93e5c0;
       --touch: 44px;
     }
     @media (prefers-color-scheme: dark) {
@@ -44,7 +44,7 @@
         --fg-neutral: #f3f4f5; --fg-neutral-muted: #dcdee3; --fg-neutral-subtle: #b0b3ba; --fg-placeholder: #868b94;
         --stroke-neutral-weak: #393d46; --stroke-neutral-muted: #ffffff17; --stroke-focus-ring: #1e82eb;
         --shadow-s2: 0 2px 10px 0 #000000ad; --shadow-dialog: 0 4px 16px #000000ad; --overlay: #000000a6;
-        --stroke-control: #555d6d; --switch-off: #555d6d; --fg-toast-link: #075445;
+        --stroke-control: #555d6d; --fg-toast-link: #075445;
       }
     }
     * { box-sizing: border-box; }
@@ -107,7 +107,7 @@
     .nav-group { padding: var(--x2) var(--x3) var(--x1_5); font-size: 13px; line-height: 18px; font-weight: 700; color: var(--fg-neutral-muted); }
     .sidenav a { display: flex; align-items: center; gap: var(--x2_5); min-height: var(--touch); padding: var(--x2_5) var(--x3); border-radius: var(--r2_5); color: var(--fg-neutral-muted); text-decoration: none; font-size: 16px; line-height: 22px; }
     .sidenav a:hover { background: var(--bg-layer-pressed); color: var(--fg-neutral); }
-    .sidenav a[aria-current="page"] { background: var(--bg-neutral-weak); color: var(--fg-neutral); font-weight: 700; }
+    .sidenav > a[aria-current] { background: var(--bg-neutral-weak); color: var(--fg-neutral); font-weight: 700; }
     .nav-foot { margin-top: auto; padding: var(--x3); border-radius: var(--r2_5); background: var(--bg-neutral-muted); font-size: 13px; line-height: 18px; color: var(--fg-neutral-muted); }
     .nav-foot strong { color: var(--fg-neutral); }
     .content { flex: 1 1 auto; min-width: 0; padding: var(--x6) var(--x6) var(--x10); display: flex; flex-direction: column; gap: var(--x3); }
@@ -170,10 +170,14 @@
     .form-row { display: flex; flex-wrap: wrap; gap: var(--x2); align-items: flex-end; }
     .fl { display: flex; flex-direction: column; gap: var(--x1); flex: 1 1 180px; min-width: 0; font-size: 13px; line-height: 18px; font-weight: 700; color: var(--fg-neutral-muted); }
     .fl.narrow { flex: 0 1 180px; }
-    input, select { min-width: 0; min-height: var(--touch); border-radius: var(--r2); border: 1px solid var(--stroke-neutral-weak); padding: 0 var(--x3); background: var(--bg-layer); color: var(--fg-neutral); font: inherit; font-size: 16px; }
+    /* the field edge is an inset ring; focus thickens it in the focus color (D-06/07) */
+    input, select { min-width: 0; min-height: var(--touch); border-radius: var(--r2); border: 0; box-shadow: inset 0 0 0 1px var(--stroke-neutral-weak); padding: 0 var(--x3); background: var(--bg-layer); color: var(--fg-neutral); font: inherit; font-size: 16px; }
+    input:focus, select:focus { outline: none; box-shadow: inset 0 0 0 2px var(--stroke-focus-ring); }
     input::placeholder { color: var(--fg-placeholder); }
     input[type="file"] { padding: var(--x2_5) var(--x3); }
-    input[type="checkbox"] { min-height: 0; width: 20px; height: 20px; padding: 0; accent-color: var(--bg-brand-solid); }
+    input[type="checkbox"], input[type="checkbox"]:focus { min-height: 0; width: 20px; height: 20px; padding: 0; box-shadow: none; accent-color: var(--bg-brand-solid); }
+    input[type="checkbox"]:focus-visible { outline: 2px solid var(--stroke-focus-ring); outline-offset: 2px; }
+    @media (forced-colors: active) { input:focus, select:focus { outline: 2px solid; } }
     .check { display: inline-flex; align-items: center; gap: var(--x2); min-height: var(--touch); font-size: 14px; }
     .feedback { min-height: 22px; font-size: 14px; line-height: 19px; display: flex; align-items: center; gap: var(--x1_5); flex-wrap: wrap; }
     .feedback:empty { display: none; }
@@ -229,15 +233,20 @@
     .toast a { color: var(--fg-toast-link); font-weight: 700; text-decoration: none; }
     .toast a:hover { color: var(--fg-toast-link); text-decoration: underline; }
 
-    /* list header: filter chips and search (D-07) */
-    .list-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--x3); padding: 0 var(--x5); }
-    .filters { display: flex; flex-wrap: wrap; gap: var(--x1_5); }
-    .fchip { min-height: 32px; padding: 0 var(--x3); border: 0; border-radius: var(--r-full); background: var(--bg-neutral-weak); color: var(--fg-neutral); font: inherit; font-size: 14px; line-height: 19px; font-weight: 500; cursor: pointer; }
-    .fchip[aria-pressed="true"] { background: var(--bg-neutral-solid); color: var(--fg-on-neutral-solid); }
-    .search { display: flex; align-items: center; gap: var(--x2); padding: 0 var(--x3); border-radius: var(--r2); background: var(--bg-neutral-weak); color: var(--fg-neutral-subtle); }
-    .search input { border: 0; background: transparent; padding: 0; width: 160px; font-size: 14px; }
-    .search input:focus-visible { outline: none; }
-    .search:focus-within { outline: 2px solid var(--stroke-focus-ring); outline-offset: 2px; }
+    /* users table (D-07): white card, light header, hairline row tops */
+    .card.table-card { padding: var(--x2) 0; gap: 0; }
+    .utable { min-width: 760px; }
+    .utable th, .utable td { padding: var(--x3); border-bottom: 0; }
+    .utable th { font-weight: 500; color: var(--fg-neutral-subtle); }
+    .utable td { border-top: 1px solid var(--stroke-neutral-muted); color: var(--fg-neutral-muted); }
+    .utable th:first-child, .utable td:first-child { padding-left: var(--x5); }
+    .utable th:last-child, .utable td:last-child { padding-right: var(--x5); text-align: right; }
+    .utable td:first-child { color: var(--fg-neutral); }
+    .who-btn { display: flex; align-items: center; gap: var(--x3); min-height: var(--touch); padding: 0; border: 0; background: transparent; color: var(--fg-neutral); font: inherit; text-align: left; cursor: pointer; border-radius: var(--r2); }
+    .who-btn:hover strong { text-decoration: underline; }
+    .table-note { padding: var(--x2) var(--x5) var(--x2); }
+    .card.table-card > .panel { margin: 0 var(--x5) var(--x3); }
+    .notices.wide { grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); }
     .card.flush { padding: var(--x5) 0 var(--x2); }
     .card.flush > .card-head { padding: 0 var(--x5); }
     .card.flush > .scroll { padding: 0 var(--x5); }
@@ -247,8 +256,6 @@
     .who strong, .who small { display: block; overflow-wrap: anywhere; }
     .who strong { font-size: 16px; line-height: 22px; }
     .who small { font-size: 13px; line-height: 18px; color: var(--fg-neutral-subtle); }
-    tr.off td { opacity: .55; }
-    tr.off td:last-child { opacity: 1; }
     .icon-btn { width: var(--touch); height: var(--touch); border: 0; border-radius: 22px; background: transparent; color: var(--fg-neutral-muted); display: inline-grid; place-items: center; cursor: pointer; }
     .icon-btn:hover { background: var(--bg-neutral-weak); }
 
@@ -257,15 +264,19 @@
     .rchip.solid { background: var(--bg-neutral-solid); color: var(--fg-on-neutral-solid); }
     .rchip.bad { background: var(--bg-critical-weak); color: var(--fg-critical-contrast); }
     .rchip.wait { background: var(--bg-layer); box-shadow: inset 0 0 0 1px var(--stroke-neutral-weak); }
+    /* small tags (D-05/07): account state in the users table, roles in the member list */
+    .tag { display: inline-flex; align-items: center; min-height: 20px; padding: 2px var(--x1_5); border-radius: 4px; background: var(--bg-neutral-weak); color: var(--fg-neutral); font-size: 11px; line-height: 15px; font-weight: 500; white-space: nowrap; flex: none; }
+    .tag.muted { color: var(--fg-neutral-muted); }
+    .tag.solid { background: var(--bg-neutral-solid); color: var(--fg-on-neutral-solid); }
+    .tag.warn { background: var(--bg-warning-weak); color: var(--fg-warning-contrast); }
+    .tag.info { background: var(--bg-informative-weak); color: var(--fg-informative-contrast); }
 
     /* switch (aria role switch) */
-    .switch-cell { display: flex; align-items: center; gap: var(--x2); font-size: 13px; line-height: 18px; color: var(--fg-neutral-muted); white-space: nowrap; }
-    .switch { position: relative; width: 44px; height: 26px; padding: 0; border: 0; border-radius: 13px; background: var(--switch-off); flex: none; cursor: pointer; }
-    .switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 10px; background: #fff; box-shadow: 0 1px 4px #00000014; transition: left 150ms; }
+    .switch { position: relative; width: 52px; height: 32px; padding: 0; border: 0; border-radius: 16px; background: var(--stroke-neutral-weak); flex: none; cursor: pointer; vertical-align: middle; }
+    .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 28px; height: 28px; border-radius: 14px; background: #fff; box-shadow: 0 1px 4px #00000014; transition: left 150ms; }
     .switch[aria-checked="true"] { background: var(--bg-neutral-solid); }
-    .switch[aria-checked="true"]::after { left: 21px; background: var(--fg-on-neutral-solid); }
+    .switch[aria-checked="true"]::after { left: 22px; background: var(--fg-on-neutral-solid); }
     .switch:disabled { opacity: .5; cursor: not-allowed; }
-    .switch-row { display: flex; align-items: center; justify-content: space-between; gap: var(--x3); font-size: 14px; line-height: 19px; }
 
     /* dialogs */
     dialog { width: min(calc(100% - 32px), 480px); max-height: calc(100vh - 48px); overflow: auto; padding: var(--x6); border: 0; border-radius: 20px; background: var(--bg-layer); color: var(--fg-neutral); box-shadow: var(--shadow-dialog); }
@@ -276,8 +287,14 @@
     .dlg input[type="text"], .dlg select { min-height: 48px; border-radius: var(--r2_5); }
     .dlg-actions { display: flex; gap: var(--x2); padding-top: var(--x1); }
     .dlg-actions .btn { min-height: 52px; border-radius: var(--r3); font-size: 18px; line-height: 24px; }
-    .dlg-actions .shrink { flex: 1; }
+    .dlg-actions .shrink, .dlg-actions .half { flex: 1; }
     .dlg-actions .grow { flex: 2; }
+    .dlg-head { display: flex; justify-content: space-between; align-items: flex-start; gap: var(--x3); }
+    .close-btn { width: 36px; height: 36px; flex: none; border: 0; border-radius: 18px; background: var(--bg-neutral-weak); color: var(--fg-neutral); display: grid; place-items: center; cursor: pointer; }
+    .close-btn:hover { background: var(--bg-neutral-weak-pressed); }
+    .info-box { display: flex; align-items: center; gap: var(--x2); padding: var(--x3) var(--x3_5); border-radius: var(--r3); background: var(--bg-neutral-muted); font-size: 13px; line-height: 18px; color: var(--fg-neutral-muted); }
+    .info-box .ico { color: var(--fg-neutral-muted); }
+    .btn-block { width: 100%; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 1px; }
     .pwrow { display: flex; gap: var(--x2); }
     .pwrow input { flex: 1; }
@@ -287,44 +304,50 @@
     .pick .avatar { width: 32px; height: 32px; }
     .pick .grow { flex: 1; min-width: 0; }
     .pick strong, .pick small { display: block; overflow-wrap: anywhere; }
-    .pick strong { font-size: 15px; line-height: 20px; }
-    .pick small { font-size: 12px; line-height: 16px; color: var(--fg-neutral-subtle); }
-    .rdot { width: 20px; height: 20px; border-radius: 10px; box-shadow: inset 0 0 0 2px var(--stroke-control); flex: none; }
-    .pick[aria-checked="true"] .rdot { box-shadow: inset 0 0 0 6px var(--fg-brand); }
+    .pick strong { font-size: 16px; line-height: 22px; font-weight: 400; }
+    .pick small { font-size: 13px; line-height: 18px; color: var(--fg-neutral-subtle); }
+    .pick:disabled { opacity: .5; cursor: not-allowed; }
+    .rdot { width: 22px; height: 22px; border-radius: 11px; box-shadow: inset 0 0 0 2px var(--stroke-control); flex: none; }
+    .pick[aria-checked="true"] .rdot { box-shadow: inset 0 0 0 7px var(--fg-brand); }
     .seg { display: flex; padding: var(--x1); border-radius: var(--r-full); background: var(--bg-neutral-weak); }
     .seg button { flex: 1; min-height: 36px; border: 0; border-radius: var(--r-full); background: transparent; color: var(--fg-neutral-subtle); font: inherit; font-size: 15px; font-weight: 700; cursor: pointer; }
     .seg button[aria-checked="true"] { background: var(--bg-layer); color: var(--fg-neutral); box-shadow: inset 0 0 0 1px var(--stroke-neutral-muted); }
     #invWho { display: flex; flex-direction: column; gap: var(--x2); }
     .head-block { display: flex; flex-direction: column; gap: var(--x1); }
-    .kv { display: flex; justify-content: space-between; align-items: center; gap: var(--x3); font-size: 14px; line-height: 19px; }
-    .kv span:first-child { color: var(--fg-neutral-muted); }
-    .kv strong { text-align: right; }
 
     /* album list and detail (D-05/06) */
     .album-row { display: flex; align-items: center; gap: var(--x3); min-height: 64px; padding: var(--x2_5) var(--x5); color: var(--fg-neutral); text-decoration: none; }
     .album-row:hover { background: var(--bg-layer-pressed); color: var(--fg-neutral); }
-    .crumb { display: flex; align-items: center; gap: var(--x1); padding: 0 var(--x1); font-size: 14px; line-height: 19px; color: var(--fg-neutral-muted); }
-    .crumb a { color: var(--fg-neutral-muted); text-decoration: none; min-height: var(--touch); display: inline-flex; align-items: center; }
-    .crumb a:hover { color: var(--fg-neutral); }
-    .crumb strong { color: var(--fg-neutral); overflow-wrap: anywhere; }
-    .stats-line { display: flex; flex-wrap: wrap; align-items: center; gap: var(--x2); font-size: 14px; line-height: 19px; color: var(--fg-neutral-muted); }
-    .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 3px; border-radius: var(--r2_5); overflow: hidden; }
-    .tile { aspect-ratio: 1; background: var(--bg-neutral-weak); color: var(--fg-neutral-subtle); display: grid; place-items: center; overflow: hidden; }
+    .stats-line { font-size: 14px; line-height: 19px; color: var(--fg-neutral-muted); overflow-wrap: anywhere; }
+    /* side menu: the open album list under "내 앨범" */
+    .nav-sub { display: flex; flex-direction: column; gap: 2px; padding: var(--x1) 0 var(--x2) 32px; }
+    .sidenav .nav-sub a { min-height: 36px; padding: 7px var(--x3); border-radius: var(--r2); font-size: 14px; line-height: 19px; overflow-wrap: anywhere; }
+    .sidenav .nav-sub a[aria-current="page"] { background: transparent; color: var(--fg-neutral); font-weight: 700; }
+    .sidenav .nav-sub a:hover { background: var(--bg-layer-pressed); }
+    /* album detail: photos take the room, members sit beside them */
+    .album-grid { display: flex; flex-wrap: wrap; gap: var(--x3); align-items: flex-start; }
+    .album-grid > .card { flex: 1 1 100%; }
+    .album-grid > #photosCard { flex: 999 1 520px; padding: var(--x4); }
+    .album-grid > #membersCard { flex: 1 1 320px; padding: var(--x5) 0 var(--x2); gap: 0; }
+    #photosCard > .card-head { padding: var(--x1) var(--x1) 0; }
+    #membersCard > .card-head { padding: 0 var(--x5) var(--x2); }
+    .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: var(--x1); }
+    .tile { aspect-ratio: 1; border-radius: var(--r1_5); background: var(--bg-neutral-weak); color: var(--fg-neutral-subtle); display: grid; place-items: center; overflow: hidden; }
     .tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
     .mrows { display: flex; flex-direction: column; }
     .mrow { display: flex; flex-wrap: wrap; align-items: center; gap: var(--x3); padding: var(--x2_5) var(--x5); }
-    .mrow .who { flex: 1 1 180px; }
-    .mrow .tools { display: flex; flex-wrap: wrap; align-items: center; gap: var(--x1_5); }
+    .mrow .who { flex: 1 1 140px; }
+    .mrow .who strong { font-weight: 400; }
+    .mrow .icon-btn { width: 36px; height: 36px; }
+    .mrow .tools { flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: center; gap: var(--x1_5); padding-left: 48px; }
     .mrow .tools select, .mrow .tools .btn { font-size: 13px; }
-    .muted-box { margin: var(--x2) var(--x5) var(--x3); padding: var(--x3) var(--x3_5); border-radius: var(--r3); background: var(--bg-neutral-muted); font-size: 13px; line-height: 18px; color: var(--fg-neutral-muted); }
-    .muted-box strong { color: var(--fg-neutral); }
     .copy-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--x2); }
 
     @media (max-width: 760px) {
       .layout { flex-direction: column; }
       .sidenav { flex: none; flex-direction: row; overflow-x: auto; padding: var(--x2); border-right: 0; border-bottom: 1px solid var(--stroke-neutral-weak); }
       .sidenav a { flex: none; white-space: nowrap; }
-      .nav-group, .nav-foot { display: none; }
+      .nav-group, .nav-foot, .nav-sub { display: none; }
       .content { padding: var(--x4) var(--x4) var(--x10); }
       .topbar { padding: var(--x2) var(--x4); }
       .user .who-text { display: none; }
@@ -351,8 +374,6 @@
     <svg data-i="info" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v5h1"/></svg>
     <svg data-i="plus" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14"/></svg>
     <svg data-i="more" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle class="fill" cx="5" cy="12" r="1.8"/><circle class="fill" cx="12" cy="12" r="1.8"/><circle class="fill" cx="19" cy="12" r="1.8"/></svg>
-    <svg data-i="send" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4z"/></svg>
-    <svg data-i="person-plus" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.5 3.4-5.5 6.5-5.5 1.5 0 2.9.5 4 1.3M19 14v6M16 17h6"/></svg>
     <svg data-i="offline" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M2 8.5a15 15 0 0120 0M5 12a10 10 0 0114 0M8.5 15.5a5 5 0 017 0"/><path d="M12 19h.01M3 3l18 18"/></svg>
   </div>
 
@@ -385,6 +406,7 @@
       <div class="nav-group">내 위드앨범</div>
       <a href="#overview" data-tab="overview"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>개요</a>
       <a href="#albums" data-tab="albums"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="10" r="1.8"/><path d="M21 16l-5-5-9 8"/></svg>내 앨범<span id="navInvites" class="count" hidden></span></a>
+      <div id="navAlbums" class="nav-sub" aria-label="내 앨범 목록" role="group" hidden></div>
       <a href="#devices" data-tab="devices"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/></svg>기기</a>
       <div class="nav-group" data-admin="1" hidden>서버 관리</div>
       <a href="#storage" data-tab="storage" data-admin="1" hidden><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/></svg>저장장치<span id="navStorageDot" class="dot-alert" role="img" aria-label="오류" hidden></span></a>
@@ -451,21 +473,19 @@
 
       <!-- album detail and invitation (D-05/06) -->
       <div id="tab-album" class="pane" data-pane="1" hidden>
-        <nav class="crumb" aria-label="위치"><a href="#albums">내 앨범</a><svg class="ico i14" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 6l6 6-6 6"/></svg><strong id="albumCrumb"></strong></nav>
         <div class="page-head">
           <div><h1 class="t-title" tabindex="-1" id="albumTitle">앨범</h1><p class="stats-line" id="albumStats"></p></div>
-          <div class="actions"><button type="button" class="btn btn-outline" id="albumSettingsBtn" hidden>앨범 설정</button><button type="button" class="btn btn-brand" id="inviteBtn" hidden><svg class="ico i16" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.5 3.4-5.5 6.5-5.5 1.5 0 2.9.5 4 1.3M19 14v6M16 17h6"/></svg>멤버 초대</button></div>
+          <div class="actions"><button type="button" class="btn btn-outline" id="albumSettingsBtn" hidden>앨범 설정</button><button type="button" class="btn btn-brand" id="inviteBtn" hidden><svg class="ico i16" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.5 3.4-5.5 6.5-5.5M18 10v6M15 13h6"/></svg>멤버 초대</button></div>
         </div>
         <div id="albumState"></div>
-        <div class="grid2" id="albumGrid">
+        <div class="album-grid" id="albumGrid">
           <section class="card" id="photosCard">
             <div class="card-head"><h2 class="t-h2">사진</h2><span class="caption" id="photosNote"></span></div>
             <div id="photos"></div>
           </section>
-          <section class="card flush" id="membersCard" hidden>
-            <div class="card-head"><h2 class="t-h2">멤버와 역할</h2><span class="caption">역할은 앨범마다 따로</span></div>
+          <section class="card" id="membersCard" hidden>
+            <div class="card-head"><h2 class="t-h2">멤버</h2></div>
             <div class="mrows" id="memberRows"></div>
-            <p class="muted-box">초대받은 사람은 <strong>수락하기 전까지</strong> 앨범 이름과 보낸 사람 외에는 사진·멤버·수량을 볼 수 없어요.</p>
           </section>
           <section class="card" id="uploadCard" hidden>
             <h2 class="t-h2">파일 보내기 테스트</h2>
@@ -488,7 +508,7 @@
         <div class="page-head"><div><h1 class="t-title" tabindex="-1">기기 · 내 계정</h1><p class="note">로그인된 기기와 비밀번호를 관리해요.</p></div></div>
         <section class="card">
           <h2 class="t-h2">내 사용자 ID</h2>
-          <p class="note">앨범 초대를 받으려면 이 ID를 앨범 소유자에게 알려 주세요. 서버는 다른 사용자 목록을 일반 사용자에게 보여주지 않아요.</p>
+          <p class="note">앨범 초대를 받으려면 이 ID를 앨범 오너에게 알려 주세요. 서버는 다른 사용자 목록을 일반 사용자에게 보여주지 않아요.</p>
           <div class="copy-row"><code id="myID">-</code><button type="button" class="btn btn-weak" id="copyID">복사</button></div>
         </section>
         <section class="card">
@@ -532,22 +552,18 @@
       <!-- users (D-07) -->
       <div id="tab-users" class="pane" data-pane="1" hidden>
         <div class="page-head">
-          <div><h1 class="t-title" tabindex="-1">사용자</h1><p class="note">계정은 서버 로그인만 열어줘요. 앨범은 각 앨범에서 초대해야 보여요.</p></div>
+          <div><h1 class="t-title" tabindex="-1">사용자</h1><p class="note">계정을 만들어도 앨범은 보이지 않아요. 앨범 오너가 초대해야 볼 수 있어요.</p></div>
           <div class="actions"><button type="button" class="btn btn-solid" id="addUserBtn"><svg class="ico i16" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14"/></svg>사용자 추가</button></div>
         </div>
-        <section class="card flush">
-          <div class="list-head">
-            <div class="filters" role="group" aria-label="사용자 보기">
-              <button type="button" class="fchip" data-filter="all" aria-pressed="true">전체 <span id="fAll">0</span></button>
-              <button type="button" class="fchip" data-filter="creators" aria-pressed="false">앨범 생성 허용 <span id="fCreators">0</span></button>
-              <button type="button" class="fchip" data-filter="disabled" aria-pressed="false">정지 <span id="fDisabled">0</span></button>
-            </div>
-            <label class="search"><svg class="ico i16" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg><input id="userSearch" type="search" aria-label="사용자 검색" placeholder="이름·아이디" autocomplete="off"></label>
-          </div>
-          <div class="scroll"><table><thead><tr><th>사용자</th><th>역할</th><th>앨범 생성 허용</th><th>상태</th><th><span class="sr-only">동작</span></th></tr></thead><tbody id="userRows"></tbody></table></div>
+        <section class="card table-card">
+          <div class="scroll"><table class="utable"><thead><tr><th scope="col">이름</th><th scope="col">역할</th><th scope="col">상태</th><th scope="col">기기</th><th scope="col">마지막 접속</th><th scope="col">앨범 생성 허용</th></tr></thead><tbody id="userRows"></tbody></table></div>
+          <p class="caption table-note">이름을 누르면 권한·계정 상태·기기를 관리해요. 기기와 마지막 접속은 지금 로그인된 기기 기준이에요(로그인·연결 갱신 시각이라 최대 15분쯤 늦을 수 있어요).</p>
           <div id="userDetail" class="panel" hidden></div>
         </section>
-        <div class="notice info"><svg class="ico i20" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v5h1"/></svg><div><span class="caption">앨범 생성을 끄면 새 앨범만 못 만들어요. 이미 참여한 앨범과 사진은 그대로예요. 관리자도 다른 사람의 개인 앨범은 볼 수 없어요.</span></div></div>
+        <div class="notices wide">
+          <div class="notice"><svg class="ico i20" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/></svg><div><strong>관리자도 사진은 볼 수 없어요</strong><span class="caption">계정·용량·기기만 관리하고, 앨범 내용은 초대받은 사람만 봐요</span></div></div>
+          <div class="notice"><svg class="ico i20" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M12 9v6M9 12h6"/></svg><div><strong>앨범 생성 허용</strong><span class="caption">끄면 새 앨범은 못 만들지만, 초대받은 앨범에는 계속 참여할 수 있어요</span></div></div>
+        </div>
       </div>
 
       <!-- backup and restore (console commands) -->
@@ -597,23 +613,23 @@
       <h2 id="udTitle">사용자 추가</h2>
       <label class="fl"><span>이름</span><input id="nuName" type="text" autocomplete="off" maxlength="64" placeholder="표시 이름 (비우면 아이디)"></label>
       <label class="fl"><span>아이디</span><input id="nuLogin" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" required></label>
-      <div class="fl"><label for="nuPassword">초기 비밀번호</label><div class="pwrow"><input id="nuPassword" class="mono" type="text" autocomplete="off" spellcheck="false" required><button type="button" class="btn btn-weak" id="nuCopy">복사</button><button type="button" class="btn btn-weak" id="nuGen">새로</button></div><span class="caption">직접 전해 주세요. 첫 로그인 뒤 본인이 "기기 · 내 계정"에서 바꾸도록 안내하세요(변경을 강제하지는 않아요).</span></div>
-      <label class="fl"><span>서버 역할</span><select id="nuRole"><option value="USER">일반 사용자</option><option value="SERVER_ADMIN">서버 관리자</option></select></label>
-      <div class="switch-row"><span><strong>앨범 생성 허용</strong><br><span class="caption">끄면 초대받은 앨범만 쓸 수 있어요</span></span><button type="button" role="switch" class="switch" id="nuCreate" aria-checked="false" aria-label="앨범 생성 허용"></button></div>
+      <div class="fl"><label for="nuPassword">임시 비밀번호</label><div class="pwrow"><input id="nuPassword" class="mono" type="text" autocomplete="off" spellcheck="false" required><button type="button" class="btn btn-weak" id="nuCopy">복사</button><button type="button" class="btn btn-weak" id="nuGen">새로</button></div></div>
+      <p class="info-box">임시 비밀번호는 이 브라우저에서 만들어져요. 직접 전해 주고, 첫 로그인 뒤 본인이 "기기 · 내 계정"에서 바꾸도록 안내해 주세요(변경을 강제하지는 않아요). 앨범은 따로 초대해야 보여요. 서버 역할과 앨범 생성 허용은 만든 뒤 표에서 바꿔요.</p>
       <div class="feedback error" id="nuFeedback" role="alert"></div>
-      <div class="dlg-actions"><button type="button" class="btn btn-weak shrink" id="nuCancel">취소</button><button type="button" class="btn btn-solid grow" id="nuSubmit">계정 만들기</button></div>
+      <div class="dlg-actions"><button type="button" class="btn btn-weak half" id="nuCancel">취소</button><button type="button" class="btn btn-solid half" id="nuSubmit">계정 만들기</button></div>
     </div>
   </dialog>
 
   <!-- D-06 invite -->
   <dialog id="inviteDialog" aria-labelledby="invTitle">
     <div class="dlg">
-      <div class="head-block"><h2 id="invTitle">초대</h2><p class="note">이 서버에 계정이 있는 사람만 초대할 수 있어요.</p></div>
-      <div class="fl"><span id="invWhoLabel">받는 사람</span><div id="invWho"></div></div>
+      <div class="dlg-head"><div class="head-block"><h2 id="invTitle">초대</h2><p class="note">이 서버에 계정이 있는 사람만 초대할 수 있어요</p></div><button type="button" class="close-btn" id="invClose" aria-label="닫기"><svg class="ico i16" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+      <div class="fl"><span id="invWhoLabel">누구를 초대할까요</span><div id="invWho"></div></div>
       <div class="fl"><span id="invRoleLabel">역할</span><div class="seg" id="invRoles" role="radiogroup" aria-labelledby="invRoleLabel"></div><span class="caption" id="invRoleDesc"></span></div>
-      <div class="kv"><span>초대 유효기간</span><strong id="invExpiry"></strong></div>
+      <p class="info-box"><svg class="ico i16" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg><span>초대는 7일 뒤(<span id="invExpiry"></span>) 만료돼요 · 수락 전에는 앨범 이름과 보낸 사람만 보여요</span></p>
       <div class="feedback error" id="invFeedback" role="alert"></div>
-      <div class="dlg-actions"><button type="button" class="btn btn-weak shrink" id="invCancel">취소</button><button type="button" class="btn btn-brand grow" id="invSend">초대 보내기</button></div>
+      <span class="sr-only" id="invStatus" role="status" aria-live="polite"></span>
+      <button type="button" class="btn btn-brand btn-lg btn-block" id="invSend">초대 보내기</button>
     </div>
   </dialog>
   <script>
@@ -626,13 +642,14 @@
     // only originals the server has verified and keeps; green surfaces are
     // the brand or a selection; a status never says just "done".
     const $ = id => document.getElementById(id);
-    const ROLE = {OWNER: '소유자', CONTRIBUTOR: '참여', VIEWER: '보기', UPLOADER: '업로드 전용'};
+    const ROLE = {OWNER: '오너', CONTRIBUTOR: '참여', VIEWER: '보기', UPLOADER: '업로드 전용'};
     // What each role really allows (internal/authz): only the owner removes
     // photos, invites and manages members.
     const ROLE_DESC = {
-      CONTRIBUTOR: '사진 보기·원본 받기와 사진 올리기 · 사진 제거와 멤버 관리는 소유자만',
-      VIEWER: '사진 보기와 원본 받기만',
-      UPLOADER: '자기 사진만 제출 · 다른 사진과 수량은 안 보임'
+      CONTRIBUTOR: '사진 보기·추가·원본 받기가 가능해요. 사진 제거와 멤버 관리는 오너만 해요',
+      VIEWER: '보기와 원본 받기만 가능해요. 사진은 추가할 수 없어요',
+      // UPLOADER sees nothing of the album, not even its own uploads.
+      UPLOADER: '사진 보내기만 가능해요. 자기가 보낸 사진을 포함해 앨범의 사진과 수량은 볼 수 없어요'
     };
     const INVITE_ROLES = ['CONTRIBUTOR', 'VIEWER', 'UPLOADER'];
     const SERVER_ROLE = {SERVER_ADMIN: '서버 관리자', USER: '일반 사용자'};
@@ -641,7 +658,7 @@
       folder_not_found: '앨범을 찾을 수 없습니다.', user_not_found: '사용자를 찾을 수 없습니다.',
       invitee_not_found: '초대할 수 있는 활성 계정이 아닙니다.', already_member: '이미 멤버입니다.',
       invitation_pending: '이미 대기 중인 초대가 있습니다.', invitation_gone: '이미 처리되었거나 만료된 초대입니다.',
-      member_not_found: '멤버가 아닙니다.', target_is_owner: '이미 소유자입니다.', user_inactive: '활성 계정이 아닙니다.',
+      member_not_found: '멤버가 아닙니다.', target_is_owner: '이미 오너입니다.', user_inactive: '활성 계정이 아닙니다.',
       last_admin: '마지막 관리자는 비활성화·강등할 수 없습니다.', owns_albums: '이 사용자가 소유한 앨범이 있어 비활성화할 수 없습니다.',
       login_taken: '이미 쓰는 아이디입니다.', invalid_login_name: '아이디 형식이 올바르지 않습니다.',
       invalid_display_name: '표시 이름이 올바르지 않습니다.', invalid_password: '비밀번호 규칙에 맞지 않습니다.',
@@ -734,6 +751,18 @@
     }
     const avatar = name => el('span', {className: 'avatar', 'aria-hidden': 'true', text: (name || '?').slice(0, 1)});
     const roleChip = (role, pending) => el('span', {className: 'rchip' + (role === 'OWNER' ? ' solid' : '') + (pending ? ' wait' : ''), text: (ROLE[role] || role) + (pending ? ' · 수락 대기' : '')});
+    const tag = (text, tone) => el('span', {className: 'tag' + (tone ? ' ' + tone : ''), text});
+    // relTime: "방금", today's "HH:MM", "어제" or "M월 D일".
+    function relTime(s) {
+      const d = new Date(s), now = new Date();
+      if (isNaN(d)) return '-';
+      if (now - d < 2 * 60000) return '방금';
+      const day = x => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+      const diff = Math.round((day(now) - day(d)) / 86400000);
+      if (diff === 0) return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+      if (diff === 1) return '어제';
+      return fmtDay(s);
+    }
     let toastTimer = null;
     function toast(...parts) {
       const t = $('toast');
@@ -842,7 +871,9 @@
     function showTab(name, focus) {
       const menu = name === 'album' ? 'albums' : name;
       document.querySelectorAll('[data-pane]').forEach(p => { p.hidden = p.id !== 'tab-' + name; });
-      document.querySelectorAll('#tabs a').forEach(a => { if (a.dataset.tab === menu) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
+      document.querySelectorAll('#tabs > a').forEach(a => { if (a.dataset.tab === menu) a.setAttribute('aria-current', name === 'album' ? 'true' : 'page'); else a.removeAttribute('aria-current'); });
+      markNavAlbum(name === 'album' ? hashAlbumID() : '');
+      $('navAlbums').hidden = menu !== 'albums' || !$('navAlbums').childElementCount;
       say('');
       $('toast').hidden = true;
       if (name !== 'album') { revokeThumbs(); album = null; inviteCtx = null; }
@@ -882,7 +913,7 @@
         $('navInvites').setAttribute('aria-label', '받은 초대 ' + n + '건');
         renderInvites(invites.invitations);
         renderFolders(folders.folders, n);
-        if (isAdmin()) { loadOverviewAdmin(); if (!users.length) loadUsers(); }
+        if (isAdmin()) { loadOverviewAdmin(); if (!users.length) run(async () => { await fetchUsers(); renderUsers(); }); }
         showTab(currentTab(), false);
       } catch (err) {
         if (err instanceof Unauthorized) { if (me) sessionExpired(); else showLogin(''); }
@@ -925,14 +956,14 @@
       } catch (err) {
         if (err instanceof ApiError && err.code === 'invitation_gone') {
           showBanner(stateCard({icon: 'lock', code: '초대 만료', title: '초대 유효기간이 지났어요',
-            body: '이미 처리되었거나 7일이 지난 초대예요. 앨범 소유자에게 다시 초대를 요청해 주세요.', safe: '앨범 내용은 미리 보여주지 않아요',
+            body: '이미 처리되었거나 7일이 지난 초대예요. 앨범 오너에게 다시 초대를 요청해 주세요.', safe: '앨범 내용은 미리 보여주지 않아요',
             primary: ['확인', () => { clearBanner(); reload(); }]}));
         } else fail(err);
       }
     }
     function accessChanged() {
       return stateCard({icon: 'lock', code: '권한 변경', title: '이 앨범의 접근 권한이 변경됐어요',
-        body: '소유자가 역할을 바꿨거나 멤버에서 제외했을 수 있어요. 앨범 목록을 다시 불러와 현재 권한을 확인하세요.',
+        body: '오너가 역할을 바꿨거나 멤버에서 제외했을 수 있어요. 앨범 목록을 다시 불러와 현재 권한을 확인하세요.',
         safe: '이미 받은 파일은 기기에 남아요', primary: ['앨범 목록', () => { go('albums'); reload(); }]});
     }
     function renderFolders(list, inviteCount) {
@@ -942,13 +973,24 @@
           body: '초대를 받으면 여기에 나타나요. 계정만으로는 앨범이 보이지 않아요.', safe: '받은 초대 ' + inviteCount + '건',
           primary: ['초대함 보기', () => go('overview')], secondary: canCreate() ? ['새 앨범', () => $('folderName').focus()] : null}));
       }
-      list.sort((a, b) => a.name.localeCompare(b.name, 'ko')).forEach(folder => {
+      list.sort((a, b) => a.name.localeCompare(b.name, 'ko'));
+      // The side menu lists the same albums under "내 앨범" (D-05).
+      $('navAlbums').replaceChildren(...list.map(folder => {
+        const a = el('a', {href: '#album/' + enc(folder.id), text: folder.name + (folder.role === 'UPLOADER' ? ' (업로드 전용)' : '')});
+        a.dataset.id = folder.id;
+        return a;
+      }));
+      list.forEach(folder => {
         const meta = folder.role === 'UPLOADER' ? '사진 보내기만 · 다른 사진과 수량은 보이지 않아요' : folder.can_upload ? '사진 보기·올리기' : '사진 보기';
         $('folders').append(el('a', {className: 'album-row', href: '#album/' + enc(folder.id)},
           el('span', {className: 'thumb'}, icon('photo', 'i20')),
           el('span', {className: 'row-text'}, el('span', {className: 'row-title', text: folder.name}), el('span', {className: 'row-meta', text: meta})),
           roleChip(folder.role), icon('chevron', 'i16 chev')));
       });
+    }
+
+    function markNavAlbum(id) {
+      $('navAlbums').querySelectorAll('a').forEach(a => { if (id && a.dataset.id === id) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
     }
 
     // ---- album detail (D-05/06): only what the API returns for this role ----
@@ -959,7 +1001,7 @@
     function albumGone(err) {
       if (!gone(err)) { fail(err); return; }
       $('albumTitle').textContent = '앨범을 열 수 없어요';
-      $('albumStats').replaceChildren();
+      $('albumStats').textContent = '';
       $('albumGrid').hidden = true;
       $('inviteBtn').hidden = true; $('albumSettingsBtn').hidden = true;
       $('albumState').replaceChildren(accessChanged());
@@ -978,9 +1020,8 @@
       album = null; inviteCtx = null;
       $('albumState').replaceChildren();
       $('albumGrid').hidden = false;
-      $('albumCrumb').textContent = '';
       $('albumTitle').textContent = '불러오는 중...';
-      $('albumStats').replaceChildren();
+      $('albumStats').textContent = '';
       ['membersCard', 'uploadCard', 'settingsCard', 'inviteBtn', 'albumSettingsBtn'].forEach(x => { $(x).hidden = true; });
       $('photos').replaceChildren();
       $('photosNote').textContent = '';
@@ -989,10 +1030,11 @@
       try { folder = await api(base); } catch (err) { if (seq === albumSeq) albumGone(err); return; }
       if (seq !== albumSeq) return;
       album = folder;
-      $('albumCrumb').textContent = folder.name;
       $('albumTitle').textContent = folder.name;
       const owner = folder.role === 'OWNER';
-      $('albumStats').replaceChildren(roleChip(folder.role));
+      // The owner's view is the design's head line; other roles start with their role.
+      const roleText = owner ? '' : (ROLE[folder.role] || folder.role) + ' 역할';
+      $('albumStats').textContent = roleText;
       $('uploadCard').hidden = !folder.can_upload;
       uploadSay();
       ['inviteBtn', 'albumSettingsBtn', 'settingsCard', 'membersCard'].forEach(x => { $(x).hidden = !owner; });
@@ -1003,7 +1045,7 @@
       if (owner) tasks.push(loadMembers(folder, base, seq, stats));
       await Promise.all(tasks);
       if (seq !== albumSeq || !album) return;
-      $('albumStats').replaceChildren(roleChip(folder.role), ...[stats.photos, stats.members].filter(Boolean).map(t => el('span', {text: t})));
+      $('albumStats').textContent = [roleText, stats.photos, stats.members].filter(Boolean).join(' · ');
     }
     function showUploaderNotice() {
       $('photos').replaceChildren(el('div', {className: 'notice'}, icon('lock', 'i20'), el('div', {},
@@ -1036,12 +1078,14 @@
       const photos = list.assets.filter(a => kind(a).startsWith('image/')).length;
       const videos = list.assets.filter(a => kind(a).startsWith('video/')).length;
       const others = n - photos - videos;
-      stats.photos = '사진 ' + photos.toLocaleString('ko-KR') + '장 · 영상 ' + videos.toLocaleString('ko-KR') + '개' + (others ? ' · 기타 ' + others.toLocaleString('ko-KR') + '개' : '') + (list.complete ? '' : ' 이상');
+      // Counted from the asset list: no "kept" shield here, that list is not a fresh server check.
+      const num = x => x.toLocaleString('ko-KR');
+      stats.photos = '사진 ' + num(photos) + '장' + (videos ? ' · 영상 ' + num(videos) + '개' : '') + (others ? ' · 기타 ' + num(others) + '개' : '') + (list.complete ? '' : ' 이상');
       if (!n) {
         $('photos').replaceChildren(el('p', {className: 'note', text: album && album.can_upload ? '아직 사진이 없어요. 앱이나 아래 "파일 보내기 테스트"로 보내면 여기에 나타나요.' : '아직 사진이 없어요.'}));
         return;
       }
-      $('photosNote').textContent = n > TILE_COUNT ? '최근 ' + TILE_COUNT + '개' : '';
+      $('photosNote').textContent = '최근 추가순' + (n > TILE_COUNT ? ' · ' + TILE_COUNT + '개까지' : '');
       const recent = list.assets.slice().sort((a, b) => String(b.uploaded_at).localeCompare(String(a.uploaded_at))).slice(0, TILE_COUNT);
       const grid = el('div', {className: 'tiles', role: 'list', 'aria-label': '최근 사진'});
       const jobs = recent.map(a => {
@@ -1081,35 +1125,50 @@
       renderMembers(base, members.members, invites.invitations);
       renderSettings(base, members.members);
     }
+    // daysLeft: whole days until s, at least "오늘".
+    function daysLeft(s) {
+      const n = Math.ceil((new Date(s) - Date.now()) / 86400000);
+      return isNaN(n) ? '-' : n <= 0 ? '오늘 만료' : n + '일 남음';
+    }
+    // memberRow: avatar, name, one meta line and a small role tag (D-05).
+    // The owner's tools (role, remove, cancel) open under the row from "⋯".
+    function memberRow(name, meta, tagNode, tools) {
+      const row = el('div', {className: 'mrow'}, el('span', {className: 'who'}, avatar(name), el('span', {}, el('strong', {text: name}), el('small', {text: meta}))), tagNode);
+      if (!tools) return row;
+      const box = el('div', {className: 'tools'}, ...tools);
+      box.hidden = true;
+      const more = el('button', {type: 'button', className: 'icon-btn', 'aria-label': name + ' 관리', 'aria-expanded': 'false'}, icon('more', 'i20'));
+      more.addEventListener('click', () => { box.hidden = !box.hidden; more.setAttribute('aria-expanded', box.hidden ? 'false' : 'true'); });
+      row.append(more, box);
+      return row;
+    }
     function renderMembers(base, members, invites) {
       const rows = members.map(m => {
         const self = me && m.user_id === me.user.user_id;
-        const meta = m.role === 'OWNER' ? (self ? '나 · 앨범 소유자' : '앨범 소유자') : (m.active ? '' : '비활성 계정 · ') + fmtDay(m.joined_at) + ' 참여';
-        const row = el('div', {className: 'mrow'}, el('span', {className: 'who'}, avatar(m.display_name), el('span', {}, el('strong', {text: m.display_name}), el('small', {text: meta}))));
-        if (m.role === 'OWNER') { row.append(roleChip('OWNER')); return row; }
+        const name = m.display_name + (self ? ' (나)' : '');
+        if (m.role === 'OWNER') return memberRow(name, '오너', tag('오너', 'solid'));
+        const meta = (m.active ? '' : '비활성 계정 · ') + fmtDay(m.joined_at) + ' 참여';
         const sel = el('select', {'aria-label': m.display_name + ' 역할'}, ...INVITE_ROLES.map(r => new Option(ROLE[r], r, false, r === m.role)));
-        row.append(el('span', {className: 'tools'}, sel,
+        return memberRow(name, meta, tag(ROLE[m.role] || m.role, 'muted'), [sel,
           button('변경', () => albumAct(async () => { await api(base + '/members/' + enc(m.user_id), json('PATCH', {role: sel.value})); }, m.display_name + ' 님의 역할을 바꿨어요: ' + ROLE[sel.value] + '.'), 'btn btn-weak'),
           button('내보내기', () => {
             if (confirm(m.display_name + ' 님을 앨범에서 내보낼까요? 그분의 목록에서 이 앨범이 사라져요.')) albumAct(async () => { await api(base + '/members/' + enc(m.user_id), {method: 'DELETE'}); }, '멤버를 내보냈어요.');
-          }, 'btn btn-danger')));
-        return row;
+          }, 'btn btn-danger')]);
       });
-      invites.forEach(inv => rows.push(el('div', {className: 'mrow'},
-        el('span', {className: 'who'}, avatar(inv.invitee_display_name), el('span', {}, el('strong', {text: inv.invitee_display_name}), el('small', {text: '초대 보냄 · ' + fmtDay(inv.expires_at) + '까지 · 수락 전이라 앨범이 보이지 않아요'}))),
-        el('span', {className: 'tools'}, roleChip(inv.role, true),
-          button('초대 취소', () => albumAct(async () => { await api(base + '/invitations/' + enc(inv.id), {method: 'DELETE'}); }, '초대를 취소했어요.'), 'btn btn-weak')))));
+      invites.forEach(inv => rows.push(memberRow(inv.invitee_display_name, '초대 대기 · ' + daysLeft(inv.expires_at), tag(ROLE[inv.role] || inv.role, 'muted'), [
+        el('span', {className: 'caption', text: '수락 전이라 앨범이 보이지 않아요 · ' + fmtDay(inv.expires_at) + '까지'}),
+        button('초대 취소', () => albumAct(async () => { await api(base + '/invitations/' + enc(inv.id), {method: 'DELETE'}); }, '초대를 취소했어요.'), 'btn btn-weak')])));
       $('memberRows').replaceChildren(...rows);
     }
     function renderSettings(base, members) {
-      const transferSelect = el('select', {'aria-label': '새 소유자'}, new Option('새 소유자 선택', ''));
+      const transferSelect = el('select', {'aria-label': '새 오너'}, new Option('새 오너 선택', ''));
       members.filter(m => m.role !== 'OWNER' && m.active).forEach(m => transferSelect.append(new Option(m.display_name, m.user_id)));
       const name = album.name;
       $('settingsBody').replaceChildren(
         el('h3', {className: 't-h3', text: '소유권 이전'}),
         el('p', {className: 'note', text: '현재 멤버에게만 넘길 수 있어요. 넘기면 나는 참여 역할이 되고, 대기 중인 초대는 취소돼요.'}),
-        el('div', {className: 'form-row'}, el('label', {className: 'fl narrow'}, el('span', {text: '새 소유자 (현재 멤버만)'}), transferSelect), button('이전', () => {
-          if (!transferSelect.value) { say('새 소유자를 고르세요 (현재 멤버만 가능).', true); return; }
+        el('div', {className: 'form-row'}, el('label', {className: 'fl narrow'}, el('span', {text: '새 오너 (현재 멤버만)'}), transferSelect), button('이전', () => {
+          if (!transferSelect.value) { say('새 오너를 고르세요 (현재 멤버만 가능).', true); return; }
           if (confirm('소유권을 넘기면 나는 참여(CONTRIBUTOR) 역할이 되고 대기 중인 초대는 취소됩니다. 계속할까요?'))
             albumAct(async () => { await api(base + '/owner', json('POST', {new_owner_user_id: transferSelect.value})); await reload(); }, '소유권을 이전했어요.');
         })),
@@ -1133,20 +1192,34 @@
     // the server has no account search for ordinary users.
     function inviteExpiry() {
       const d = new Date(Date.now() + 7 * 86400000);
-      return '7일 · ' + (d.getMonth() + 1) + '월 ' + d.getDate() + '일까지';
+      return (d.getMonth() + 1) + '월 ' + d.getDate() + '일';
+    }
+    // The send button doubles as the confirmation (D-06): after a send it
+    // says who got the invitation and closes the dialog on the next press.
+    function invButton(sentTo) {
+      const b = $('invSend');
+      b.className = 'btn btn-lg btn-block ' + (sentTo ? 'btn-solid' : 'btn-brand');
+      b.textContent = sentTo ? sentTo + ' 님에게 초대를 보냈어요 · 닫기' : '초대 보내기';
+      $('invStatus').textContent = sentTo ? sentTo + ' 님에게 초대를 보냈어요. 수락하면 이 앨범이 그분의 목록에 나타나요.' : '';
     }
     async function openInvite() {
       const ctx = inviteCtx;
       if (!ctx) return;
-      const taken = new Set([...ctx.members.map(m => m.user_id), ...ctx.invites.map(i => i.invitee_user_id)]);
-      let role = 'CONTRIBUTOR', who = '';
+      const members = new Set(ctx.members.map(m => m.user_id));
+      const pending = new Set(ctx.invites.map(i => i.invitee_user_id));
+      // Least privilege first: the role starts at "보기".
+      let role = 'VIEWER', who = '';
+      ctx.sentTo = '';
+      ctx.changed = false;
       $('invTitle').textContent = ctx.folder.name + '에 초대';
       $('invFeedback').textContent = '';
       $('invExpiry').textContent = inviteExpiry();
+      invButton('');
+      const reset = () => { if (ctx.sentTo) { ctx.sentTo = ''; invButton(''); } };
       const drawRoles = () => {
         $('invRoles').replaceChildren(...INVITE_ROLES.map(r => {
           const b = el('button', {type: 'button', role: 'radio', 'aria-checked': r === role ? 'true' : 'false', text: ROLE[r]});
-          b.addEventListener('click', () => { role = r; drawRoles(); });
+          b.addEventListener('click', () => { role = r; reset(); drawRoles(); });
           return b;
         }));
         $('invRoleDesc').textContent = ROLE_DESC[role];
@@ -1155,45 +1228,61 @@
       const box = $('invWho');
       if (isAdmin()) {
         try { await fetchUsers(); } catch (err) { fail(err); return; }
-        const pool = users.filter(u => u.status === 'active' && !u.password_locked && !taken.has(u.user_id));
-        const search = el('input', {type: 'search', placeholder: '이름·아이디로 찾기', autocomplete: 'off', 'aria-label': '받는 사람 찾기'});
+        // Active accounts that can sign in; members and pending invitees are
+        // shown but cannot be picked again.
+        const pool = users.filter(u => u.status === 'active' && !u.password_locked && !(me && u.user_id === me.user.user_id));
+        const search = el('input', {type: 'search', placeholder: '이름·아이디로 찾기', autocomplete: 'off', 'aria-label': '초대할 사람 찾기'});
         const list = el('div', {className: 'pick-list', role: 'radiogroup', 'aria-labelledby': 'invWhoLabel'});
         const draw = () => {
           const q = search.value.trim().toLowerCase();
-          const shown = pool.filter(u => !q || u.login_name.toLowerCase().includes(q) || u.display_name.toLowerCase().includes(q));
+          const shown = pool.filter(u => !q || u.login_name.toLowerCase().includes(q) || u.display_name.toLowerCase().includes(q))
+            .sort((a, b) => (members.has(a.user_id) || pending.has(a.user_id)) - (members.has(b.user_id) || pending.has(b.user_id)));
           list.replaceChildren(...shown.map(u => {
-            const b = el('button', {type: 'button', className: 'pick', role: 'radio', 'aria-checked': u.user_id === who ? 'true' : 'false'},
-              avatar(u.display_name), el('span', {className: 'grow'}, el('strong', {text: u.display_name}), el('small', {text: u.login_name})), el('span', {className: 'rdot'}));
-            b.addEventListener('click', () => { who = u.user_id; draw(); });
+            const taken = members.has(u.user_id) ? '이미 멤버예요' : pending.has(u.user_id) ? '초대 대기 중이에요' : '';
+            const b = el('button', {type: 'button', className: 'pick', role: 'radio', 'aria-checked': u.user_id === who ? 'true' : 'false', disabled: !!taken},
+              avatar(u.display_name), el('span', {className: 'grow'}, el('strong', {text: u.display_name}), el('small', {text: taken || u.login_name})), el('span', {className: 'rdot'}));
+            b.addEventListener('click', () => { who = u.user_id; reset(); draw(); });
             return b;
           }));
           if (!shown.length) list.append(el('p', {className: 'note', text: pool.length ? '찾는 계정이 없어요.' : '초대할 수 있는 다른 활성 계정이 없어요. 사용자 메뉴에서 먼저 계정을 만드세요.'}));
+          else if (shown.every(u => members.has(u.user_id) || pending.has(u.user_id))) list.append(el('p', {className: 'note', text: '모두 이미 멤버이거나 초대를 받았어요. 사용자 메뉴에서 새 계정을 만들 수 있어요.'}));
         };
         search.addEventListener('input', draw);
         box.replaceChildren(...(pool.length > 6 ? [search] : []), list);
         draw();
         ctx.pick = () => who;
+        ctx.sent = id => { pending.add(id); who = ''; draw(); };
       } else {
         const input = el('input', {type: 'text', autocomplete: 'off', spellcheck: false, placeholder: '받는 사람의 사용자 ID', 'aria-labelledby': 'invWhoLabel'});
+        input.addEventListener('input', reset);
         box.replaceChildren(input, el('span', {className: 'caption', text: '받는 사람이 "기기 · 내 계정" 화면의 사용자 ID를 알려 줘야 해요. 서버는 다른 사용자 목록을 보여 주지 않아요.'}));
         ctx.pick = () => input.value.trim();
+        ctx.sent = () => { input.value = ''; };
       }
       ctx.role = () => role;
       $('inviteDialog').showModal();
     }
     $('inviteBtn').addEventListener('click', openInvite);
-    $('invCancel').addEventListener('click', () => $('inviteDialog').close());
+    $('invClose').addEventListener('click', () => $('inviteDialog').close());
+    // After any invitation, closing the dialog shows the album again.
+    $('inviteDialog').addEventListener('close', () => {
+      const ctx = inviteCtx;
+      if (ctx && ctx.changed) { ctx.changed = false; loadAlbum(ctx.folder.id); }
+    });
     $('invSend').addEventListener('click', async () => {
       const ctx = inviteCtx;
       if (!ctx || !ctx.pick) return;
+      if (ctx.sentTo) { $('inviteDialog').close(); return; }
       const id = ctx.pick();
-      if (!id) { $('invFeedback').textContent = '받는 사람을 고르거나 사용자 ID를 입력하세요.'; return; }
+      if (!id) { $('invFeedback').textContent = '초대할 사람을 고르거나 사용자 ID를 입력하세요.'; return; }
+      $('invFeedback').textContent = '';
       $('invSend').disabled = true;
       try {
         const inv = await api(ctx.base + '/invitations', json('POST', {invited_user_id: id, role: ctx.role()}));
-        $('inviteDialog').close();
-        toast(icon('send', 'i16'), (inv.invitee_display_name || '받는 사람') + ' 님에게 초대를 보냈어요. 수락하면 이 앨범이 그분의 목록에 나타나요.');
-        await loadAlbum(ctx.folder.id);
+        ctx.changed = true;
+        ctx.sent(id);
+        ctx.sentTo = inv.invitee_display_name || '받는 사람';
+        invButton(ctx.sentTo);
       } catch (err) {
         if (err instanceof ApiError && !gone(err)) $('invFeedback').textContent = err.message;
         else { $('inviteDialog').close(); if (gone(err)) albumGone(err); else fail(err); }
@@ -1231,7 +1320,7 @@
         const result = await api('/api/v1/folders/' + enc(folder) + '/assets', {method: 'POST', headers, body: file});
         const short = String(result.sha256 || '').slice(0, 16) + '…';
         if (result.result === 'accepted') {
-          uploadSay('서버가 받았어요 (업로드 전용 앨범). 앨범 내용은 소유자와 보기 권한이 있는 멤버만 볼 수 있어요.');
+          uploadSay('서버가 받았어요 (업로드 전용 앨범). 앨범 내용은 오너와 참여·보기 멤버만 볼 수 있어요.');
         } else if (digest && result.sha256 === digest) {
           uploadSay(kept(), (result.result === 'already_present' ? '이미 이 앨범에 보관된 원본이에요' : '원본 보관됨') + ' · 서버 SHA-256 확인 ' + short);
         } else {
@@ -1279,41 +1368,74 @@
     }
 
     // ---- user administration (SERVER_ADMIN, D-07) ----
-    let userFilter = 'all';
     const canCreateFlag = u => u.server_role === 'SERVER_ADMIN' || u.can_create_albums;
+    // activity: per account, the devices with a live session and the latest
+    // login or token refresh among them, from GET /admin/users/{id}/devices.
+    let activity = {};
+    let activitySeq = 0;
     async function fetchUsers() { users = (await api('/api/v1/admin/users')).users; return users; }
-    async function loadUsers() { await run(async () => { await fetchUsers(); renderUsers(); }); }
+    async function loadUsers() { if (await run(async () => { await fetchUsers(); renderUsers(); })) loadActivity(); }
+    // loadActivity asks for each account's devices, four at a time (one small
+    // indexed query each: one request per account, fine for a family server).
+    async function loadActivity() {
+      const seq = ++activitySeq, ids = users.map(u => u.user_id);
+      let next = 0;
+      const worker = async () => {
+        while (next < ids.length) {
+          const id = ids[next++];
+          try {
+            const r = await api('/api/v1/admin/users/' + enc(id) + '/devices');
+            if (seq !== activitySeq) return;
+            activity[id] = r.devices;
+          } catch (err) {
+            if (err instanceof Unauthorized || err instanceof Offline) { if (seq === activitySeq) fail(err); return; }
+            activity[id] = null;
+          }
+          if (seq === activitySeq) renderUsers();
+        }
+      };
+      await Promise.all([worker(), worker(), worker(), worker()]);
+    }
+    function deviceCell(id) {
+      if (!(id in activity)) return el('span', {className: 'caption', text: '확인 중'});
+      const list = activity[id];
+      if (list === null) return el('span', {text: '알 수 없음'});
+      if (!list.length) return el('span', {}, el('span', {'aria-hidden': 'true', text: '—'}), el('span', {className: 'sr-only', text: '로그인된 기기 없음'}));
+      const names = [...new Set(list.map(d => d.device_name))];
+      return el('span', {text: names.slice(0, 2).join(' · ') + (names.length > 2 ? ' 외 ' + (names.length - 2) + '대' : '') + (list.length !== names.length ? ' (' + list.length + '대)' : '')});
+    }
+    function lastCell(id) {
+      const list = activity[id];
+      if (!list) return el('span', {text: id in activity ? '알 수 없음' : ''});
+      const last = list.map(d => d.last_used_at).filter(Boolean).sort().pop();
+      if (!last) return el('span', {}, el('span', {'aria-hidden': 'true', text: '—'}), el('span', {className: 'sr-only', text: '기록 없음'}));
+      return el('span', {text: relTime(last), title: fmtTime(last)});
+    }
     function renderUsers() {
-      const active = users.filter(u => u.status === 'active');
-      $('fAll').textContent = String(users.length);
-      $('fCreators').textContent = String(active.filter(canCreateFlag).length);
-      $('fDisabled').textContent = String(users.length - active.length);
-      document.querySelectorAll('[data-filter]').forEach(b => b.setAttribute('aria-pressed', b.dataset.filter === userFilter ? 'true' : 'false'));
-      const q = $('userSearch').value.trim().toLowerCase();
-      const shown = users.filter(u => (userFilter === 'all' || (userFilter === 'creators' ? u.status === 'active' && canCreateFlag(u) : u.status !== 'active'))
-        && (!q || u.login_name.toLowerCase().includes(q) || u.display_name.toLowerCase().includes(q)));
-      $('userRows').replaceChildren(...shown.map(userRow));
-      if (!shown.length) $('userRows').append(el('tr', {}, el('td', {className: 'note', colSpan: 5, text: '조건에 맞는 사용자가 없어요.'})));
+      $('userRows').replaceChildren(...users.map(userRow));
+      if (!users.length) $('userRows').append(el('tr', {}, el('td', {className: 'note', colSpan: 6, text: '사용자가 없어요.'})));
     }
     function userRow(u) {
       const admin = u.server_role === 'SERVER_ADMIN', off = u.status !== 'active', allowed = canCreateFlag(u);
-      const sw = el('button', {type: 'button', className: 'switch', role: 'switch', 'aria-checked': allowed ? 'true' : 'false', 'aria-label': u.login_name + ' 앨범 생성 허용', disabled: admin || off});
+      const sw = el('button', {type: 'button', className: 'switch', role: 'switch', 'aria-checked': allowed ? 'true' : 'false',
+        'aria-label': u.display_name + ' 앨범 생성 허용' + (admin ? ' (관리자는 항상 허용)' : ''), disabled: admin || off});
       sw.addEventListener('click', () => run(async () => {
         await api('/api/v1/admin/users/' + enc(u.user_id) + '/permissions', json('PATCH', {server_role: u.server_role, can_create_albums: !u.can_create_albums}));
         await fetchUsers();
         renderUsers();
-      }, u.display_name + ' 님의 앨범 생성을 ' + (u.can_create_albums ? '껐어요. 이미 참여한 앨범과 사진은 그대로예요.' : '허용했어요.')));
-      const manage = el('button', {type: 'button', className: 'icon-btn', 'aria-label': u.login_name + ' 관리'}, icon('more', 'i20'));
-      manage.addEventListener('click', () => openUser(u.user_id));
-      return el('tr', {className: off ? 'off' : ''},
-        el('td', {}, el('span', {className: 'who'}, avatar(u.display_name), el('span', {}, el('strong', {text: u.display_name}), el('small', {text: u.login_name})))),
-        el('td', {}, el('span', {className: 'rchip' + (off ? ' bad' : admin ? ' solid' : ''), text: off ? '정지됨' : admin ? '관리자' : '사용자'})),
-        el('td', {}, el('span', {className: 'switch-cell'}, sw, admin ? '항상 허용' : allowed ? '허용' : '꺼짐')),
-        el('td', {className: 'note', text: off ? '비활성' : u.password_locked ? '활성 (로그인 불가)' : '활성'}),
-        el('td', {}, manage));
+      }, u.display_name + ' 님의 앨범 생성을 ' + (u.can_create_albums ? '껐어요. 초대받은 앨범에는 계속 참여할 수 있어요.' : '허용했어요.')));
+      const name = el('button', {type: 'button', className: 'who-btn', title: '관리'},
+        el('span', {className: 'who'}, avatar(u.display_name), el('span', {}, el('strong', {text: u.display_name}), el('small', {text: u.login_name}))));
+      name.addEventListener('click', () => openUser(u.user_id));
+      const state = off ? tag('정지', 'warn') : u.password_locked ? tag('로그인 불가', 'muted') : tag('활성');
+      return el('tr', {},
+        el('td', {}, name),
+        el('td', {text: admin ? '관리자' : '사용자'}),
+        el('td', {}, state),
+        el('td', {}, deviceCell(u.user_id)),
+        el('td', {}, lastCell(u.user_id)),
+        el('td', {}, sw));
     }
-    document.querySelectorAll('[data-filter]').forEach(b => b.addEventListener('click', () => { userFilter = b.dataset.filter; renderUsers(); }));
-    $('userSearch').addEventListener('input', renderUsers);
 
     // Add user (dialog). The initial password is made in this browser and
     // shown once; the administrator hands it over.
@@ -1326,8 +1448,6 @@
     function openAddUser() {
       $('nuName').value = ''; $('nuLogin').value = '';
       $('nuPassword').value = genPassword();
-      $('nuRole').value = 'USER';
-      $('nuCreate').setAttribute('aria-checked', 'false');
       $('nuFeedback').textContent = '';
       $('userDialog').showModal();
       $('nuName').focus();
@@ -1338,7 +1458,6 @@
       try { await navigator.clipboard.writeText($('nuPassword').value); $('nuFeedback').textContent = ''; $('nuCopy').textContent = '복사됨'; setTimeout(() => { $('nuCopy').textContent = '복사'; }, 2000); }
       catch (e) { $('nuPassword').select(); }
     });
-    $('nuCreate').addEventListener('click', () => { const b = $('nuCreate'); b.setAttribute('aria-checked', b.getAttribute('aria-checked') === 'true' ? 'false' : 'true'); });
     $('nuCancel').addEventListener('click', () => $('userDialog').close());
     $('nuSubmit').addEventListener('click', async () => {
       const login = $('nuLogin').value.trim(), name = $('nuName').value.trim() || login;
@@ -1346,12 +1465,11 @@
       $('nuSubmit').disabled = true;
       try {
         await api('/api/v1/admin/users', json('POST', {login_name: login, display_name: name, password: $('nuPassword').value,
-          server_role: $('nuRole').value, can_create_albums: $('nuCreate').getAttribute('aria-checked') === 'true'}));
+          server_role: 'USER', can_create_albums: false}));
         $('userDialog').close();
         $('nuPassword').value = '';
-        toast(name + ' 계정을 만들었어요. 초기 비밀번호를 직접 전해 주세요. 아직 볼 수 있는 앨범은 없어요.', el('a', {href: '#albums', text: '앨범에 초대하기'}));
-        await fetchUsers();
-        renderUsers();
+        toast(name + ' 계정을 만들었어요. 임시 비밀번호를 직접 전해 주세요. 앨범 오너가 초대하기 전에는 볼 수 있는 앨범이 없어요.');
+        await loadUsers();
       } catch (err) {
         if (err instanceof ApiError) $('nuFeedback').textContent = err.message;
         else { $('userDialog').close(); fail(err); }
@@ -1366,6 +1484,7 @@
         [u, devices, owned] = await Promise.all([api('/api/v1/admin/users/' + enc(userID)), api('/api/v1/admin/users/' + enc(userID) + '/devices'), api('/api/v1/admin/users/' + enc(userID) + '/folders')]);
       } catch (err) { box.replaceChildren(el('p', {className: 'error', text: err.message})); fail(err); return; }
       const reopen = async () => { await fetchUsers(); renderUsers(); await openUser(userID); };
+      activity[userID] = devices.devices;
       const self = me && u.user_id === me.user.user_id;
       const role = el('select', {}, ...['USER', 'SERVER_ADMIN'].map(r => new Option(SERVER_ROLE[r], r, false, r === u.server_role)));
       const canCreateBox = el('input', {type: 'checkbox', checked: u.can_create_albums});
@@ -1389,14 +1508,14 @@
       const reassign = el('div', {className: 'pane'});
       if (u.status === 'active' && (owned.active_owned > 0 || archivedN > 0)) {
         if (owned.active_owned > 0) {
-          reassign.append(el('p', {className: 'caption', text: '사용 중인 앨범이 있으면 비활성화할 수 없어요. 소유자가 직접 다른 멤버에게 소유권을 이전하거나 앨범을 보관해야 해요 (관리자는 사용 중인 앨범을 옮길 수 없어요).'}));
+          reassign.append(el('p', {className: 'caption', text: '사용 중인 앨범이 있으면 비활성화할 수 없어요. 오너가 직접 다른 멤버에게 소유권을 이전하거나 앨범을 보관해야 해요 (관리자는 사용 중인 앨범을 옮길 수 없어요).'}));
         } else {
           const target = el('select', {}, new Option('보관 앨범을 넘겨받을 계정', ''));
           users.filter(x => x.user_id !== userID && x.status === 'active' && !x.password_locked).forEach(x => target.append(new Option(x.login_name + ' · ' + x.display_name, x.user_id)));
           reassign.append(el('p', {className: 'caption', text: '보관 앨범은 계속 보관 상태로 남으며, 넘겨받는 계정도 내용을 볼 수 없어요. 재배정은 감사 로그에 남아요.'}),
             el('div', {className: 'form-row'}, el('label', {className: 'fl narrow'}, el('span', {text: '넘겨받을 계정'}), target), button('보관 앨범 ' + archivedN + '개 재배정 후 비활성화', () => {
               if (!target.value) { say('넘겨받을 계정을 고르세요.', true); return; }
-              if (!confirm('보관 앨범 ' + archivedN + '개의 소유자를 바꾸고 ' + u.login_name + ' 계정을 비활성화할까요?')) return;
+              if (!confirm('보관 앨범 ' + archivedN + '개의 오너를 바꾸고 ' + u.login_name + ' 계정을 비활성화할까요?')) return;
               run(async () => {
                 for (const f of owned.archived) await api('/api/v1/admin/folders/' + enc(f.folder_id) + '/owner', json('POST', {new_owner_user_id: target.value}));
                 await api('/api/v1/admin/users/' + enc(userID), json('PATCH', {status: 'disabled'}));
@@ -1495,7 +1614,7 @@
       $('meLink').hidden = true; $('logout').hidden = true; $('statusChip').hidden = true;
       $('loginState').replaceChildren();
       $('loginFeedback').textContent = message || '';
-      me = null; users = [];
+      me = null; users = []; activity = {}; activitySeq++;
     }
     $('login').addEventListener('submit', async e => {
       e.preventDefault();
