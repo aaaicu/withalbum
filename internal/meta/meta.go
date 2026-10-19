@@ -42,6 +42,23 @@ type Asset struct {
 	// is PreviewStatus == PreviewStatusReady. Not part of the PoC format.
 	PreviewStatus string `json:"-"`
 	UploadedAt    string `json:"uploaded_at"`
+	// CapturedAt is when the photo or video was taken, as read from the
+	// original by the server (capturetime.Time.String), or "" when it is
+	// unknown or not read yet. Never the upload time.
+	CapturedAt string `json:"-"`
+	// UploaderName is the display name of the account that uploaded the
+	// asset, or "" when there is none or the account is disabled or cannot
+	// log in. Read only; never the login name, user_id or e-mail.
+	UploaderName string `json:"-"`
+}
+
+// CaptureResult is what the capture-time worker read from one original
+// (SetCaptureTimes). CapturedAt "" records that the original has no
+// readable capture time.
+type CaptureResult struct {
+	SHA256      string
+	CapturedAt  string // capturetime.Time.String
+	CapturedUTC string // the UTC instant (RFC 3339, "Z"), or "" without one
 }
 
 // Preview states of an asset (Asset.PreviewStatus).
@@ -75,8 +92,9 @@ type Event struct {
 const (
 	EventAssetAdded   = "asset_added"   // written by CommitUpload
 	EventAssetRemoved = "asset_removed" // written by RemoveAsset
-	// EventAssetUpdated: the asset's metadata changed (currently only its
-	// preview status, written by SetPreviewStatus); read it again. Its
+	// EventAssetUpdated: the asset's metadata changed (its preview status,
+	// written by SetPreviewStatus, or its capture time, written by
+	// SetCaptureTimes); read it again. Its
 	// UploaderDeviceID is that of the asset's asset_added event in the same
 	// folder (the server made the change, no device did).
 	EventAssetUpdated = "asset_updated"
@@ -253,6 +271,10 @@ type NewFolder struct {
 type FolderAccess struct {
 	Folder Folder
 	Access authz.AlbumAccess
+	// MemberCount is the owner and the members (every role) whose accounts
+	// are active and can log in. Pending invitations are not counted. The
+	// HTTP API shows it only to callers who may read the folder.
+	MemberCount int
 }
 
 // CommitRequest links an uploaded blob to a folder.
@@ -583,6 +605,16 @@ type MetadataStore interface {
 	// EventAssetUpdated to each folder that holds one of them, in one
 	// transaction. It returns the number of assets changed.
 	SetPreviewStatus(ctx context.Context, sha, status string) (int, error)
+	// PendingCaptures returns up to limit originals whose capture time has
+	// not been read yet, by SHA-256.
+	PendingCaptures(ctx context.Context, limit int) ([]string, error)
+	// SetCaptureTimes records what the capture-time worker read, in one
+	// transaction, for the originals that are still pending (others are
+	// left as they are). For each original with a capture time it appends
+	// one EventAssetUpdated to every folder holding an asset of it; an
+	// original without one changes nothing a client sees, so it gets no
+	// event. It returns the number of events appended.
+	SetCaptureTimes(ctx context.Context, results []CaptureResult) (int, error)
 	// GetFolderAsset returns the asset with this ID if it is currently linked
 	// to the folder, and ErrAssetNotFound otherwise (unknown ID, removed, or
 	// an asset of another folder).

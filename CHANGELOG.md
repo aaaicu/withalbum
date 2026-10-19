@@ -4,6 +4,14 @@
 
 아래 [0.1.0-alpha.1] 초안 이후의 변경을 여기에 적습니다.
 
+### Added (asset metadata: capture time, uploader name, member count)
+- 자산 응답(`GET /folders/{id}/assets` 스냅샷, `GET /folders/{id}/sync`의 `assets`)에 `captured_at`(촬영 시각, nullable)과 `uploaded_by_name`(올린 사람 표시 이름, nullable) 추가. 폴더 응답(`GET /folders`, `GET /folders/{id}`, 생성·초대 수락 응답)에 `member_count`(오너 + 로그인 가능한 활성 멤버, 대기 초대 제외) 추가 — `can_read`일 때만 있음(UPLOADER에게는 키 자체가 없음). 새 라우트 없음, 비멤버·관리자 404와 UPLOADER 403/202 영수증 불변.
+- `captured_at`: 서버가 원본에서 읽은 값만. 형식 세 가지 — `2026-10-19T14:03:22+09:00`(현지 시각+오프셋), `2026-10-19T05:03:22Z`(오프셋 없는 순간, 동영상 mvhd), `2026-10-19T14:03:22`(시간대 없는 현지 시각, EXIF OffsetTimeOriginal 없음). 모르면 null, 업로드 시각으로 대체하지 않음.
+- `internal/capturetime`: 순수 Go 추출기 — JPEG/TIFF EXIF(DateTimeOriginal + OffsetTimeOriginal), HEIF/HEIC/AVIF(meta/iinf/iloc의 Exif 항목, 파일 오프셋·idat), QuickTime/MP4(`com.apple.quicktime.creationdate`, 없으면 mvhd). io.ReaderAt로 최대 1MiB·4096회 읽기, 상자 2048개·IFD 항목 1024개·세그먼트 128개 제한, 64비트 mdat는 건너뜀(읽지 않음). 손으로 만든 테스트 픽스처(실제 사진 없음)와 퍼즈 테스트 `FuzzExtract`.
+- 촬영 시각 워커(`internal/httpapi/captures.go`): 커밋 후 백그라운드에서 읽음(업로드 경로·응답 시간은 새 바이트와 기존 바이트가 같게 유지). 찾으면 그 원본의 모든 폴더 링크에 `asset_updated` 이벤트, 못 찾으면 이벤트 없음. 마이그레이션 0010이 기존 원본을 모두 `pending`으로 두어 같은 워커가 백필(DB 상태라 재시작 안전, 저장장치가 없으면 대기, 읽을 수 없는 원본은 "모름"으로 정리).
+- 마이그레이션 0010: `blobs.capture_state`(pending/done), `blobs.captured_at`, `blobs.captured_utc`(정렬용 UTC 순간), 부분 인덱스 `idx_blobs_capture_pending`. 촬영 시각은 바이트의 속성이라 blob에 저장(같은 원본의 모든 자산이 공유).
+- 대시보드 앨범 상세: 사진 타일의 제목·접근성 이름에 촬영 시각(없으면 "추가" 시각)과 올린 사람, 오너가 아닌 읽기 권한자의 머리 줄에 "멤버 N명".
+
 ### Added (invitation decline)
 - `POST /api/v1/invitations/{invitation_id}/decline`: 초대받은 계정이 본인 세션으로 초대를 거절(본문 없음, 204). 수락과 같은 판정 — 없는 ID 404 `invitation_not_found`, 다른 계정(서버 관리자·오너 포함) 403 `forbidden`, 이미 수락·취소·만료·거절·앨범 보관·보낸 사람이 더 이상 오너가 아님 410 `invitation_gone`(아무것도 쓰지 않음). BEGIN IMMEDIATE 1 트랜잭션에서 상태 `declined` + 감사 로그 `invitation.decline`(앨범·역할·보낸 사람, 토큰·비밀 없음). 정책 표 `AccessSession`.
 - 마이그레이션 0009: `folder_invitations.status` CHECK에 `declined` 추가(테이블 재생성, 행·열·인덱스·외래 키 유지). 대기 초대 부분 UNIQUE 인덱스는 `pending`만 다루므로 거절 후 오너가 같은 계정을 다시 초대할 수 있음.

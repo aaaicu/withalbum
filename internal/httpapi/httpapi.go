@@ -113,13 +113,15 @@ type Server struct {
 	denials          *denialLog
 	uploads          uploadLocks
 	previewKick      chan struct{} // wakes the preview worker (capacity 1)
+	captureKick      chan struct{} // wakes the capture-time worker (capacity 1)
 }
 
 // New returns a Server for cfg.
 func New(cfg Config) *Server {
 	s := &Server{vol: cfg.Volume, meta: cfg.Meta, blobs: cfg.Blobs, version: cfg.Version,
 		minFree: max(cfg.MinFreeBytes, 0), freeBytes: cfg.FreeBytes, integrityWarning: cfg.IntegrityWarning, faults: cfg.Faults, auth: cfg.Auth,
-		members: cfg.Members, tls: cfg.TLS, startup: cfg.StartupCheck, previewKick: make(chan struct{}, 1)}
+		members: cfg.Members, tls: cfg.TLS, startup: cfg.StartupCheck, previewKick: make(chan struct{}, 1),
+		captureKick: make(chan struct{}, 1)}
 	if s.members == nil {
 		s.members, _ = cfg.Meta.(meta.Memberships)
 	}
@@ -209,12 +211,21 @@ type folderJSON struct {
 	Role      string `json:"role"`
 	CanRead   bool   `json:"can_read"`
 	CanUpload bool   `json:"can_upload"`
+	// MemberCount (owner and members whose accounts are active; no
+	// pending invitations) only for callers who may read the folder: an
+	// upload-only member learns nothing about the album beyond its name.
+	MemberCount *int `json:"member_count,omitempty"`
 }
 
 func folderView(p authz.Principal, fa meta.FolderAccess) folderJSON {
-	return folderJSON{ID: fa.Folder.ID, Name: fa.Folder.Name, CreatedAt: fa.Folder.CreatedAt, Role: role(p.UserID, fa.Access),
+	v := folderJSON{ID: fa.Folder.ID, Name: fa.Folder.Name, CreatedAt: fa.Folder.CreatedAt, Role: role(p.UserID, fa.Access),
 		CanRead:   authz.Allowed(p, authz.ListAlbumAssets, &fa.Access),
 		CanUpload: authz.Allowed(p, authz.UploadAsset, &fa.Access)}
+	if v.CanRead {
+		n := fa.MemberCount
+		v.MemberCount = &n
+	}
+	return v
 }
 
 // getFolders lists only the folders the caller owns or is a member of.
@@ -296,7 +307,8 @@ func (s *Server) createFolder(w http.ResponseWriter, r *http.Request) {
 		writeFailed(w, "create folder", err, "metadata_write_failed")
 		return
 	}
-	jsonReply(w, 201, folderView(p, meta.FolderAccess{Folder: folder, Access: authz.AlbumAccess{OwnerID: p.UserID}}))
+	// A new folder has its creator (active, just re-checked) and nobody else.
+	jsonReply(w, 201, folderView(p, meta.FolderAccess{Folder: folder, Access: authz.AlbumAccess{OwnerID: p.UserID}, MemberCount: 1}))
 }
 
 // storageReady re-verifies the volume right before a write. On failure it
@@ -598,6 +610,9 @@ func (s *Server) commitOriginal(w http.ResponseWriter, r *http.Request, a albumR
 	if previewStatus == meta.PreviewStatusPending {
 		s.kickPreviews()
 	}
+	// Every outcome wakes the capture-time worker (it finds nothing to do
+	// for bytes it has already read).
+	s.kickCaptures()
 	uploadReply(w, folderID, sha, staged.Size, res, canRead)
 	return true
 }

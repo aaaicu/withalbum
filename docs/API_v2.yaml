@@ -84,8 +84,8 @@ info:
     Sync model (client state machine: docs/CLIENT_SYNC_STATES.md). Each
     folder has a change feed of events numbered 1, 2, ... (seq):
     asset_added, asset_removed (a tombstone) and asset_updated (an asset
-    still in the folder changed, currently its preview_status; the event's
-    "assets" entry carries the new state). A client keeps a cursor per
+    still in the folder changed: its preview_status or its captured_at; the
+    event's "assets" entry carries the new state). A client keeps a cursor per
     folder, an opaque string returned as next_cursor, and asks for the
     events after it (GET .../sync). It advances its stored cursor only after
     the page is persisted locally. A cursor belongs to one folder of one
@@ -136,6 +136,23 @@ info:
     shows that state. An UPLOADER cannot see previews and relies on the
     verified 202 receipt alone. Originals in the device's own photo
     library are never deleted.
+
+
+    Capture time and uploader. Readers of a folder (OWNER, CONTRIBUTOR,
+    VIEWER) see on every asset when it was taken (captured_at) and who
+    uploaded it (uploaded_by_name), and on the folder how many accounts
+    belong to it (member_count). The server reads captured_at from the
+    original itself (EXIF DateTimeOriginal with OffsetTimeOriginal in
+    JPEG, TIFF and HEIF/HEIC/AVIF; com.apple.quicktime.creationdate, else
+    the movie header creation time, in QuickTime/MP4) in a background
+    worker after the commit, and never changes the original. An asset
+    therefore arrives with captured_at null, and an asset_updated event
+    follows when a capture time was found; when none is found it stays
+    null and no event is sent. captured_at is never the upload time: a
+    client that has none shows uploaded_at as "added" instead. Originals
+    stored before a server upgrade are read in the background too (with
+    the same asset_updated events). An UPLOADER sees none of these fields:
+    it only gets the 202 receipt and the folder's name and role.
 
 
     Errors are {"error": "<code>"}. 401 responses carry
@@ -1525,9 +1542,17 @@ components:
         role: {type: string, enum: [OWNER, CONTRIBUTOR, VIEWER, UPLOADER]}
         can_read: {type: boolean, description: 'may list, sync and download'}
         can_upload: {type: boolean}
+        member_count:
+          type: integer
+          minimum: 0
+          description: >-
+            Present exactly when can_read is true (absent for an UPLOADER).
+            The owner plus the members of every role whose accounts are
+            active and can log in; pending invitations are not counted (the
+            member list and the invitations stay owner-only).
     Asset:
       type: object
-      required: [id, sha256, filename, mime_type, bytes, preview_ready, preview_status, uploaded_at]
+      required: [id, sha256, filename, mime_type, bytes, preview_ready, preview_status, uploaded_at, captured_at, uploaded_by_name]
       properties:
         id: {type: string, description: 'random; valid only under its folder'}
         sha256: {type: string, description: 'of the original, to verify a download'}
@@ -1536,7 +1561,30 @@ components:
         bytes: {type: integer}
         preview_ready: {type: boolean}
         preview_status: {$ref: '#/components/schemas/PreviewStatus'}
-        uploaded_at: {type: string}
+        uploaded_at: {type: string, description: 'when the asset was added to the server (UTC)'}
+        captured_at:
+          type: [string, 'null']
+          pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(Z|[+-]\d{2}:\d{2})?$'
+          example: '2026-10-19T14:03:22+09:00'
+          description: >-
+            When the photo or video was taken, as recorded in the original
+            (second precision), or null when unknown or not read yet. Three
+            forms, told apart by the suffix: "2026-10-19T14:03:22+09:00"
+            local time with its offset from UTC (an instant; "+00:00" is a
+            recorded zero offset); "2026-10-19T05:03:22Z" an instant whose
+            local offset was not recorded (movie header times); and
+            "2026-10-19T14:03:22" without suffix, a local wall-clock time
+            whose zone was not recorded (EXIF without OffsetTimeOriginal),
+            which is not an instant and should be shown as it is. Never the
+            upload time.
+        uploaded_by_name:
+          type: [string, 'null']
+          description: >-
+            Display name of the account that uploaded the asset (never its
+            login name, user_id or e-mail address). null when the upload
+            had no account (imported data) or the account is disabled or
+            can no longer log in; a client shows "unknown". It follows the
+            account's current display name.
     PreviewStatus:
       type: string
       enum: [ready, pending, failed, unsupported]
@@ -1565,7 +1613,7 @@ components:
       required: [seq, kind, asset_id, folder_id, uploader_device_id, occurred_at]
       properties:
         seq: {type: integer, minimum: 1}
-        kind: {type: string, enum: [asset_added, asset_removed, asset_updated], description: 'asset_updated: the asset (in "assets") changed, currently its preview_status'}
+        kind: {type: string, enum: [asset_added, asset_removed, asset_updated], description: 'asset_updated: the asset (in "assets") changed: its preview_status or captured_at'}
         asset_id: {type: string}
         folder_id: {type: string}
         uploader_device_id: {type: string, description: 'X-Device-ID label of the upload that added the asset to this folder: on asset_added, and on asset_updated the same label as that asset_added (the server made the change, no device did; "" when the upload sent none); always "" for asset_removed'}
