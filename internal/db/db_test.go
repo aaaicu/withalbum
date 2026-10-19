@@ -38,8 +38,8 @@ func TestEmbeddedMigrationsAreContiguous(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ms) != 9 || LatestVersion() != 9 {
-		t.Fatalf("got %d migrations, LatestVersion %d; want 9", len(ms), LatestVersion())
+	if len(ms) != 10 || LatestVersion() != 10 {
+		t.Fatalf("got %d migrations, LatestVersion %d; want 10", len(ms), LatestVersion())
 	}
 }
 
@@ -470,5 +470,48 @@ func TestMigration0009AllowsDeclinedInvitations(t *testing.T) {
 	mustExec(t, sqlDB, "DELETE FROM folders WHERE folder_id = 'f1'")
 	if err := sqlDB.QueryRow("SELECT count(*) FROM folder_invitations").Scan(&n); err != nil || n != 0 {
 		t.Fatalf("ON DELETE CASCADE lost: %d rows, %v", n, err)
+	}
+}
+
+// TestMigration0010AddsCaptureTime: on a database of the previous version
+// with originals, every existing blob becomes pending (the backfill) with
+// no capture time, nothing else changes, and the constraints keep the
+// columns consistent.
+func TestMigration0010AddsCaptureTime(t *testing.T) {
+	ctx := context.Background()
+	sqlDB, _ := openTemp(t)
+	migrateTo(t, sqlDB, 9)
+	addUser(t, sqlDB, "owner", "active")
+	mustExec(t, sqlDB, "INSERT INTO folders(folder_id, folder_name, owner_user_id) VALUES ('f1', 'Trip', 'owner')")
+	for i, sha := range []string{strings.Repeat("a", 64), strings.Repeat("b", 64)} {
+		mustExec(t, sqlDB, "INSERT INTO blobs(sha256, bytes, mime_type, relative_path, verified_at) VALUES (?, 10, 'image/jpeg', ?, 'v')", sha, "pool/"+sha)
+		mustExec(t, sqlDB, "INSERT INTO assets(asset_id, original_sha256, original_filename, media_kind, uploaded_by_user_id) VALUES (?, ?, 'p.jpg', 'image', 'owner')", fmt.Sprint("asset", i), sha)
+		mustExec(t, sqlDB, "INSERT INTO folder_assets(folder_id, asset_id) VALUES ('f1', ?)", fmt.Sprint("asset", i))
+	}
+	if err := Migrate(ctx, sqlDB); err != nil {
+		t.Fatal(err)
+	}
+	var pending, withTime, assets int
+	if err := sqlDB.QueryRow("SELECT count(*) FILTER (WHERE capture_state = 'pending'), count(captured_at) + count(captured_utc) FROM blobs").Scan(&pending, &withTime); err != nil || pending != 2 || withTime != 0 {
+		t.Fatalf("pending %d, with a capture time %d, %v", pending, withTime, err)
+	}
+	if err := sqlDB.QueryRow("SELECT count(*) FROM assets a JOIN folder_assets fa USING (asset_id)").Scan(&assets); err != nil || assets != 2 {
+		t.Fatalf("assets %d, %v", assets, err)
+	}
+	var idx int
+	if err := sqlDB.QueryRow("SELECT count(*) FROM sqlite_schema WHERE type = 'index' AND name = 'idx_blobs_capture_pending'").Scan(&idx); err != nil || idx != 1 {
+		t.Fatalf("index %d, %v", idx, err)
+	}
+	a := strings.Repeat("a", 64)
+	expectReject(t, sqlDB, "CHECK constraint", "UPDATE blobs SET capture_state = 'bogus' WHERE sha256 = ?", a)
+	expectReject(t, sqlDB, "CHECK constraint", "UPDATE blobs SET captured_at = '2026-10-19T14:03:22' WHERE sha256 = ?", a)
+	expectReject(t, sqlDB, "CHECK constraint", "UPDATE blobs SET capture_state = 'done', captured_utc = '2026-10-19T05:03:22Z' WHERE sha256 = ?", a)
+	mustExec(t, sqlDB, "UPDATE blobs SET capture_state = 'done', captured_at = '2026-10-19T14:03:22+09:00', captured_utc = '2026-10-19T05:03:22Z' WHERE sha256 = ?", a)
+	// A new blob row starts pending.
+	c := strings.Repeat("c", 64)
+	mustExec(t, sqlDB, "INSERT INTO blobs(sha256, bytes, mime_type, relative_path, verified_at) VALUES (?, 10, 'image/jpeg', 'pool/c', 'v')", c)
+	var state string
+	if err := sqlDB.QueryRow("SELECT capture_state FROM blobs WHERE sha256 = ?", c).Scan(&state); err != nil || state != "pending" {
+		t.Fatalf("new blob %q, %v", state, err)
 	}
 }

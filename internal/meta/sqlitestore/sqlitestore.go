@@ -270,16 +270,22 @@ func principalTx(ctx context.Context, q queryer, userID, sessionID string) (auth
 
 // folderAccessQuery selects one non-archived folder and the relation of the
 // user given as the first argument. It is completed by a WHERE clause.
-const folderAccessQuery = `SELECT f.folder_id, f.folder_name, f.created_at, f.owner_user_id, m.role
+const folderAccessQuery = `SELECT f.folder_id, f.folder_name, f.created_at, f.owner_user_id, m.role,
+		(SELECT count(*) FROM users u WHERE u.user_id = f.owner_user_id AND ` + activeUser + `) +
+		(SELECT count(*) FROM folder_members mm JOIN users u ON u.user_id = mm.user_id WHERE mm.folder_id = f.folder_id AND ` + activeUser + `)
 	FROM folders f LEFT JOIN folder_members m ON m.folder_id = f.folder_id AND m.user_id = ?
 	WHERE f.archived_at IS NULL AND `
+
+// activeUser is the condition on users u for an account that is active and
+// can log in (the password is not a locked marker).
+const activeUser = "u.status = 'active' AND substr(u.password_hash, 1, 1) <> '" + password.LockedPrefix + "'"
 
 type scanner interface{ Scan(dest ...any) error }
 
 func scanFolderAccess(row scanner) (meta.FolderAccess, error) {
 	var fa meta.FolderAccess
 	var role sql.NullString
-	if err := row.Scan(&fa.Folder.ID, &fa.Folder.Name, &fa.Folder.CreatedAt, &fa.Access.OwnerID, &role); err != nil {
+	if err := row.Scan(&fa.Folder.ID, &fa.Folder.Name, &fa.Folder.CreatedAt, &fa.Access.OwnerID, &role, &fa.MemberCount); err != nil {
 		return meta.FolderAccess{}, err
 	}
 	fa.Access.HasMembership = role.Valid
@@ -348,16 +354,22 @@ func (s *Store) GetFolder(ctx context.Context, id string) (meta.Folder, error) {
 }
 
 // assetColumns selects a meta.Asset (scanAsset) from assets a JOIN blobs b.
-const assetColumns = "a.asset_id, a.original_sha256, a.original_filename, b.mime_type, b.bytes, a.preview_ready, a.preview_state, a.created_at"
+const assetColumns = "a.asset_id, a.original_sha256, a.original_filename, b.mime_type, b.bytes, a.preview_ready, a.preview_state, a.created_at, b.captured_at, " + uploaderName
+
+// uploaderName selects the display name of the uploader of assets a while
+// the account is active and can log in; NULL otherwise (no uploader,
+// disabled, locked).
+const uploaderName = "(SELECT u.display_name FROM users u WHERE u.user_id = a.uploaded_by_user_id AND " + activeUser + ")"
 
 func scanAsset(row scanner) (meta.Asset, error) {
 	var a meta.Asset
-	var state sql.NullString
-	err := row.Scan(&a.ID, &a.SHA256, &a.Filename, &a.MimeType, &a.Bytes, &a.PreviewReady, &state, &a.UploadedAt)
+	var state, captured, uploader sql.NullString
+	err := row.Scan(&a.ID, &a.SHA256, &a.Filename, &a.MimeType, &a.Bytes, &a.PreviewReady, &state, &a.UploadedAt, &captured, &uploader)
 	if errors.Is(err, sql.ErrNoRows) {
 		return meta.Asset{}, meta.ErrAssetNotFound
 	}
 	a.PreviewStatus = previewStatus(a.PreviewReady, state)
+	a.CapturedAt, a.UploaderName = captured.String, uploader.String
 	return a, err
 }
 
@@ -626,7 +638,7 @@ func (s *Store) ListEvents(ctx context.Context, folderID string, cursor int64, l
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT c.seq, c.event_type, c.asset_id, COALESCE(c.uploader_device_label, ''), c.occurred_at,
 			a.original_sha256, a.original_filename, b.mime_type, b.bytes, a.preview_ready, a.preview_state, a.created_at,
-			fa.asset_id IS NOT NULL AND fa.removed_at IS NULL
+			b.captured_at, `+uploaderName+`, fa.asset_id IS NOT NULL AND fa.removed_at IS NULL
 		FROM folder_changes c
 		LEFT JOIN assets a ON a.asset_id = c.asset_id
 		LEFT JOIN blobs b ON b.sha256 = a.original_sha256
@@ -639,12 +651,12 @@ func (s *Store) ListEvents(ctx context.Context, folderID string, cursor int64, l
 	page := meta.EventPage{Events: []meta.Event{}, Assets: map[string]meta.Asset{}, NextCursor: cursor, State: state}
 	for rows.Next() {
 		e := meta.Event{FolderID: folderID}
-		var sha, filename, mime, uploadedAt, state sql.NullString
+		var sha, filename, mime, uploadedAt, state, captured, uploader sql.NullString
 		var size sql.NullInt64
 		var preview sql.NullBool
 		var linked bool
 		if err := rows.Scan(&e.Seq, &e.Kind, &e.AssetID, &e.UploaderDeviceID, &e.OccurredAt,
-			&sha, &filename, &mime, &size, &preview, &state, &uploadedAt, &linked); err != nil {
+			&sha, &filename, &mime, &size, &preview, &state, &uploadedAt, &captured, &uploader, &linked); err != nil {
 			return meta.EventPage{}, err
 		}
 		if !sha.Valid || !mime.Valid {
@@ -655,7 +667,8 @@ func (s *Store) ListEvents(ctx context.Context, folderID string, cursor int64, l
 		page.Events = append(page.Events, e)
 		if (e.Kind == meta.EventAssetAdded || e.Kind == meta.EventAssetUpdated) && linked {
 			page.Assets[e.AssetID] = meta.Asset{ID: e.AssetID, SHA256: sha.String, Filename: filename.String, MimeType: mime.String,
-				Bytes: size.Int64, PreviewReady: preview.Bool, PreviewStatus: previewStatus(preview.Bool, state), UploadedAt: uploadedAt.String}
+				Bytes: size.Int64, PreviewReady: preview.Bool, PreviewStatus: previewStatus(preview.Bool, state), UploadedAt: uploadedAt.String,
+				CapturedAt: captured.String, UploaderName: uploader.String}
 		}
 		page.NextCursor = e.Seq
 	}

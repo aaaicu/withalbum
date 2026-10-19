@@ -232,6 +232,11 @@ func testCommitUpload(t *testing.T, s Store) {
 	stored := in
 	stored.ID = res.Asset.ID
 	stored.UploadedAt = res.Asset.UploadedAt
+	// The uploader is an active account: its display name is reported.
+	if res.Asset.UploaderName == "" {
+		t.Fatalf("created asset %+v has no uploader name", res.Asset)
+	}
+	stored.UploaderName = res.Asset.UploaderName
 	if res.Asset != stored || stored.ID == "" || stored.ID == sha(0) {
 		t.Fatalf("created asset %+v, want %+v with a random ID", res.Asset, stored)
 	}

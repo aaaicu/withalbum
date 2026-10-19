@@ -435,6 +435,7 @@ func main() {
 	normal := func(a *app) {
 		go a.maintain(ctx, maintenanceInterval)
 		go a.api.RunPreviews(ctx)
+		go a.api.RunCaptures(ctx)
 	}
 	var (
 		handler   http.Handler

@@ -115,11 +115,29 @@ type assetJSON struct {
 	// asset_updated event follows), failed or unsupported.
 	PreviewStatus string `json:"preview_status"`
 	UploadedAt    string `json:"uploaded_at"`
+	// CapturedAt: when it was taken, read from the original by the server
+	// ("2026-10-19T14:03:22+09:00" with the local offset, "...Z" an
+	// instant without it, no suffix a local time without zone), or null
+	// when unknown or not read yet (an asset_updated event follows when it
+	// is found). Never the upload time.
+	CapturedAt *string `json:"captured_at"`
+	// UploadedByName: the uploader's display name, null when there is no
+	// uploader or the account is disabled or cannot log in.
+	UploadedByName *string `json:"uploaded_by_name"`
 }
 
 func assetView(as meta.Asset) assetJSON {
 	return assetJSON{ID: as.ID, SHA256: as.SHA256, Filename: as.Filename, MimeType: as.MimeType, Bytes: as.Bytes,
-		PreviewReady: as.PreviewReady, PreviewStatus: as.PreviewStatus, UploadedAt: as.UploadedAt}
+		PreviewReady: as.PreviewReady, PreviewStatus: as.PreviewStatus, UploadedAt: as.UploadedAt,
+		CapturedAt: nonEmpty(as.CapturedAt), UploadedByName: nonEmpty(as.UploaderName)}
+}
+
+// nonEmpty is nil for "" (JSON null).
+func nonEmpty(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 // syncEvents: GET /folders/{id}/sync?cursor=&limit=. Events after the

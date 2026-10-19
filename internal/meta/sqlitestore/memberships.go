@@ -325,6 +325,11 @@ func (s *Store) acceptInvitation(ctx context.Context, c meta.AlbumChange) (meta.
 		inv.FolderID, c.ActorID, string(inv.Role), ts); err != nil {
 		return meta.FolderAccess{}, err
 	}
+	// The member count as it is with the new member.
+	if err := tx.QueryRowContext(ctx, "SELECT (SELECT count(*) FROM folder_members mm JOIN users u ON u.user_id = mm.user_id WHERE mm.folder_id = ? AND "+activeUser+
+		") + (SELECT count(*) FROM users u WHERE u.user_id = ? AND "+activeUser+")", inv.FolderID, fa.Access.OwnerID).Scan(&fa.MemberCount); err != nil {
+		return meta.FolderAccess{}, err
+	}
 	res, err := tx.ExecContext(ctx, "UPDATE folder_invitations SET status = 'accepted', accepted_at = ? WHERE invitation_id = ? AND status = 'pending'", ts, inv.ID)
 	if err != nil {
 		return meta.FolderAccess{}, err
