@@ -452,9 +452,13 @@ func finalizeDB(ctx context.Context, path string, m *Manifest) (int64, error) {
 		_, err = tx.ExecContext(ctx, "UPDATE sync_state SET epoch = lower(hex(randomblob(16))) WHERE singleton = 1")
 	}
 	if err == nil {
-		// Upload sessions belong to devices that were just revoked, and their
-		// partial files are not in the backup: drop them (clients start a new
-		// session under the same Idempotency-Key).
+		// Upload sessions (and the bundles of Live Photo uploads) belong to
+		// devices that were just revoked, and their partial files are not in
+		// the backup: drop them (clients start a new session under the same
+		// Idempotency-Key).
+		_, err = tx.ExecContext(ctx, "DELETE FROM upload_bundles")
+	}
+	if err == nil {
 		_, err = tx.ExecContext(ctx, "DELETE FROM upload_sessions")
 	}
 	if err == nil {

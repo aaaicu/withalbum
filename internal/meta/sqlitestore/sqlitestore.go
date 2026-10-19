@@ -23,6 +23,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -354,7 +355,33 @@ func (s *Store) GetFolder(ctx context.Context, id string) (meta.Folder, error) {
 }
 
 // assetColumns selects a meta.Asset (scanAsset) from assets a JOIN blobs b.
-const assetColumns = "a.asset_id, a.original_sha256, a.original_filename, b.mime_type, b.bytes, a.preview_ready, a.preview_state, a.created_at, b.captured_at, " + uploaderName
+const assetColumns = "a.asset_id, a.original_sha256, a.original_filename, b.mime_type, b.bytes, a.preview_ready, a.preview_state, a.created_at, b.captured_at, " +
+	uploaderName + ", a.media_kind, a.pairing_state, " + pairedVideo
+
+// pairedVideo selects the paired video of assets a as a JSON object
+// (sha256, filename, mime_type, bytes), NULL when it has none.
+const pairedVideo = `(SELECT json_object('sha256', c.sha256, 'filename', c.filename, 'mime_type', cb.mime_type, 'bytes', cb.bytes)
+	FROM asset_components c JOIN blobs cb ON cb.sha256 = c.sha256 WHERE c.asset_id = a.asset_id AND c.role = 'paired_video')`
+
+// setLivePhoto fills the media kind, pairing and paired video of a from
+// their columns (the last three of assetColumns).
+func setLivePhoto(a *meta.Asset, kind, pairing, paired sql.NullString) error {
+	a.MediaKind, a.Pairing = kind.String, pairing.String
+	if !paired.Valid {
+		return nil
+	}
+	var c struct {
+		SHA256   string `json:"sha256"`
+		Filename string `json:"filename"`
+		MimeType string `json:"mime_type"`
+		Bytes    int64  `json:"bytes"`
+	}
+	if err := json.Unmarshal([]byte(paired.String), &c); err != nil {
+		return fmt.Errorf("asset %s: paired video: %w", a.ID, err)
+	}
+	a.PairedVideo = meta.Component{Role: meta.RolePairedVideo, SHA256: c.SHA256, Filename: c.Filename, MimeType: c.MimeType, Bytes: c.Bytes}
+	return nil
+}
 
 // uploaderName selects the display name of the uploader of assets a while
 // the account is active and can log in; NULL otherwise (no uploader,
@@ -363,14 +390,18 @@ const uploaderName = "(SELECT u.display_name FROM users u WHERE u.user_id = a.up
 
 func scanAsset(row scanner) (meta.Asset, error) {
 	var a meta.Asset
-	var state, captured, uploader sql.NullString
-	err := row.Scan(&a.ID, &a.SHA256, &a.Filename, &a.MimeType, &a.Bytes, &a.PreviewReady, &state, &a.UploadedAt, &captured, &uploader)
+	var state, captured, uploader, kind, pairing, paired sql.NullString
+	err := row.Scan(&a.ID, &a.SHA256, &a.Filename, &a.MimeType, &a.Bytes, &a.PreviewReady, &state, &a.UploadedAt, &captured, &uploader,
+		&kind, &pairing, &paired)
 	if errors.Is(err, sql.ErrNoRows) {
 		return meta.Asset{}, meta.ErrAssetNotFound
 	}
+	if err != nil {
+		return meta.Asset{}, err
+	}
 	a.PreviewStatus = previewStatus(a.PreviewReady, state)
 	a.CapturedAt, a.UploaderName = captured.String, uploader.String
-	return a, err
+	return a, setLivePhoto(&a, kind, pairing, paired)
 }
 
 // previewStatus derives meta.Asset.PreviewStatus from assets.preview_ready
@@ -421,11 +452,11 @@ func (s *Store) GetFolderAsset(ctx context.Context, folderID, assetID string) (m
 func MediaKind(mime string) string {
 	switch {
 	case strings.HasPrefix(mime, "image/"):
-		return "image"
+		return meta.MediaImage
 	case strings.HasPrefix(mime, "video/"):
-		return "video"
+		return meta.MediaVideo
 	}
-	return "other"
+	return meta.MediaOther
 }
 
 func nullable(s string) any {
@@ -515,7 +546,8 @@ func (s *Store) commitUpload(ctx context.Context, req meta.CommitRequest) (meta.
 		// what was committed then, write nothing.
 		rc, err := lookupReceipt(ctx, tx, req.UserID, req.FolderID, *idem)
 		switch {
-		case err == nil && rc.SHA256 != sha:
+		case err == nil && (rc.SHA256 != sha || rc.PairedSHA256 != ""):
+			// Other bytes, or the key of a Live Photo bundle.
 			return meta.CommitResult{}, meta.ErrIdempotencyMismatch
 		case err == nil:
 			a, err := assetByID(ctx, tx, rc.AssetID)
@@ -533,6 +565,15 @@ func (s *Store) commitUpload(ctx context.Context, req meta.CommitRequest) (meta.
 			return meta.CommitResult{Result: rc.Result, Asset: a, Replayed: true}, nil
 		case !errors.Is(err, meta.ErrReceiptNotFound):
 			return meta.CommitResult{}, err
+		}
+		// The key of an upload bundle names that bundle, not this original.
+		var bundled bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM upload_bundles WHERE user_id = ? AND device_id = ? AND folder_id = ?
+			AND idempotency_key = ?)`, req.UserID, idem.DeviceID, req.FolderID, idem.Key).Scan(&bundled); err != nil {
+			return meta.CommitResult{}, err
+		}
+		if bundled {
+			return meta.CommitResult{}, meta.ErrIdempotencyMismatch
 		}
 	}
 	ts := now()
@@ -638,7 +679,7 @@ func (s *Store) ListEvents(ctx context.Context, folderID string, cursor int64, l
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT c.seq, c.event_type, c.asset_id, COALESCE(c.uploader_device_label, ''), c.occurred_at,
 			a.original_sha256, a.original_filename, b.mime_type, b.bytes, a.preview_ready, a.preview_state, a.created_at,
-			b.captured_at, `+uploaderName+`, fa.asset_id IS NOT NULL AND fa.removed_at IS NULL
+			b.captured_at, `+uploaderName+`, fa.asset_id IS NOT NULL AND fa.removed_at IS NULL, a.media_kind, a.pairing_state, `+pairedVideo+`
 		FROM folder_changes c
 		LEFT JOIN assets a ON a.asset_id = c.asset_id
 		LEFT JOIN blobs b ON b.sha256 = a.original_sha256
@@ -651,12 +692,12 @@ func (s *Store) ListEvents(ctx context.Context, folderID string, cursor int64, l
 	page := meta.EventPage{Events: []meta.Event{}, Assets: map[string]meta.Asset{}, NextCursor: cursor, State: state}
 	for rows.Next() {
 		e := meta.Event{FolderID: folderID}
-		var sha, filename, mime, uploadedAt, state, captured, uploader sql.NullString
+		var sha, filename, mime, uploadedAt, state, captured, uploader, kind, pairing, paired sql.NullString
 		var size sql.NullInt64
 		var preview sql.NullBool
 		var linked bool
 		if err := rows.Scan(&e.Seq, &e.Kind, &e.AssetID, &e.UploaderDeviceID, &e.OccurredAt,
-			&sha, &filename, &mime, &size, &preview, &state, &uploadedAt, &captured, &uploader, &linked); err != nil {
+			&sha, &filename, &mime, &size, &preview, &state, &uploadedAt, &captured, &uploader, &linked, &kind, &pairing, &paired); err != nil {
 			return meta.EventPage{}, err
 		}
 		if !sha.Valid || !mime.Valid {
@@ -666,9 +707,13 @@ func (s *Store) ListEvents(ctx context.Context, folderID string, cursor int64, l
 		}
 		page.Events = append(page.Events, e)
 		if (e.Kind == meta.EventAssetAdded || e.Kind == meta.EventAssetUpdated) && linked {
-			page.Assets[e.AssetID] = meta.Asset{ID: e.AssetID, SHA256: sha.String, Filename: filename.String, MimeType: mime.String,
+			a := meta.Asset{ID: e.AssetID, SHA256: sha.String, Filename: filename.String, MimeType: mime.String,
 				Bytes: size.Int64, PreviewReady: preview.Bool, PreviewStatus: previewStatus(preview.Bool, state), UploadedAt: uploadedAt.String,
 				CapturedAt: captured.String, UploaderName: uploader.String}
+			if err := setLivePhoto(&a, kind, pairing, paired); err != nil {
+				return meta.EventPage{}, err
+			}
+			page.Assets[e.AssetID] = a
 		}
 		page.NextCursor = e.Seq
 	}

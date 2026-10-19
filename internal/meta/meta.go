@@ -50,7 +50,52 @@ type Asset struct {
 	// asset, or "" when there is none or the account is disabled or cannot
 	// log in. Read only; never the login name, user_id or e-mail.
 	UploaderName string `json:"-"`
+	// MediaKind is assets.media_kind (MediaImage, MediaVideo,
+	// MediaLivePhoto, ...); "" for legacy data that has none.
+	MediaKind string `json:"-"`
+	// Pairing is how a Live Photo's still and video were matched
+	// (PairingVerified, PairingUnverified); "" for other assets.
+	Pairing string `json:"-"`
+	// PairedVideo is the paired video of a Live Photo (Role
+	// RolePairedVideo); the zero Component when the asset has none. The
+	// asset's own SHA256, MimeType and Bytes are always the still.
+	PairedVideo Component `json:"-"`
 }
+
+// Component is an extra original of an asset (asset_components), stored
+// as its own blob. The asset's primary original (the still of a Live
+// Photo) is Asset.SHA256, not a Component.
+type Component struct {
+	Role     string // RolePairedVideo
+	SHA256   string
+	Filename string
+	MimeType string
+	Bytes    int64
+}
+
+// Media kinds (assets.media_kind).
+const (
+	MediaImage     = "image"
+	MediaVideo     = "video"
+	MediaLivePhoto = "live_photo" // a still (the asset's original) and its paired video
+	MediaOther     = "other"
+)
+
+// Component roles. RoleStill names the primary original of a bundle (the
+// asset's own original); RolePairedVideo is stored as a Component.
+const (
+	RoleStill       = "still"
+	RolePairedVideo = "paired_video"
+)
+
+// Pairing states of a Live Photo (assets.pairing_state).
+const (
+	// PairingVerified: both originals carry the same Apple content
+	// identifier.
+	PairingVerified = "verified"
+	// PairingUnverified: at least one carries none the server could read.
+	PairingUnverified = "unverified"
+)
 
 // CaptureResult is what the capture-time worker read from one original
 // (SetCaptureTimes). CapturedAt "" records that the original has no
@@ -124,9 +169,12 @@ type Idempotency struct {
 type Receipt struct {
 	SHA256    string
 	Bytes     int64
-	Result    string // ResultCreated or ResultAlreadyPresent
+	Result    string // ResultCreated, ResultAlreadyPresent or (bundles) ResultUpgraded
 	AssetID   string
 	CreatedAt string
+	// PairedSHA256 is the paired video of a bundle's receipt, "" for a
+	// single original.
+	PairedSHA256 string
 }
 
 // ReceiptTTL is how long a receipt is kept (PruneUploadReceipts). A retry
@@ -139,6 +187,9 @@ const (
 	ResultCreated        = "created"         // new blob; a new asset linked to the folder
 	ResultLinked         = "linked"          // known blob; a new asset linked to the folder
 	ResultAlreadyPresent = "already_present" // the folder already holds these bytes; nothing changed
+	// ResultUpgraded (bundles): the folder held the still as a still-only
+	// asset; the paired video was attached to that asset.
+	ResultUpgraded = "upgraded"
 )
 
 var (
@@ -169,6 +220,14 @@ var (
 	ErrUploadCommitted = errors.New("upload already committed")
 	// ErrTooManyUploads: the account has MaxOpenUploads open sessions.
 	ErrTooManyUploads = errors.New("too many open upload sessions")
+	// ErrBundleNotFound: no upload bundle with this ID that belongs to this
+	// account, device and folder and has not expired (or, for a commit, it
+	// is no longer open).
+	ErrBundleNotFound = errors.New("upload bundle not found")
+	// ErrComponentConflict: the folder already holds the bundle's still as
+	// an asset with another paired video (or one that cannot take this
+	// one). Existing originals are never replaced; nothing was written.
+	ErrComponentConflict = errors.New("the folder holds this still with another paired video")
 )
 
 // UploadCommittedError is ErrUploadCommitted with the stored outcome of the
@@ -211,6 +270,112 @@ type UploadSession struct {
 	Status      string // UploadOpen or UploadCompleted
 	CreatedAt   string
 	ExpiresAt   string
+	// BundleID and Role are set for a component session of an upload
+	// bundle (Role RoleStill or RolePairedVideo). Such a session only takes
+	// chunks; it is completed and cancelled through its bundle.
+	BundleID string
+	Role     string
+}
+
+// Upload bundle kinds (Bundle.Kind).
+const BundleLivePhoto = "live_photo"
+
+// MaxPairedVideoSize bounds the paired video of a Live Photo.
+const MaxPairedVideoSize int64 = 512 << 20
+
+// Bundle is an upload of several originals that become one asset: for
+// BundleLivePhoto a still and its paired video. Each component is an
+// upload session (chunks, resume) of the bundle; completing the bundle
+// commits all of them in one transaction. Like an upload session it is
+// visible only to its account, device and folder, and it expires with its
+// components (UploadSessionTTL after the last change of any of them).
+type Bundle struct {
+	ID          string // random, 32 hex digits
+	UserID      string
+	DeviceID    string
+	FolderID    string
+	Key         string // the client's Idempotency-Key
+	Kind        string // BundleLivePhoto
+	Status      string // UploadOpen or UploadCompleted
+	DeviceLabel string
+	CreatedAt   string
+	ExpiresAt   string
+	// Components: the still first, then the paired video.
+	Components []UploadSession
+}
+
+// Component returns the bundle's session of role.
+func (b Bundle) Component(role string) (UploadSession, bool) {
+	for _, c := range b.Components {
+		if c.Role == role {
+			return c, true
+		}
+	}
+	return UploadSession{}, false
+}
+
+// NewBundleComponent declares one original of a new bundle.
+type NewBundleComponent struct {
+	Role     string // RoleStill or RolePairedVideo
+	SHA256   string
+	Bytes    int64
+	Filename string
+}
+
+// NewBundle is a CreateBundle request. Its fields are those of
+// NewUploadSession; Components must hold exactly one still and one paired
+// video.
+type NewBundle struct {
+	UserID      string
+	SessionID   string
+	DeviceID    string
+	FolderID    string
+	Key         string
+	Kind        string
+	DeviceLabel string
+	Components  []NewBundleComponent
+	// Authorize re-checks the caller inside the write transaction (required).
+	Authorize Authorizer
+	// Reserve: as NewUploadSession.Reserve, for the components together.
+	Reserve func(reserved int64) error
+}
+
+// BundleRef names an upload bundle as seen by its owner.
+type BundleRef struct {
+	ID       string
+	UserID   string
+	DeviceID string
+	FolderID string
+}
+
+// BundleCommit commits a bundle whose components are complete, verified
+// and in the pool.
+type BundleCommit struct {
+	Ref         BundleRef
+	SessionID   string // the caller's auth session, see NewFolder.SessionID
+	DeviceLabel string // X-Device-ID label, recorded as uploader device
+	// Still is the asset's original (SHA256, Filename, MimeType, Bytes,
+	// PreviewReady, PreviewStatus); Video the paired video (SHA256,
+	// Filename, MimeType, Bytes).
+	Still Asset
+	Video Component
+	// Pairing (PairingVerified or PairingUnverified) and PairingID (the
+	// content identifier, "" when unknown) are recorded on a new or
+	// upgraded asset.
+	Pairing   string
+	PairingID string
+	// Authorize re-checks the caller inside the write transaction
+	// (required); it is called for every outcome, a replay included.
+	Authorize Authorizer
+	// AddOnConflict, if set, is called after Authorize. When it returns
+	// true, a still the folder already holds with another paired video (or
+	// in an asset that other folders share) is stored as a new asset
+	// instead of failing with ErrComponentConflict: an upload-only caller
+	// must not learn what the folder holds, and its bytes are kept.
+	AddOnConflict func() bool
+	// BeforeCommit: as CommitRequest.BeforeCommit (not called for a
+	// replay).
+	BeforeCommit func() error
 }
 
 // NewUploadSession is a CreateUploadSession request.
@@ -322,6 +487,15 @@ type CommitResult struct {
 	Result   string
 	Asset    Asset
 	Replayed bool // the stored result of an earlier request with the same idempotency key
+}
+
+// FolderMatch is an asset FindFolderAssets found.
+type FolderMatch struct {
+	AssetID string
+	// PairedSHA256 is the asset's paired video ("" when it has none), so
+	// that a client can tell a still-only asset it may complete with a
+	// Live Photo bundle.
+	PairedSHA256 string
 }
 
 // EventPage is one page of a folder's change feed.
@@ -549,9 +723,9 @@ type MetadataStore interface {
 	// ErrFolderNotFound, ErrInvalidLimit.
 	ListFolderAssets(ctx context.Context, folderID, after string, limit int) (AssetPage, error)
 	// FindFolderAssets returns, for each given SHA-256 that the folder
-	// currently holds, the ID of its asset there. It never looks at other
-	// folders.
-	FindFolderAssets(ctx context.Context, folderID string, shas []string) (map[string]string, error)
+	// currently holds as an asset's original, that asset there (by its
+	// smallest ID). It never looks at other folders.
+	FindFolderAssets(ctx context.Context, folderID string, shas []string) (map[string]FolderMatch, error)
 	// RemoveAsset unlinks asset c.TargetID from c.FolderID and appends an
 	// EventAssetRemoved event, re-checking the caller (c.Authorize) and
 	// writing an audit row in the same transaction. The asset row and the
@@ -593,9 +767,47 @@ type MetadataStore interface {
 	// ListUploadSessions returns every session row, expired ones included
 	// (startup reconciliation of the .part files).
 	ListUploadSessions(ctx context.Context) ([]UploadSession, error)
-	// PruneUploadSessions deletes the sessions that expired before t and
-	// returns their IDs (the caller deletes their files afterwards).
+	// PruneUploadSessions deletes the sessions and the upload bundles
+	// (with their component sessions) that expired before t, and returns
+	// the IDs of the deleted sessions (the caller deletes their files
+	// afterwards).
 	PruneUploadSessions(ctx context.Context, t time.Time) ([]string, error)
+	// CreateBundle starts an upload bundle with one upload session per
+	// component, or returns the existing one of the same (account, device,
+	// folder, key) with created false when it declares the same originals
+	// (a retried creation; a completed bundle included). An expired bundle
+	// of the key is replaced; the IDs of its sessions are returned in
+	// replaced so the caller can delete their files. ErrIdempotencyMismatch
+	// (the key names other originals, a single upload or a session),
+	// *UploadCommittedError (the key's receipt says these originals were
+	// committed), ErrTooManyUploads (counting every component),
+	// ErrFolderNotFound, and the errors of Authorize and Reserve, wrapped.
+	CreateBundle(ctx context.Context, req NewBundle) (b Bundle, created bool, replaced []string, err error)
+	// GetBundle returns the bundle and its component sessions if it
+	// belongs to ref's account, device and folder and has not expired,
+	// ErrBundleNotFound otherwise.
+	GetBundle(ctx context.Context, ref BundleRef) (Bundle, error)
+	// DeleteBundle removes the bundle ref (open or completed) and its
+	// component sessions, and returns their IDs. ErrBundleNotFound.
+	DeleteBundle(ctx context.Context, ref BundleRef) ([]string, error)
+	// CommitBundle commits an open bundle in one transaction: it re-checks
+	// the caller, then, by the folder's assets that are not removed:
+	//   - no asset has the still: a new asset (media kind live photo, the
+	//     video as its paired_video component), EventAssetAdded,
+	//     ResultCreated;
+	//   - an asset has the still and no paired video, and no other folder
+	//     shares it: the video is attached, its media kind becomes live
+	//     photo, EventAssetUpdated and an audit row, ResultUpgraded;
+	//   - an asset has the still and the same video: ResultAlreadyPresent;
+	//   - otherwise ErrComponentConflict (or a new asset, see
+	//     BundleCommit.AddOnConflict).
+	// Every outcome records the receipt (with the paired video) and marks
+	// the bundle and its sessions completed. A receipt of the bundle's key
+	// with the same originals is replayed (Replayed set, nothing written
+	// but the bundle's completion); with other originals, or one of a
+	// single upload, ErrIdempotencyMismatch. ErrBundleNotFound when the
+	// bundle is not open.
+	CommitBundle(ctx context.Context, req BundleCommit) (CommitResult, error)
 	// PendingPreviews returns up to limit originals with assets whose
 	// preview is pending, oldest first.
 	PendingPreviews(ctx context.Context, limit int) ([]PreviewJob, error)

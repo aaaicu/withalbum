@@ -124,12 +124,42 @@ type assetJSON struct {
 	// UploadedByName: the uploader's display name, null when there is no
 	// uploader or the account is disabled or cannot log in.
 	UploadedByName *string `json:"uploaded_by_name"`
+	// MediaKind: image, video, live_photo, raw or other. A live_photo's
+	// own fields (sha256, mime_type, bytes, /original, /preview) are its
+	// still; its video is in Components.
+	MediaKind string `json:"media_kind"`
+	// Pairing (live photos only): "verified" when the still and the video
+	// carry the same Apple content identifier, "unverified" when the server
+	// could not read one of them.
+	Pairing *string `json:"pairing,omitempty"`
+	// Components (live photos only): the extra originals, each downloaded
+	// from .../components/{role}.
+	Components []componentJSON `json:"components,omitempty"`
+}
+
+// componentJSON is an extra original of an asset.
+type componentJSON struct {
+	Role     string `json:"role"`
+	SHA256   string `json:"sha256"`
+	Bytes    int64  `json:"bytes"`
+	MimeType string `json:"mime_type"`
+	Filename string `json:"filename"`
 }
 
 func assetView(as meta.Asset) assetJSON {
-	return assetJSON{ID: as.ID, SHA256: as.SHA256, Filename: as.Filename, MimeType: as.MimeType, Bytes: as.Bytes,
+	v := assetJSON{ID: as.ID, SHA256: as.SHA256, Filename: as.Filename, MimeType: as.MimeType, Bytes: as.Bytes,
 		PreviewReady: as.PreviewReady, PreviewStatus: as.PreviewStatus, UploadedAt: as.UploadedAt,
-		CapturedAt: nonEmpty(as.CapturedAt), UploadedByName: nonEmpty(as.UploaderName)}
+		CapturedAt: nonEmpty(as.CapturedAt), UploadedByName: nonEmpty(as.UploaderName), MediaKind: as.MediaKind,
+		Pairing: nonEmpty(as.Pairing), Components: componentsView(as)}
+	return v
+}
+
+// componentsView lists the extra originals of an asset (nil: none).
+func componentsView(as meta.Asset) []componentJSON {
+	if c := as.PairedVideo; c.SHA256 != "" {
+		return []componentJSON{{Role: c.Role, SHA256: c.SHA256, Bytes: c.Bytes, MimeType: c.MimeType, Filename: c.Filename}}
+	}
+	return nil
 }
 
 // nonEmpty is nil for "" (JSON null).
@@ -220,7 +250,9 @@ func (s *Server) listAssets(w http.ResponseWriter, r *http.Request, a albumReque
 
 // checkAssets: POST /folders/{id}/assets/check {"sha256": [...]}, which of
 // these originals this folder already holds (readers only; never other
-// folders, never the server as a whole). Advisory: the upload decides.
+// folders, never the server as a whole). Advisory: the upload decides. A
+// hash matches an asset's own original (a live photo's still), never a
+// paired video.
 func (s *Server) checkAssets(w http.ResponseWriter, r *http.Request, a albumRequest) {
 	var req struct {
 		SHA256 []string `json:"sha256"`
@@ -252,8 +284,14 @@ func (s *Server) checkAssets(w http.ResponseWriter, r *http.Request, a albumRequ
 	}
 	present := []map[string]string{}
 	for _, h := range hashes {
-		if id, ok := found[h]; ok {
-			present = append(present, map[string]string{"sha256": h, "asset_id": id})
+		if m, ok := found[h]; ok {
+			p := map[string]string{"sha256": h, "asset_id": m.AssetID}
+			if m.PairedSHA256 != "" {
+				// A live photo: the client can tell a still-only asset
+				// (no paired_sha256), which a bundle upload completes.
+				p["paired_sha256"] = m.PairedSHA256
+			}
+			present = append(present, p)
 		}
 	}
 	jsonReply(w, 200, map[string]any{"folder_id": a.Folder.Folder.ID, "present": present})

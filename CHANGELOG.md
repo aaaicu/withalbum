@@ -4,6 +4,15 @@
 
 아래 [0.1.0-alpha.1] 초안 이후의 변경을 여기에 적습니다.
 
+### Added (Live Photos: still + paired video as one asset)
+- 라이브 포토 묶음 업로드: `POST /folders/{id}/bundles`(`kind: live_photo`, 구성 `still` 1 + `paired_video` 1, `Idempotency-Key`), `GET|DELETE /folders/{id}/bundles/{bid}`, `POST .../bundles/{bid}/complete`. 각 구성은 기존 재개 업로드 세션(`PATCH /uploads/{uid}`)으로 보냄. 완료 시 두 파일 SHA-256·크기 재계산(틀린 구성만 offset 0, 422 `hash_mismatch` + `role`), 형식(사진 HEIC/HEIF/JPEG, 영상 QuickTime/MP4 아니면 415 `unsupported_component_type`), Apple content identifier 비교(둘 다 있고 다르면 422 `pairing_mismatch`, 하나라도 없으면 `pairing: unverified`로 보관). 두 원본이 pool에 들어간 뒤 한 트랜잭션(권한·볼륨 재확인)에서 커밋 — 그 전에는 자산·이벤트·영수증 없음.
+- 중복 규칙(폴더 기준): 새 사진 → 201 `created`; 같은 사진만 있는 자산 → 영상을 붙여 200 `upgraded`(같은 asset_id, `asset_updated`, 감사 `asset.attach_component`); 같은 사진+같은 영상 → 200 `already_present`; 같은 사진+다른 영상 → 409 `component_conflict`(기존 원본 불변). UPLOADER는 언제나 같은 202 영수증(충돌이면 별도 자산으로 보관).
+- 자산 JSON에 `media_kind`(항상), 라이브 포토만 `pairing`·`components`(`[{"role":"paired_video","sha256","bytes","mime_type","filename"}]`). `GET /folders/{id}/assets/{aid}/components/paired_video`(원본과 같은 헤더·Range). `POST .../assets/check`의 present 항목에 `paired_sha256`(라이브 포토만). `GET /me`에 `server_features: ["live_photo_bundles"]`. 업로드 세션 응답에 `bundle_id`·`role`(구성 세션만, 그 세션의 complete/DELETE는 409 `upload_in_bundle`).
+- 마이그레이션 0011: `upload_bundles`, `upload_sessions.bundle_id`·`role`(+ 묶음·구성 만료를 함께 늘리는 트리거), `asset_components`, `assets.pairing_state`, `upload_receipts` 재생성(`result`에 `upgraded`, `paired_sha256`).
+- `internal/livephoto`(+ 테스트용 `livephototest`): HEIC/JPEG EXIF MakerNote Apple 태그 0x0011, MOV `com.apple.quicktime.content.identifier`. 컨테이너 읽기는 `internal/capturetime`의 경계 있는 리더 재사용(`ExifTIFF`, `QuickTimeString` 추가, 기존 추출 동작 불변). 퍼즈 `FuzzStillIdentifier`·`FuzzVideoIdentifier`.
+- 만료·복구: 버려진 묶음은 구성 세션·부분 파일과 함께 정리, 기동 시 구성 하나의 바이트가 사라지면 그 구성만 offset 0. 복원은 열린 묶음도 폐기. `verify`는 영상 원본 손상 시 자산과 `role: paired_video`를 보고하고, 영상 행이 없는 라이브 포토를 경고(`live_photos_without_video`).
+- 대시보드: 앨범 사진 타일에 작은 "라이브" 표시와 접근성 이름("라이브 포토", 짝 확인 안 됨).
+
 ### Added (asset metadata: capture time, uploader name, member count)
 - 자산 응답(`GET /folders/{id}/assets` 스냅샷, `GET /folders/{id}/sync`의 `assets`)에 `captured_at`(촬영 시각, nullable)과 `uploaded_by_name`(올린 사람 표시 이름, nullable) 추가. 폴더 응답(`GET /folders`, `GET /folders/{id}`, 생성·초대 수락 응답)에 `member_count`(오너 + 로그인 가능한 활성 멤버, 대기 초대 제외) 추가 — `can_read`일 때만 있음(UPLOADER에게는 키 자체가 없음). 새 라우트 없음, 비멤버·관리자 404와 UPLOADER 403/202 영수증 불변.
 - `captured_at`: 서버가 원본에서 읽은 값만. 형식 세 가지 — `2026-10-19T14:03:22+09:00`(현지 시각+오프셋), `2026-10-19T05:03:22Z`(오프셋 없는 순간, 동영상 mvhd), `2026-10-19T14:03:22`(시간대 없는 현지 시각, EXIF OffsetTimeOriginal 없음). 모르면 null, 업로드 시각으로 대체하지 않음.

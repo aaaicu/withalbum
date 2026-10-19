@@ -155,6 +155,28 @@ info:
     it only gets the 202 receipt and the folder's name and role.
 
 
+    Live Photos. A Live Photo (an iPhone still and its short video) is
+    one asset with media_kind "live_photo": its own original (sha256,
+    mime_type, bytes, /original, /preview, captured_at) is the still, and
+    "components" lists its paired video, downloaded from
+    .../components/paired_video. A client uploads one through an upload
+    bundle: POST .../bundles declares both originals and returns one
+    upload session per component; the client sends each with PATCH
+    .../uploads/{upload_id} exactly like a resumable upload, then POST
+    .../bundles/{bundle_id}/complete. Completion verifies the size and
+    SHA-256 of both stored files, their types and, when both carry one,
+    that they carry the same Apple content identifier ("pairing":
+    "verified"; "unverified" when one of them carries none the server can
+    read; different identifiers are refused). Nothing (asset, event,
+    receipt) exists until both are verified and committed together, so a
+    client shows a Live Photo as kept only after this reply, and lightens
+    its local copies only after both SHA-256 values match. If the folder
+    already holds the still as a plain photo, the video is attached to
+    that asset ("upgraded", asset_updated). Servers with this ability list
+    "live_photo_bundles" in GET /me server_features; older servers do not,
+    and a client then uploads the still alone.
+
+
     Errors are {"error": "<code>"}. 401 responses carry
     WWW-Authenticate: Bearer. API responses are Cache-Control: no-store.
 servers:
@@ -296,11 +318,20 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [user, device_id, platform]
+                required: [user, device_id, platform, server_features]
                 properties:
                   user: {$ref: '#/components/schemas/User'}
                   device_id: {type: string}
                   platform: {type: string, enum: [ios, android, macos, web]}
+                  server_features:
+                    type: array
+                    items: {type: string}
+                    examples: [[live_photo_bundles]]
+                    description: >-
+                      Optional abilities of this server. "live_photo_bundles":
+                      POST .../bundles stores Live Photos (still and video as
+                      one asset). Absent on older servers; clients must
+                      ignore unknown values.
         '401': {description: unauthorized}
   /api/v1/me/password:
     post:
@@ -1238,7 +1269,7 @@ paths:
         '401': {description: unauthorized}
         '403': {description: 'forbidden (VIEWER) or csrf_failed'}
         '404': {description: 'folder_not_found, upload_not_found'}
-        '409': {description: upload_busy}
+        '409': {description: 'upload_busy, upload_in_bundle (a component of an upload bundle: cancel the bundle; body {"error", "bundle_id"})'}
         '503': {description: 'storage_unavailable, storage_io_error, busy'}
   /api/v1/folders/{folder_id}/uploads/{upload_id}/complete:
     parameters:
@@ -1284,8 +1315,205 @@ paths:
         '401': {description: unauthorized}
         '403': {description: 'forbidden (VIEWER, or role lowered during the upload) or csrf_failed'}
         '404': {description: 'folder_not_found (also when the membership was removed), upload_not_found'}
-        '409': {description: 'upload_incomplete (body {"error", "offset"}), offset_mismatch (stored bytes lost; offset 0), upload_busy'}
+        '409': {description: 'upload_incomplete (body {"error", "offset"}), offset_mismatch (stored bytes lost; offset 0), upload_busy, upload_in_bundle (complete the bundle instead)'}
         '422': {description: 'hash_mismatch (session restarted at offset 0), idempotency_key_reused'}
+        '500': {description: 'storage_failed, metadata_write_failed'}
+        '503': {description: 'storage_unavailable, storage_io_error, busy (Retry-After: 1)'}
+        '507': {description: insufficient_storage}
+  /api/v1/folders/{folder_id}/bundles:
+    parameters:
+      - $ref: '#/components/parameters/FolderID'
+    post:
+      tags: [Assets]
+      summary: Start a Live Photo upload bundle (OWNER, CONTRIBUTOR, UPLOADER)
+      description: >-
+        Declares the still (role "still": HEIC, HEIF or JPEG, up to 64 GiB)
+        and its video (role "paired_video": QuickTime or MP4, up to 512
+        MiB) of one Live Photo, exactly one of each. Headers
+        Idempotency-Key (required) and X-Device-ID as for every upload; the
+        key names this one request in the same scope (account, session
+        device, folder) as single uploads and upload sessions, so a key
+        used for one of those is 422 idempotency_key_reused here and the
+        other way round. The reply holds one upload session per component
+        (upload_id, offset): send each with PATCH
+        .../uploads/{upload_id} (same rules as a resumable upload), then
+        POST .../bundles/{bundle_id}/complete. The bundle and its sessions
+        belong to the caller's account, device and folder (any other gets
+        404 bundle_not_found / upload_not_found) and expire together 24
+        hours after the last chunk of either component. Creating again
+        with the same key and the same originals returns the existing
+        bundle (200); a key whose bundle was committed and is gone returns
+        the stored completion result (201/200 UploadResult with
+        components, or the 202 receipt for UPLOADER; header
+        Idempotency-Replayed: true), as for upload sessions. Creation
+        reserves the size of both (507), and counts as two of the 16 open
+        upload sessions of the account (429). Every byte of both must be
+        sent; whether the server already holds them is never revealed.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, components]
+              properties:
+                kind: {type: string, enum: [live_photo]}
+                components:
+                  type: array
+                  minItems: 2
+                  maxItems: 2
+                  items:
+                    type: object
+                    required: [role, bytes, sha256]
+                    properties:
+                      role: {type: string, enum: [still, paired_video]}
+                      bytes: {type: integer, minimum: 1}
+                      sha256: {type: string, pattern: '^[0-9a-fA-F]{64}$'}
+                      filename: {type: string}
+            example:
+              kind: live_photo
+              components:
+                - {role: still, bytes: 2310442, sha256: 9f2c0d6e0b1a4c3e8f7d6c5b4a39281706f5e4d3c2b1a0998877665544332211, filename: IMG_0001.HEIC}
+                - {role: paired_video, bytes: 3120001, sha256: 1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809, filename: IMG_0001.MOV}
+      responses:
+        '200':
+          description: The existing bundle of this key (Bundle), or the replayed result already_present/upgraded of a committed key (UploadResult, readers only)
+          headers:
+            Idempotency-Replayed: {$ref: '#/components/headers/IdempotencyReplayed'}
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/Bundle'
+                  - $ref: '#/components/schemas/UploadResult'
+        '201':
+          description: Bundle created, both components at offset 0 (Bundle), or the replayed result created of a committed key (UploadResult, readers only)
+          headers:
+            Idempotency-Replayed: {$ref: '#/components/headers/IdempotencyReplayed'}
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/Bundle'
+                  - $ref: '#/components/schemas/UploadResult'
+        '202':
+          description: The replayed receipt of a committed key for upload-only callers
+          headers:
+            Idempotency-Replayed: {$ref: '#/components/headers/IdempotencyReplayed'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UploadReceipt'}
+        '400': {description: 'idempotency_key_required, invalid_idempotency_key, invalid_device_id, invalid_json, invalid_kind, invalid_components (not exactly one still and one paired_video), invalid_bytes, invalid_sha256'}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (VIEWER) or csrf_failed'}
+        '404': {description: folder_not_found}
+        '413': {description: 'file_too_large (still over 64 GiB, video over 512 MiB)'}
+        '415': {description: json_required}
+        '422': {description: 'idempotency_key_reused (this key names other originals, a single upload or an upload session)'}
+        '429': {description: too_many_uploads}
+        '500': {description: metadata_write_failed}
+        '503': {description: 'storage_unavailable, storage_io_error, busy (Retry-After: 1)'}
+        '507': {description: insufficient_storage}
+  /api/v1/folders/{folder_id}/bundles/{bundle_id}:
+    parameters:
+      - $ref: '#/components/parameters/FolderID'
+      - $ref: '#/components/parameters/BundleID'
+    get:
+      tags: [Assets]
+      summary: State of an own upload bundle and the offset of each component
+      responses:
+        '200':
+          description: The bundle
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Bundle'}
+        '401': {description: unauthorized}
+        '403': {description: forbidden (VIEWER)}
+        '404': {description: 'folder_not_found, bundle_not_found (unknown, expired, or of another account, device or folder)'}
+    delete:
+      tags: [Assets]
+      summary: Cancel an own upload bundle with both component sessions and their stored bytes
+      description: A completed bundle is only forgotten; its asset stays committed.
+      responses:
+        '204': {description: Cancelled}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (VIEWER) or csrf_failed'}
+        '404': {description: 'folder_not_found, bundle_not_found'}
+        '409': {description: 'upload_busy (a chunk of a component is being written)'}
+        '503': {description: 'storage_unavailable, storage_io_error, busy'}
+  /api/v1/folders/{folder_id}/bundles/{bundle_id}/complete:
+    parameters:
+      - $ref: '#/components/parameters/FolderID'
+      - $ref: '#/components/parameters/BundleID'
+    post:
+      tags: [Assets]
+      summary: Verify both components of a bundle and commit them as one asset
+      description: >-
+        Both stored files are hashed and compared with the declaration.
+        A component whose bytes do not match is discarded and restarted at
+        offset 0 alone (422 hash_mismatch with its role and upload_id; the
+        other keeps its bytes). Then the still must be HEIC/HEIF/JPEG and
+        the video QuickTime/MP4 by content (415
+        unsupported_component_type with the role), and when both carry an
+        Apple content identifier they must be equal (422
+        pairing_mismatch); in these cases nothing is stored and the bundle
+        stays open (cancel it, or upload the still alone under a new key).
+        Then both originals are moved into the storage pool and committed
+        in one transaction that re-checks the permission and the storage
+        volume; before that no asset, event or receipt exists. By what the
+        folder holds (removed assets do not count): no asset with this
+        still: a new live photo (201 created, asset_added); a plain photo
+        with this still: the video is attached to it (200 upgraded, same
+        asset_id, asset_updated); a live photo with this still and this
+        video: 200 already_present; a live photo with this still and
+        another video: 409 component_conflict (existing originals are
+        never replaced; nothing is stored). An UPLOADER always gets the
+        same 202 receipt, whatever the folder held (in the conflicting
+        case its Live Photo is kept as an asset of its own). Completing a
+        completed bundle again returns the stored result with
+        Idempotency-Replayed: true, under the caller's current role. Only a
+        success status means both originals are committed.
+      responses:
+        '200':
+          description: 'upgraded or already_present (readers only)'
+          headers:
+            Idempotency-Replayed: {$ref: '#/components/headers/IdempotencyReplayed'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UploadResult'}
+        '201':
+          description: created (readers only)
+          headers:
+            Idempotency-Replayed: {$ref: '#/components/headers/IdempotencyReplayed'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UploadResult'}
+              example:
+                result: created
+                asset_id: 3f9a0c1e5b7d4e2f8a6c0b1d2e3f4a5b
+                folder_id: 0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a
+                sha256: 9f2c0d6e0b1a4c3e8f7d6c5b4a39281706f5e4d3c2b1a0998877665544332211
+                media_kind: live_photo
+                pairing: verified
+                components:
+                  - {role: paired_video, sha256: 1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809, bytes: 3120001, mime_type: video/quicktime, filename: IMG_0001.MOV}
+                preview_ready: false
+                preview_status: pending
+        '202':
+          description: Generic receipt for upload-only callers (both originals echoed back)
+          headers:
+            Idempotency-Replayed: {$ref: '#/components/headers/IdempotencyReplayed'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UploadReceipt'}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (VIEWER, or role lowered during the upload) or csrf_failed'}
+        '404': {description: 'folder_not_found (also when the membership was removed), bundle_not_found'}
+        '409': {description: 'upload_incomplete (body {"error", "components": [{"role", "upload_id", "offset", "bytes"}]}; also after stored bytes were lost), component_conflict, upload_busy'}
+        '415': {description: 'unsupported_component_type (body {"error", "role"})'}
+        '422': {description: 'hash_mismatch (body {"error", "role", "upload_id"}; that component restarted at offset 0), pairing_mismatch, idempotency_key_reused'}
         '500': {description: 'storage_failed, metadata_write_failed'}
         '503': {description: 'storage_unavailable, storage_io_error, busy (Retry-After: 1)'}
         '507': {description: insufficient_storage}
@@ -1298,7 +1526,9 @@ paths:
         Looks at this folder only, never at other folders or the server as a
         whole, and is refused to an UPLOADER (403), so it reveals nothing a
         reader could not already see in the feed. Hashes are compared
-        case-insensitively; duplicates in the request are ignored.
+        case-insensitively; duplicates in the request are ignored. A hash
+        matches an asset's own original (a live photo's still), never a
+        paired video.
       parameters:
         - $ref: '#/components/parameters/FolderID'
       requestBody:
@@ -1332,6 +1562,7 @@ paths:
                       properties:
                         sha256: {type: string}
                         asset_id: {type: string}
+                        paired_sha256: {type: string, description: 'only for a live photo: the SHA-256 of its paired video. A present hash without it is a plain photo, which a Live Photo bundle with this still upgrades'}
         '400': {description: 'invalid_json, invalid_request (0 or more than 100 hashes), invalid_sha256'}
         '401': {description: unauthorized}
         '403': {description: 'forbidden (UPLOADER) or csrf_failed'}
@@ -1470,6 +1701,36 @@ paths:
         '401': {description: unauthorized}
         '403': {description: 'forbidden (UPLOADER; the same answer for any asset id)'}
         '404': {description: 'folder_not_found, asset_not_found (unknown, or an asset of another folder)'}
+  /api/v1/folders/{folder_id}/assets/{asset_id}/components/{role}:
+    get:
+      tags: [Assets]
+      summary: Download an extra original of an asset (a live photo's video); same access as the original
+      description: >-
+        Same headers, ranges and rules as .../original. Verify the SHA-256
+        against the component's sha256 in the asset.
+      parameters:
+        - $ref: '#/components/parameters/FolderID'
+        - $ref: '#/components/parameters/AssetID'
+        - in: path
+          name: role
+          required: true
+          schema: {type: string, enum: [paired_video]}
+        - in: header
+          name: Range
+          required: false
+          schema: {type: string}
+        - in: header
+          name: If-Range
+          required: false
+          schema: {type: string}
+      responses:
+        '200': {description: 'Component bytes (Content-Type as sniffed at upload, attachment, sandbox CSP, Accept-Ranges: bytes, no-store)'}
+        '206': {description: 'Partial content, as for the original'}
+        '304': {description: 'not modified (If-Modified-Since)'}
+        '416': {description: 'range not satisfiable (text/plain body), as for the original'}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (UPLOADER)'}
+        '404': {description: 'folder_not_found, asset_not_found, component_not_found (the asset has no component of this role)'}
   /api/v1/folders/{folder_id}/assets/{asset_id}/preview:
     get:
       tags: [Assets]
@@ -1499,6 +1760,11 @@ components:
       name: asset_id
       required: true
       schema: {type: string}
+    BundleID:
+      in: path
+      name: bundle_id
+      required: true
+      schema: {type: string, pattern: '^[0-9a-f]{32}$'}
     UploadID:
       in: path
       name: upload_id
@@ -1552,7 +1818,7 @@ components:
             member list and the invitations stay owner-only).
     Asset:
       type: object
-      required: [id, sha256, filename, mime_type, bytes, preview_ready, preview_status, uploaded_at, captured_at, uploaded_by_name]
+      required: [id, sha256, filename, mime_type, bytes, preview_ready, preview_status, uploaded_at, captured_at, uploaded_by_name, media_kind]
       properties:
         id: {type: string, description: 'random; valid only under its folder'}
         sha256: {type: string, description: 'of the original, to verify a download'}
@@ -1585,6 +1851,56 @@ components:
             had no account (imported data) or the account is disabled or
             can no longer log in; a client shows "unknown". It follows the
             account's current display name.
+        media_kind:
+          type: string
+          enum: [image, video, live_photo, raw, other]
+          description: >-
+            live_photo: a still and its paired video kept as one asset;
+            sha256, mime_type, bytes, /original, /preview and captured_at
+            are the still's, the video is in components.
+        pairing:
+          type: string
+          enum: [verified, unverified]
+          description: >-
+            Live photos only. verified: the still and the video carry the
+            same Apple content identifier; unverified: the server could not
+            read one of them (both were kept as the client sent them).
+        components:
+          type: array
+          description: Live photos only. The extra originals, each downloaded from .../components/{role}.
+          items: {$ref: '#/components/schemas/Component'}
+    Component:
+      type: object
+      required: [role, sha256, bytes, mime_type, filename]
+      properties:
+        role: {type: string, enum: [paired_video]}
+        sha256: {type: string, description: 'of this original, to verify its download'}
+        bytes: {type: integer}
+        mime_type: {type: string}
+        filename: {type: string}
+    Bundle:
+      type: object
+      required: [bundle_id, folder_id, kind, status, expires_at, components]
+      properties:
+        bundle_id: {type: string, description: 'random, 32 hex digits; visible only to its account, device and folder'}
+        folder_id: {type: string}
+        kind: {type: string, enum: [live_photo]}
+        status: {type: string, enum: [open, completed]}
+        expires_at: {type: string, description: '24 hours after the last change of any component'}
+        components:
+          type: array
+          description: the still first, then the paired video
+          items:
+            type: object
+            required: [role, upload_id, bytes, sha256, offset, status, max_chunk_bytes]
+            properties:
+              role: {type: string, enum: [still, paired_video]}
+              upload_id: {type: string, description: 'the upload session to PATCH chunks to'}
+              bytes: {type: integer}
+              sha256: {type: string}
+              offset: {type: integer}
+              status: {type: string, enum: [open, completed]}
+              max_chunk_bytes: {type: integer}
     PreviewStatus:
       type: string
       enum: [ready, pending, failed, unsupported]
@@ -1608,12 +1924,14 @@ components:
         status: {type: string, enum: [open, completed], description: 'completed: POST .../complete again returns the stored result'}
         expires_at: {type: string, description: 24 hours after the last change}
         max_chunk_bytes: {type: integer, description: largest body one PATCH accepts}
+        bundle_id: {type: string, description: 'only for a component of an upload bundle, which is completed and cancelled through the bundle (409 upload_in_bundle here)'}
+        role: {type: string, enum: [still, paired_video], description: only with bundle_id}
     Event:
       type: object
       required: [seq, kind, asset_id, folder_id, uploader_device_id, occurred_at]
       properties:
         seq: {type: integer, minimum: 1}
-        kind: {type: string, enum: [asset_added, asset_removed, asset_updated], description: 'asset_updated: the asset (in "assets") changed: its preview_status or captured_at'}
+        kind: {type: string, enum: [asset_added, asset_removed, asset_updated], description: 'asset_updated: the asset (in "assets") changed: its preview_status or captured_at, or a paired video was attached (media_kind became live_photo)'}
         asset_id: {type: string}
         folder_id: {type: string}
         uploader_device_id: {type: string, description: 'X-Device-ID label of the upload that added the asset to this folder: on asset_added, and on asset_updated the same label as that asset_added (the server made the change, no device did; "" when the upload sent none); always "" for asset_removed'}
@@ -1622,20 +1940,36 @@ components:
       type: object
       required: [result, asset_id, folder_id, sha256, preview_ready, preview_status]
       properties:
-        result: {type: string, enum: [created, already_present]}
+        result: {type: string, enum: [created, already_present, upgraded], description: 'upgraded: bundles only'}
         asset_id: {type: string}
         folder_id: {type: string}
-        sha256: {type: string}
+        sha256: {type: string, description: 'the original (a live photo: its still)'}
         preview_ready: {type: boolean}
         preview_status: {$ref: '#/components/schemas/PreviewStatus'}
+        media_kind: {type: string, description: 'bundles only: live_photo'}
+        pairing: {type: [string, 'null'], enum: [verified, unverified, null], description: 'bundles only'}
+        components:
+          type: array
+          description: 'bundles only: the paired video as stored'
+          items: {$ref: '#/components/schemas/Component'}
     UploadReceipt:
       type: object
       required: [result, folder_id, sha256, bytes]
       properties:
         result: {type: string, enum: [accepted]}
         folder_id: {type: string}
-        sha256: {type: string, description: 'of the bytes the client sent'}
+        sha256: {type: string, description: 'of the bytes the client sent (a bundle: the still)'}
         bytes: {type: integer, description: 'size of the bytes the client sent'}
+        components:
+          type: array
+          description: 'bundles only: the other originals the client sent, as declared'
+          items:
+            type: object
+            required: [role, sha256, bytes]
+            properties:
+              role: {type: string}
+              sha256: {type: string}
+              bytes: {type: integer}
     User:
       type: object
       required: [user_id, login_name, display_name, server_role, can_create_albums]

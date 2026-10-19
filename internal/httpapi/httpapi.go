@@ -188,6 +188,7 @@ func (s *Server) Handler() http.Handler {
 	rt.handleAlbum("GET /api/v1/folders/{folderID}", s.getFolder)
 	rt.handleAlbum(uploadRoute, s.upload)
 	s.uploadSessionRoutes(rt)
+	s.bundleRoutes(rt)
 	rt.handleAlbum("GET /api/v1/folders/{folderID}/assets/{assetID}/original", s.download(false))
 	rt.handleAlbum("GET /api/v1/folders/{folderID}/assets/{assetID}/preview", s.download(true))
 	s.syncRoutes(rt)
@@ -531,31 +532,10 @@ func (s *Server) commitOriginal(w http.ResponseWriter, r *http.Request, a albumR
 	// CommitUpload makes the asset visible. For bytes the pool already holds
 	// Promote re-hashes the existing file (and puts it back if it is missing
 	// or damaged), which also keeps the work the same as for new bytes.
-	if !s.storageReady(w) {
+	if !s.storageReady(w) || !s.promote(w, staged) {
 		return false
 	}
-	err := s.blobs.Promote(staged, sha)
-	if err == nil {
-		err = s.fault(FaultAfterPromote)
-	}
-	if err != nil {
-		writeFailed(w, "promote upload", err, "storage_failed")
-		return false
-	}
-	// The preview is derived data: its failure never fails the upload. It is
-	// (re)generated for known bytes too; the result is the same file.
-	// Types an external tool converts are left to the preview worker after
-	// the commit, for new and known bytes alike.
-	previewStatus := meta.PreviewStatusUnsupported
-	switch s.blobs.PreviewMode(staged.MimeType) {
-	case blobstore.PreviewBuiltin:
-		previewStatus = meta.PreviewStatusFailed
-		if err := s.fault(FaultPreview); err == nil && s.blobs.MakePreview(sha) == nil {
-			previewStatus = meta.PreviewStatusReady
-		}
-	case blobstore.PreviewExternal:
-		previewStatus = meta.PreviewStatusPending
-	}
+	previewStatus := s.makePreview(staged)
 	if err := s.fault(FaultAfterPreview); err != nil {
 		writeFailed(w, "upload", err, "storage_failed")
 		return false
@@ -615,6 +595,39 @@ func (s *Server) commitOriginal(w http.ResponseWriter, r *http.Request, a albumR
 	s.kickCaptures()
 	uploadReply(w, folderID, sha, staged.Size, res, canRead)
 	return true
+}
+
+// promote moves a verified original into the pool (or re-verifies the
+// pool's copy of the same bytes). On failure it replies and returns false.
+func (s *Server) promote(w http.ResponseWriter, staged *blobstore.StagedFile) bool {
+	err := s.blobs.Promote(staged, staged.SHA256)
+	if err == nil {
+		err = s.fault(FaultAfterPromote)
+	}
+	if err != nil {
+		writeFailed(w, "promote upload", err, "storage_failed")
+		return false
+	}
+	return true
+}
+
+// makePreview makes the preview of a promoted original whose type has a
+// built-in converter and returns the preview status to commit. The preview
+// is derived data: its failure never fails the upload. It is (re)generated
+// for known bytes too; the result is the same file. Types an external tool
+// converts are left to the preview worker after the commit (pending), for
+// new and known bytes alike.
+func (s *Server) makePreview(staged *blobstore.StagedFile) string {
+	switch s.blobs.PreviewMode(staged.MimeType) {
+	case blobstore.PreviewBuiltin:
+		if err := s.fault(FaultPreview); err == nil && s.blobs.MakePreview(staged.SHA256) == nil {
+			return meta.PreviewStatusReady
+		}
+		return meta.PreviewStatusFailed
+	case blobstore.PreviewExternal:
+		return meta.PreviewStatusPending
+	}
+	return meta.PreviewStatusUnsupported
 }
 
 // uploadCommitError replies to a failed CommitUpload and returns false, or
@@ -677,26 +690,30 @@ func (s *Server) download(preview bool) albumHandler {
 			metaReadFailed(w, err)
 			return
 		}
-		path := s.blobs.PoolPath(asset.SHA256)
-		if preview {
-			if !asset.PreviewReady {
-				errorReply(w, 404, "preview_not_ready")
-				return
-			}
-			path = s.blobs.PreviewPath(asset.SHA256)
-			w.Header().Set("Content-Type", "image/jpeg")
-		} else {
-			w.Header().Set("Content-Type", asset.MimeType)
-			// The original is served as stored, whatever its type: never
-			// as a document of this origin (stored HTML or SVG must not
-			// run script next to the dashboard's session).
-			w.Header().Set("Content-Security-Policy", downloadCSP)
-			disposition := mime.FormatMediaType("attachment", map[string]string{"filename": asset.Filename})
-			if disposition == "" {
-				disposition = "attachment"
-			}
-			w.Header().Set("Content-Disposition", disposition)
+		if !preview {
+			serveOriginal(w, r, s.blobs.PoolPath(asset.SHA256), asset.MimeType, asset.Filename)
+			return
 		}
-		http.ServeFile(w, r, path)
+		if !asset.PreviewReady {
+			errorReply(w, 404, "preview_not_ready")
+			return
+		}
+		w.Header().Set("Content-Type", "image/jpeg")
+		http.ServeFile(w, r, s.blobs.PreviewPath(asset.SHA256))
 	}
+}
+
+// serveOriginal serves a stored original as it is, whatever its type, as
+// an attachment and never as a document of this origin (stored HTML or SVG
+// must not run script next to the dashboard's session). Range and If-Range
+// requests are answered by http.ServeFile.
+func serveOriginal(w http.ResponseWriter, r *http.Request, path, mimeType, filename string) {
+	w.Header().Set("Content-Type", mimeType)
+	w.Header().Set("Content-Security-Policy", downloadCSP)
+	disposition := mime.FormatMediaType("attachment", map[string]string{"filename": filename})
+	if disposition == "" {
+		disposition = "attachment"
+	}
+	w.Header().Set("Content-Disposition", disposition)
+	http.ServeFile(w, r, path)
 }
