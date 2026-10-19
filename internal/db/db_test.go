@@ -38,8 +38,8 @@ func TestEmbeddedMigrationsAreContiguous(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ms) != 10 || LatestVersion() != 10 {
-		t.Fatalf("got %d migrations, LatestVersion %d; want 10", len(ms), LatestVersion())
+	if len(ms) != 11 || LatestVersion() != 11 {
+		t.Fatalf("got %d migrations, LatestVersion %d; want 11", len(ms), LatestVersion())
 	}
 }
 
@@ -513,5 +513,72 @@ func TestMigration0010AddsCaptureTime(t *testing.T) {
 	var state string
 	if err := sqlDB.QueryRow("SELECT capture_state FROM blobs WHERE sha256 = ?", c).Scan(&state); err != nil || state != "pending" {
 		t.Fatalf("new blob %q, %v", state, err)
+	}
+}
+
+// TestMigration0011LivePhotos: receipts of the previous version are kept
+// unchanged (with no paired video), the new result and tables accept what
+// a Live Photo commit writes, and a chunk on one component session extends
+// its bundle and the other component together.
+func TestMigration0011LivePhotos(t *testing.T) {
+	ctx := context.Background()
+	sqlDB, _ := openTemp(t)
+	migrateTo(t, sqlDB, 10)
+	addUser(t, sqlDB, "owner", "active")
+	mustExec(t, sqlDB, "INSERT INTO folders(folder_id, folder_name, owner_user_id) VALUES ('f1', 'Trip', 'owner')")
+	mustExec(t, sqlDB, "INSERT INTO devices(device_id, user_id, device_name, platform) VALUES ('d1', 'owner', 'phone', 'ios')")
+	still, mov := strings.Repeat("a", 64), strings.Repeat("b", 64)
+	for _, sha := range []string{still, mov} {
+		mustExec(t, sqlDB, "INSERT INTO blobs(sha256, bytes, mime_type, relative_path, verified_at) VALUES (?, 10, 'image/heic', ?, 'v')", sha, "pool/"+sha)
+	}
+	mustExec(t, sqlDB, "INSERT INTO assets(asset_id, original_sha256, original_filename, media_kind) VALUES ('a1', ?, 'IMG_1.HEIC', 'image')", still)
+	mustExec(t, sqlDB, `INSERT INTO upload_receipts(user_id, device_id, folder_id, idempotency_key, sha256, bytes, result, asset_id, created_at)
+		VALUES ('owner', 'd1', 'f1', 'k1', ?, 10, 'created', 'a1', 'c1')`, still)
+	expectReject(t, sqlDB, "CHECK constraint", `INSERT INTO upload_receipts(user_id, device_id, folder_id, idempotency_key, sha256, bytes, result, asset_id, created_at)
+		VALUES ('owner', 'd1', 'f1', 'k2', ?, 10, 'upgraded', 'a1', 'c2')`, still)
+	if err := Migrate(ctx, sqlDB); err != nil {
+		t.Fatal(err)
+	}
+	var row string
+	if err := sqlDB.QueryRow(`SELECT user_id || device_id || folder_id || idempotency_key || sha256 || bytes || result || asset_id || created_at || COALESCE(paired_sha256, '-')
+		FROM upload_receipts`).Scan(&row); err != nil || row != "ownerd1f1k1"+still+"10createda1c1-" {
+		t.Fatalf("receipt after migration %q, %v", row, err)
+	}
+	var n int
+	if err := sqlDB.QueryRow("SELECT count(*) FROM sqlite_schema WHERE name IN ('upload_receipts_0010') OR (type = 'index' AND name = 'idx_upload_receipts_created')").Scan(&n); err != nil || n != 1 {
+		t.Fatalf("old table or index: %d, %v", n, err)
+	}
+	mustExec(t, sqlDB, `INSERT INTO upload_receipts(user_id, device_id, folder_id, idempotency_key, sha256, bytes, result, asset_id, created_at, paired_sha256)
+		VALUES ('owner', 'd1', 'f1', 'k2', ?, 10, 'upgraded', 'a1', 'c2', ?)`, still, mov)
+	expectReject(t, sqlDB, "CHECK constraint", "UPDATE upload_receipts SET paired_sha256 = 'short' WHERE idempotency_key = 'k2'")
+	expectReject(t, sqlDB, "CHECK constraint", "UPDATE assets SET pairing_state = 'maybe'")
+	mustExec(t, sqlDB, "UPDATE assets SET media_kind = 'live_photo', pairing_state = 'verified'")
+	mustExec(t, sqlDB, "INSERT INTO asset_components(asset_id, role, sha256, filename, pairing_id, added_at) VALUES ('a1', 'paired_video', ?, 'IMG_1.MOV', 'ID', 't')", mov)
+	expectReject(t, sqlDB, "UNIQUE constraint", "INSERT INTO asset_components(asset_id, role, sha256, filename, added_at) VALUES ('a1', 'paired_video', ?, 'x', 't')", mov)
+	expectReject(t, sqlDB, "CHECK constraint", "INSERT INTO asset_components(asset_id, role, sha256, filename, added_at) VALUES ('a1', 'still', ?, 'x', 't')", mov)
+	mustExec(t, sqlDB, "INSERT INTO assets(asset_id, original_sha256, original_filename, media_kind) VALUES ('a2', ?, 'x', 'image')", still)
+	expectReject(t, sqlDB, "FOREIGN KEY", "INSERT INTO asset_components(asset_id, role, sha256, filename, added_at) VALUES ('a2', 'paired_video', ?, 'x', 't')", strings.Repeat("c", 64))
+	expectReject(t, sqlDB, "FOREIGN KEY", "DELETE FROM assets WHERE asset_id = 'a1'")
+
+	// A bundle with two component sessions; extending one extends all.
+	mustExec(t, sqlDB, `INSERT INTO upload_bundles(bundle_id, user_id, device_id, folder_id, idempotency_key, kind, device_label, created_at, updated_at, expires_at)
+		VALUES (?, 'owner', 'd1', 'f1', 'bk', 'live_photo', 'phone', 't0', 't0', 't1')`, strings.Repeat("1", 32))
+	for i, role := range []string{"still", "paired_video"} {
+		mustExec(t, sqlDB, `INSERT INTO upload_sessions(upload_id, user_id, device_id, folder_id, idempotency_key, sha256, total_bytes, filename, device_label,
+			created_at, updated_at, expires_at, bundle_id, role) VALUES (?, 'owner', 'd1', 'f1', ?, ?, 10, 'x', 'phone', 't0', 't0', 't1', ?, ?)`,
+			strings.Repeat(fmt.Sprint(i+2), 32), "#b/"+role, still, strings.Repeat("1", 32), role)
+	}
+	expectReject(t, sqlDB, "UNIQUE constraint", `INSERT INTO upload_sessions(upload_id, user_id, device_id, folder_id, idempotency_key, sha256, total_bytes, filename, device_label,
+		created_at, updated_at, expires_at, bundle_id, role) VALUES (?, 'owner', 'd1', 'f1', 'again', ?, 10, 'x', 'phone', 't0', 't0', 't1', ?, 'still')`,
+		strings.Repeat("4", 32), still, strings.Repeat("1", 32))
+	expectReject(t, sqlDB, "CHECK constraint", "UPDATE upload_sessions SET role = 'thumbnail' WHERE upload_id = ?", strings.Repeat("2", 32))
+	mustExec(t, sqlDB, "UPDATE upload_sessions SET received_bytes = 5, updated_at = 't2', expires_at = 't3' WHERE upload_id = ?", strings.Repeat("2", 32))
+	var exp string
+	if err := sqlDB.QueryRow("SELECT group_concat(expires_at) FROM (SELECT expires_at FROM upload_bundles UNION ALL SELECT expires_at FROM upload_sessions ORDER BY 1)").Scan(&exp); err != nil || exp != "t3,t3,t3" {
+		t.Fatalf("expiry after a chunk: %q, %v", exp, err)
+	}
+	mustExec(t, sqlDB, "DELETE FROM upload_bundles")
+	if err := sqlDB.QueryRow("SELECT count(*) FROM upload_sessions").Scan(&n); err != nil || n != 0 {
+		t.Fatalf("component sessions left after the bundle: %d, %v", n, err)
 	}
 }

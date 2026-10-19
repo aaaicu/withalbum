@@ -93,8 +93,24 @@ func (s *Server) uploadSessionRoutes(rt *router) {
 
 // uploadView is an upload session as its owner sees it.
 func uploadView(us meta.UploadSession) map[string]any {
-	return map[string]any{"upload_id": us.ID, "folder_id": us.FolderID, "bytes": us.TotalBytes, "sha256": us.SHA256,
+	v := map[string]any{"upload_id": us.ID, "folder_id": us.FolderID, "bytes": us.TotalBytes, "sha256": us.SHA256,
 		"offset": us.Received, "status": us.Status, "expires_at": us.ExpiresAt, "max_chunk_bytes": MaxChunkSize}
+	if us.BundleID != "" {
+		// A component of an upload bundle (bundles.go): chunks go here,
+		// completion and cancellation through the bundle.
+		v["bundle_id"], v["role"] = us.BundleID, us.Role
+	}
+	return v
+}
+
+// inBundle refuses a completion or cancellation of a bundle's component
+// session (409 upload_in_bundle); it reports whether it replied.
+func inBundle(w http.ResponseWriter, us meta.UploadSession) bool {
+	if us.BundleID == "" {
+		return false
+	}
+	jsonReply(w, 409, map[string]any{"error": "upload_in_bundle", "bundle_id": us.BundleID})
+	return true
 }
 
 func uploadStateReply(w http.ResponseWriter, status int, us meta.UploadSession) {
@@ -251,7 +267,7 @@ func (s *Server) getUpload(w http.ResponseWriter, r *http.Request, a albumReques
 // cancelUpload deletes the session and its partial file. A completed
 // session is only forgotten; its original stays committed.
 func (s *Server) cancelUpload(w http.ResponseWriter, r *http.Request, a albumRequest, ref meta.UploadRef, us meta.UploadSession) {
-	if !s.storageReady(w) {
+	if inBundle(w, us) || !s.storageReady(w) {
 		return
 	}
 	if err := s.meta.DeleteUploadSession(r.Context(), ref); errors.Is(err, meta.ErrUploadNotFound) {
@@ -394,6 +410,9 @@ func (s *Server) appendUpload(w http.ResponseWriter, r *http.Request, a albumReq
 // session answers with the stored result again (a retry after a lost
 // response), re-checked under the caller's current role.
 func (s *Server) completeUpload(w http.ResponseWriter, r *http.Request, a albumRequest, ref meta.UploadRef, us meta.UploadSession) {
+	if inBundle(w, us) {
+		return
+	}
 	idem := meta.Idempotency{DeviceID: a.ID.DeviceID, Key: us.Key}
 	if us.Status == meta.UploadCompleted {
 		// Receipts outlive sessions, so the commit's receipt is there; the
@@ -466,6 +485,7 @@ const completeRoute = "POST /api/v1/folders/{folderID}/uploads/{uploadID}/comple
 type UploadRecovery struct {
 	Sessions       int // session rows
 	Dropped        int // rows without usable bytes, deleted
+	Restarted      int // component sessions of a bundle without usable bytes, set back to 0
 	Truncated      int // partial files cut back to the recorded offset
 	OrphansRemoved int // partial files without a session, deleted
 	Unexpected     int // other entries in .system/uploads, left alone
@@ -476,7 +496,10 @@ type UploadRecovery struct {
 // after the write, before the record) are cut back, open sessions whose
 // recorded bytes are gone (for example after a restore) are deleted (their
 // client creates a new session), and partial files without a session are
-// deleted. Completed sessions need no file.
+// deleted. A component session of an upload bundle whose bytes are gone
+// is set back to offset 0 instead (the other component keeps its bytes;
+// the client resumes each from the offset it reads). Completed sessions
+// need no file.
 func (s *Server) RecoverUploads(ctx context.Context) (UploadRecovery, error) {
 	var rec UploadRecovery
 	if err := s.vol.Check(); err != nil {
@@ -505,6 +528,15 @@ func (s *Server) RecoverUploads(ctx context.Context) (UploadRecovery, error) {
 		ref := meta.UploadRef{ID: us.ID, UserID: us.UserID, DeviceID: us.DeviceID, FolderID: us.FolderID}
 		switch {
 		case us.Received == 0 && !ok:
+		case (!ok || n < us.Received) && us.BundleID != "":
+			if err := s.blobs.RemovePart(us.ID); err != nil {
+				return rec, err
+			}
+			// An expired bundle is left to the next prune.
+			if err := s.meta.AdvanceUploadSession(ctx, ref, us.Received, 0); err != nil && !errors.Is(err, meta.ErrUploadNotFound) {
+				return rec, err
+			}
+			rec.Restarted++
 		case !ok || n < us.Received:
 			if err := s.meta.DeleteUploadSession(ctx, ref); err != nil {
 				return rec, err

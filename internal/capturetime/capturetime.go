@@ -200,14 +200,25 @@ func isTopLevelBox(t string) bool {
 
 // fromJPEG looks for the EXIF APP1 segment before the image data.
 func fromJPEG(rd *reader) Time {
+	var t Time
+	jpegExif(rd, func(tiff []byte) bool {
+		t = fromTIFF(tiff)
+		return !t.Known()
+	})
+	return t
+}
+
+// jpegExif calls fn with the TIFF block of every EXIF APP1 segment before
+// the image data, in file order, until fn returns false.
+func jpegExif(rd *reader, fn func(tiff []byte) bool) {
 	off := int64(2)
 	for range maxSegments {
 		h, err := rd.readAt(off, 4)
 		if err != nil {
-			return Time{}
+			return
 		}
 		if h[0] != 0xFF {
-			return Time{}
+			return
 		}
 		marker := h[1]
 		switch {
@@ -218,26 +229,23 @@ func fromJPEG(rd *reader) Time {
 			off += 2 // no length
 			continue
 		case marker == 0xDA, marker == 0xD9: // start of scan, end of image
-			return Time{}
+			return
 		}
 		n := int64(binary.BigEndian.Uint16(h[2:4]))
 		if n < 2 {
-			return Time{}
+			return
 		}
 		if marker == 0xE1 && n >= 8 {
 			seg, err := rd.readAt(off+4, n-2)
 			if err != nil {
-				return Time{}
+				return
 			}
-			if bytes.HasPrefix(seg, []byte("Exif\x00\x00")) {
-				if t := fromTIFF(seg[6:]); t.Known() {
-					return t
-				}
+			if bytes.HasPrefix(seg, []byte("Exif\x00\x00")) && !fn(seg[6:]) {
+				return
 			}
 		}
 		off += 2 + n
 	}
-	return Time{}
 }
 
 // ---- TIFF / EXIF ----
@@ -479,7 +487,24 @@ func (rd *reader) boxes(start, end int64, fn func(b box) bool) {
 }
 
 func fromISOBMFF(rd *reader) Time {
-	var metaBox, moov *box
+	metaBox, moov := topBoxes(rd)
+	if metaBox != nil {
+		for _, tiff := range heifExif(rd, *metaBox) {
+			if t := fromTIFF(tiff); t.Known() {
+				return t
+			}
+		}
+	}
+	if moov != nil {
+		return fromMovie(rd, *moov)
+	}
+	return Time{}
+}
+
+// topBoxes returns the first top-level meta (HEIF) and moov (QuickTime,
+// MP4) boxes. Other boxes, mdat included, are skipped without reading
+// their contents.
+func topBoxes(rd *reader) (metaBox, moov *box) {
 	rd.boxes(0, rd.size, func(b box) bool {
 		switch b.typ {
 		case "meta":
@@ -493,23 +518,16 @@ func fromISOBMFF(rd *reader) Time {
 		}
 		return true
 	})
-	if metaBox != nil {
-		if t := fromHEIF(rd, *metaBox); t.Known() {
-			return t
-		}
-	}
-	if moov != nil {
-		return fromMovie(rd, *moov)
-	}
-	return Time{}
+	return metaBox, moov
 }
 
-// fromHEIF finds the Exif item of a HEIF meta box (iinf + iloc) and reads
-// its TIFF block.
-func fromHEIF(rd *reader, m box) Time {
+// heifExif finds the Exif item of a HEIF meta box (iinf + iloc) and
+// returns the candidate positions of its TIFF block: where the item's
+// header field says, then past an "Exif\0\0" prefix.
+func heifExif(rd *reader, m box) [][]byte {
 	// meta is a FullBox: version and flags first.
 	if m.body+4 > m.end {
-		return Time{}
+		return nil
 	}
 	var iinf, iloc, idat *box
 	rd.boxes(m.body+4, m.end, func(b box) bool {
@@ -524,28 +542,27 @@ func fromHEIF(rd *reader, m box) Time {
 		return true
 	})
 	if iinf == nil || iloc == nil {
-		return Time{}
+		return nil
 	}
 	id, ok := exifItemID(rd, *iinf)
 	if !ok {
-		return Time{}
+		return nil
 	}
 	data, ok := itemData(rd, *iloc, idat, id)
 	if !ok || len(data) < 4 {
-		return Time{}
+		return nil
 	}
 	// The Exif item starts with the offset of the TIFF header from the
 	// end of this field (usually 6, past "Exif\0\0").
+	var out [][]byte
 	skip := int64(binary.BigEndian.Uint32(data))
 	if skip <= int64(len(data))-4-8 {
-		if t := fromTIFF(data[4+skip:]); t.Known() {
-			return t
-		}
+		out = append(out, data[4+skip:])
 	}
 	if bytes.HasPrefix(data[4:], []byte("Exif\x00\x00")) {
-		return fromTIFF(data[10:])
+		out = append(out, data[10:])
 	}
-	return Time{}
+	return out
 }
 
 // exifItemID returns the item_ID of the first item of type "Exif".
@@ -804,6 +821,18 @@ func mvhdTime(rd *reader, m box) Time {
 // quickTimeCreationDate reads com.apple.quicktime.creationdate from a
 // QuickTime metadata box (hdlr mdta, keys, ilst).
 func quickTimeCreationDate(rd *reader, m box) Time {
+	v, ok := quickTimeValue(rd, m, creationDateKey, 64)
+	if !ok {
+		return Time{}
+	}
+	return parseISO8601(v)
+}
+
+// quickTimeValue reads the UTF-8 value (well-known type 1) of key from a
+// QuickTime metadata box (hdlr mdta, keys, ilst). A value longer than
+// maxLen bytes (at most 256) is not read.
+func quickTimeValue(rd *reader, m box, key string, maxLen int64) (string, bool) {
+	maxLen = min(maxLen, 256)
 	// In QuickTime files meta is a plain box; in ISO files a FullBox.
 	start := m.body
 	if p, err := rd.readAt(m.body, min(m.end-m.body, 8)); err == nil && len(p) == 8 && !isMetaChild(string(p[4:8])) {
@@ -820,13 +849,14 @@ func quickTimeCreationDate(rd *reader, m box) Time {
 		return true
 	})
 	if keys == nil || ilst == nil {
-		return Time{}
+		return "", false
 	}
-	idx, ok := keyIndex(rd, *keys)
+	idx, ok := keyIndex(rd, *keys, key)
 	if !ok {
-		return Time{}
+		return "", false
 	}
-	var t Time
+	var v string
+	found := false
 	rd.boxes(ilst.body, ilst.end, func(item box) bool {
 		if item.typ != string(binary.BigEndian.AppendUint32(nil, idx)) {
 			return true
@@ -836,19 +866,19 @@ func quickTimeCreationDate(rd *reader, m box) Time {
 				return true
 			}
 			n := d.end - d.body
-			if n < 8 || n > 8+64 {
+			if n < 8 || n > 8+maxLen {
 				return false
 			}
-			v, err := rd.readAt(d.body, n)
-			if err != nil || binary.BigEndian.Uint32(v[:4]) != 1 { // well-known type 1: UTF-8
+			b, err := rd.readAt(d.body, n)
+			if err != nil || binary.BigEndian.Uint32(b[:4]) != 1 { // well-known type 1: UTF-8
 				return false
 			}
-			t = parseISO8601(string(v[8:]))
+			v, found = string(b[8:]), true
 			return false
 		})
 		return false
 	})
-	return t
+	return v, found
 }
 
 func isMetaChild(t string) bool {
@@ -859,8 +889,8 @@ func isMetaChild(t string) bool {
 	return false
 }
 
-// keyIndex returns the 1-based index of creationDateKey in a keys box.
-func keyIndex(rd *reader, k box) (uint32, bool) {
+// keyIndex returns the 1-based index of key in a keys box.
+func keyIndex(rd *reader, k box, key string) (uint32, bool) {
 	b, err := rd.readAt(k.body, min(k.end-k.body, maxBlock))
 	if err != nil || len(b) < 8 {
 		return 0, false
@@ -878,7 +908,7 @@ func keyIndex(rd *reader, k box) (uint32, bool) {
 		if p.bad {
 			return 0, false
 		}
-		if string(name) == creationDateKey {
+		if string(name) == key {
 			return i, true
 		}
 	}

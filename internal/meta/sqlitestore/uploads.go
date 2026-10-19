@@ -24,12 +24,12 @@ func expiry(ts string) string {
 }
 
 const uploadColumns = `upload_id, user_id, device_id, folder_id, idempotency_key, sha256, total_bytes, received_bytes,
-	filename, device_label, status, created_at, expires_at`
+	filename, device_label, status, created_at, expires_at, COALESCE(bundle_id, ''), COALESCE(role, '')`
 
 func scanUpload(row scanner) (meta.UploadSession, error) {
 	var u meta.UploadSession
 	err := row.Scan(&u.ID, &u.UserID, &u.DeviceID, &u.FolderID, &u.Key, &u.SHA256, &u.TotalBytes, &u.Received,
-		&u.Filename, &u.DeviceLabel, &u.Status, &u.CreatedAt, &u.ExpiresAt)
+		&u.Filename, &u.DeviceLabel, &u.Status, &u.CreatedAt, &u.ExpiresAt, &u.BundleID, &u.Role)
 	if errors.Is(err, sql.ErrNoRows) {
 		return meta.UploadSession{}, meta.ErrUploadNotFound
 	}
@@ -97,8 +97,17 @@ func (s *Store) createUploadSession(ctx context.Context, req meta.NewUploadSessi
 	case !errors.Is(err, meta.ErrUploadNotFound):
 		return meta.UploadSession{}, false, "", err
 	}
+	// The key of an upload bundle is not a key of a single original.
+	var bundled bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM upload_bundles WHERE user_id = ? AND device_id = ? AND folder_id = ?
+		AND idempotency_key = ?)`, req.UserID, req.DeviceID, req.FolderID, req.Key).Scan(&bundled); err != nil {
+		return meta.UploadSession{}, false, "", err
+	}
+	if bundled {
+		return meta.UploadSession{}, false, "", meta.ErrIdempotencyMismatch
+	}
 	switch rc, err := lookupReceipt(ctx, tx, req.UserID, req.FolderID, meta.Idempotency{DeviceID: req.DeviceID, Key: req.Key}); {
-	case err == nil && rc.SHA256 != req.SHA256:
+	case err == nil && (rc.SHA256 != req.SHA256 || rc.PairedSHA256 != ""):
 		return meta.UploadSession{}, false, "", meta.ErrIdempotencyMismatch
 	case err == nil:
 		// Committed already (its session, if any, is gone): answer the
@@ -212,11 +221,42 @@ func (s *Store) ListUploadSessions(ctx context.Context) ([]meta.UploadSession, e
 	return out, rows.Err()
 }
 
-// PruneUploadSessions implements meta.MetadataStore.
+// PruneUploadSessions implements meta.MetadataStore. A component session
+// is pruned with its bundle, by the bundle's expiry.
 func (s *Store) PruneUploadSessions(ctx context.Context, t time.Time) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, "DELETE FROM upload_sessions WHERE expires_at < ? RETURNING upload_id", t.UTC().Format(timeLayout))
+	ids, err := s.pruneUploadSessions(ctx, t.UTC().Format(timeLayout))
+	return ids, classify(err)
+}
+
+func (s *Store) pruneUploadSessions(ctx context.Context, ts string) ([]string, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, classify(err)
+		return nil, err
+	}
+	defer tx.Rollback()
+	ids, err := queryIDs(ctx, tx, `SELECT u.upload_id FROM upload_sessions u JOIN upload_bundles b ON b.bundle_id = u.bundle_id
+		WHERE b.expires_at < ? ORDER BY u.upload_id`, ts)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM upload_bundles WHERE expires_at < ?", ts); err != nil {
+		return nil, err
+	}
+	single, err := queryIDs(ctx, tx, "DELETE FROM upload_sessions WHERE expires_at < ? AND bundle_id IS NULL RETURNING upload_id", ts)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return append(ids, single...), nil
+}
+
+// queryIDs returns the first column of every row of q.
+func queryIDs(ctx context.Context, tx *sql.Tx, q string, args ...any) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
 	}
 	defer rows.Close()
 	ids := []string{}
@@ -227,7 +267,7 @@ func (s *Store) PruneUploadSessions(ctx context.Context, t time.Time) ([]string,
 		}
 		ids = append(ids, id)
 	}
-	return ids, classify(rows.Err())
+	return ids, rows.Err()
 }
 
 // PendingPreviews implements meta.MetadataStore.

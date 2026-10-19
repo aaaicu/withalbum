@@ -237,6 +237,10 @@ func testCommitUpload(t *testing.T, s Store) {
 		t.Fatalf("created asset %+v has no uploader name", res.Asset)
 	}
 	stored.UploaderName = res.Asset.UploaderName
+	if res.Asset.MediaKind != meta.MediaImage {
+		t.Fatalf("created asset %+v: media kind %q, want image", res.Asset, res.Asset.MediaKind)
+	}
+	stored.MediaKind = res.Asset.MediaKind
 	if res.Asset != stored || stored.ID == "" || stored.ID == sha(0) {
 		t.Fatalf("created asset %+v, want %+v with a random ID", res.Asset, stored)
 	}

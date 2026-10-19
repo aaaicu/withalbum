@@ -62,6 +62,39 @@ Keep the tools updated; decoder vulnerabilities in them are outside the
 server's control. Without the tools nothing is lost: the original is stored
 and its preview reported as "unsupported".
 
+## Live Photo bundles (M26): threat model
+
+A Live Photo is uploaded as two originals (a HEIC/JPEG still and a
+QuickTime video) through an upload bundle and committed as one asset.
+
+- **Parsing untrusted files.** The server reads only the Apple content
+  identifier: from the still's EXIF MakerNote and from the movie's
+  `moov/meta` keys. The containers are walked by `internal/capturetime`
+  with its fixed limits (at most 1 MiB read in a bounded number of reads,
+  counted boxes, segments and items, metadata blocks cut at 256 KiB, the
+  movie data box skipped by seeking); `internal/livephoto` then walks at
+  most 1024 directory entries with checked offsets and accepts an
+  identifier of at most 64 printable ASCII characters. Nothing is allocated
+  by a size read from the file. Both parsers have fuzz tests. Pure Go, no
+  external tool.
+- **No partial visibility.** Neither original becomes an asset, event or
+  receipt until both are hash-verified, in the pool, and committed in one
+  transaction that re-checks the caller's permission and the volume.
+- **No overwrite.** An existing original is never replaced: the same still
+  with another video is refused (409) for readers of the folder.
+- **No oracle for upload-only members.** An UPLOADER gets the same 202
+  receipt (echoing only what it sent) whether the Live Photo was new,
+  attached to an existing photo, already present or conflicting (then it is
+  stored as an asset of its own), so it learns nothing about the folder.
+  The pairing check depends only on the uploaded bytes. Bundles, like
+  upload sessions, are visible only to the account, device and folder that
+  created them, and every byte of both components must be sent.
+- **Attach only within the folder.** Attaching a video to an existing
+  photo changes only an asset that no other folder shares.
+- Downloads of the video (`.../components/paired_video`) have the same
+  access checks and headers (attachment, sandbox CSP, no-store) as
+  `/original`.
+
 ## Setup screen (M24): threat model
 
 The browser setup screen lets the person at the Mac pick the storage disk and create the first administrator without typing console commands. It runs **before any account exists**, so it is the most exposed moment of the server's life. Design and threat model, written before the implementation:

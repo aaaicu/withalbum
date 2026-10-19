@@ -78,8 +78,8 @@ func (s *Store) ListFolderAssets(ctx context.Context, folderID, after string, li
 const maxFindHashes = 500
 
 // FindFolderAssets implements meta.MetadataStore.
-func (s *Store) FindFolderAssets(ctx context.Context, folderID string, shas []string) (map[string]string, error) {
-	out := map[string]string{}
+func (s *Store) FindFolderAssets(ctx context.Context, folderID string, shas []string) (map[string]meta.FolderMatch, error) {
+	out := map[string]meta.FolderMatch{}
 	if len(shas) == 0 {
 		return out, nil
 	}
@@ -90,19 +90,22 @@ func (s *Store) FindFolderAssets(ctx context.Context, folderID string, shas []st
 	for _, h := range shas {
 		args = append(args, h)
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT a.original_sha256, MIN(a.asset_id) FROM folder_assets fa JOIN assets a ON a.asset_id = fa.asset_id
-		WHERE fa.folder_id = ? AND fa.removed_at IS NULL AND a.original_sha256 IN (?`+strings.Repeat(",?", len(shas)-1)+`)
-		GROUP BY a.original_sha256`, args...)
+	rows, err := s.db.QueryContext(ctx, `SELECT m.sha, m.id,
+			COALESCE((SELECT c.sha256 FROM asset_components c WHERE c.asset_id = m.id AND c.role = 'paired_video'), '')
+		FROM (SELECT a.original_sha256 AS sha, MIN(a.asset_id) AS id FROM folder_assets fa JOIN assets a ON a.asset_id = fa.asset_id
+			WHERE fa.folder_id = ? AND fa.removed_at IS NULL AND a.original_sha256 IN (?`+strings.Repeat(",?", len(shas)-1)+`)
+			GROUP BY a.original_sha256) m`, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var h, id string
-		if err := rows.Scan(&h, &id); err != nil {
+		var h string
+		var m meta.FolderMatch
+		if err := rows.Scan(&h, &m.AssetID, &m.PairedSHA256); err != nil {
 			return nil, err
 		}
-		out[h] = id
+		out[h] = m
 	}
 	return out, rows.Err()
 }
@@ -164,9 +167,9 @@ func (s *Store) AckSyncCursor(ctx context.Context, c meta.AlbumChange, deviceID 
 
 func lookupReceipt(ctx context.Context, q queryer, userID, folderID string, id meta.Idempotency) (meta.Receipt, error) {
 	var r meta.Receipt
-	err := q.QueryRowContext(ctx, `SELECT sha256, bytes, result, asset_id, created_at FROM upload_receipts
+	err := q.QueryRowContext(ctx, `SELECT sha256, bytes, result, asset_id, created_at, COALESCE(paired_sha256, '') FROM upload_receipts
 		WHERE user_id = ? AND device_id = ? AND folder_id = ? AND idempotency_key = ?`, userID, id.DeviceID, folderID, id.Key).
-		Scan(&r.SHA256, &r.Bytes, &r.Result, &r.AssetID, &r.CreatedAt)
+		Scan(&r.SHA256, &r.Bytes, &r.Result, &r.AssetID, &r.CreatedAt, &r.PairedSHA256)
 	if errors.Is(err, sql.ErrNoRows) {
 		return meta.Receipt{}, meta.ErrReceiptNotFound
 	}

@@ -211,7 +211,8 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	id, _ := IdentityFrom(r.Context())
-	jsonReply(w, 200, map[string]any{"user": identityUser(id), "device_id": id.DeviceID, "platform": id.Platform})
+	jsonReply(w, 200, map[string]any{"user": identityUser(id), "device_id": id.DeviceID, "platform": id.Platform,
+		"server_features": ServerFeatures})
 }
 
 // changePassword verifies the current password (rate-limited like a login)

@@ -334,6 +334,8 @@
     .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: var(--x1); }
     .tile { aspect-ratio: 1; border-radius: var(--r1_5); background: var(--bg-neutral-weak); color: var(--fg-neutral-subtle); display: grid; place-items: center; overflow: hidden; }
     .tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .tile.live { position: relative; }
+    .tile .live-mark { position: absolute; top: var(--x1); left: var(--x1); padding: 0 var(--x1); border-radius: var(--r1_5); background: var(--bg-neutral-weak); color: var(--fg-neutral); font-size: 11px; line-height: 16px; font-weight: 600; }
     .mrows { display: flex; flex-direction: column; }
     .mrow { display: flex; flex-wrap: wrap; align-items: center; gap: var(--x3); padding: var(--x2_5) var(--x5); }
     .mrow .who { flex: 1 1 140px; }
@@ -1106,7 +1108,8 @@
       const grid = el('div', {className: 'tiles', role: 'list', 'aria-label': '최근 사진'});
       const jobs = recent.map(a => {
         const label = tileLabel(a);
-        const tile = el('div', {className: 'tile', role: 'listitem', title: label, 'aria-label': label}, icon('photo', 'i20'));
+        const tile = el('div', {className: isLive(a) ? 'tile live' : 'tile', role: 'listitem', title: label, 'aria-label': label}, icon('photo', 'i20'));
+        liveMark(a, tile);
         grid.append(tile);
         return [a, tile];
       });
@@ -1126,16 +1129,27 @@
             const u = URL.createObjectURL(blob);
             thumbURLs.push(u);
             tile.replaceChildren(el('img', {src: u, alt: a.filename, decoding: 'async'}));
+            liveMark(a, tile);
           } catch (err) { if (err instanceof Unauthorized || err instanceof Offline) { fail(err); return; } }
         }
       };
       await Promise.all([worker(), worker(), worker(), worker()]);
     }
     // tileLabel: file name, when it was taken (read from the original by the
-    // server; without one, when it was added) and who uploaded it.
+    // server; without one, when it was added) and who uploaded it. A live
+    // photo (still + video kept together) says so, and whether the server
+    // could match the two by their identifier.
     function tileLabel(a) {
       const when = a.captured_at ? '촬영 ' + captureText(a.captured_at) : '추가 ' + captureText(a.uploaded_at);
-      return [a.filename, when, '올린 사람 ' + (a.uploaded_by_name || '알 수 없음')].join(' · ');
+      const parts = [a.filename, when, '올린 사람 ' + (a.uploaded_by_name || '알 수 없음')];
+      if (isLive(a)) parts.push(a.pairing === 'verified' ? '라이브 포토' : '라이브 포토 · 짝 확인 안 됨');
+      return parts.join(' · ');
+    }
+    function isLive(a) { return a.media_kind === 'live_photo' && Array.isArray(a.components) && a.components.length > 0; }
+    // liveMark: the small "라이브" label on a live photo tile (decorative;
+    // the tile's label says it).
+    function liveMark(a, tile) {
+      if (isLive(a)) tile.append(el('span', {className: 'live-mark', 'aria-hidden': 'true', text: '라이브'}));
     }
     // captureText: "2026-10-19 14:03". A time with an offset or without a zone
     // is shown as the camera's clock read; an instant ("Z") in local time.

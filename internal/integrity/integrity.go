@@ -66,6 +66,9 @@ type AssetRef struct {
 	FolderID string `json:"folder_id,omitempty"`
 	AssetID  string `json:"asset_id"`
 	Filename string `json:"original_filename"`
+	// Role is "paired_video" when the original is the video of a Live
+	// Photo (an asset component) rather than the asset's own original.
+	Role string `json:"role,omitempty"`
 }
 
 // Problem is one damaged or missing original.
@@ -102,12 +105,16 @@ type Report struct {
 	PreviewsMissingList []string `json:"previews_missing_sample,omitempty"` // sha256
 	Unreferenced        int      `json:"unreferenced_pool_files"`
 	UnreferencedList    []string `json:"unreferenced_pool_files_sample,omitempty"`
-	Unexpected          int      `json:"unexpected_entries"`
-	UnexpectedList      []string `json:"unexpected_entries_sample,omitempty"`
-	IncomingFiles       int      `json:"incoming_files"`
-	OrphanFiles         int      `json:"orphan_files"`
-	OrphanBytes         int64    `json:"orphan_bytes"`
-	problemCounts       map[string]int
+	// LivePhotosWithoutVideo: Live Photo assets without their paired
+	// video row (their still is still served as a photo).
+	LivePhotosWithoutVideo     int      `json:"live_photos_without_video"`
+	LivePhotosWithoutVideoList []string `json:"live_photos_without_video_sample,omitempty"` // asset_id
+	Unexpected                 int      `json:"unexpected_entries"`
+	UnexpectedList             []string `json:"unexpected_entries_sample,omitempty"`
+	IncomingFiles              int      `json:"incoming_files"`
+	OrphanFiles                int      `json:"orphan_files"`
+	OrphanBytes                int64    `json:"orphan_bytes"`
+	problemCounts              map[string]int
 }
 
 // Healthy reports whether the database is sound and every original is
@@ -160,6 +167,9 @@ func (r *Report) WriteSummary(w io.Writer) {
 	}
 	if r.PreviewsMissing > 0 {
 		fmt.Fprintf(w, "  warning: %d preview(s) marked ready are missing (previews are derived data)\n", r.PreviewsMissing)
+	}
+	if r.LivePhotosWithoutVideo > 0 {
+		fmt.Fprintf(w, "  warning: %d live photo(s) without their paired video record, e.g. %v\n", r.LivePhotosWithoutVideo, r.LivePhotosWithoutVideoList)
 	}
 	if r.Unreferenced > 0 {
 		fmt.Fprintf(w, "  warning: %d pool file(s) without a database row (an upload in progress, or moved to %s at the next start)\n", r.Unreferenced, blobstore.OrphansRelDir)
@@ -251,6 +261,9 @@ func Run(ctx context.Context, vol *storage.Volume, sqlDB *sql.DB, opt Options) (
 		return r, err
 	}
 	if err := checkPool(ctx, vol, sqlDB, r); err != nil {
+		return r, err
+	}
+	if err := checkLivePhotos(ctx, sqlDB, r); err != nil {
 		return r, err
 	}
 	if err := countOther(vol, r); err != nil {
@@ -355,11 +368,16 @@ func blobPage(ctx context.Context, sqlDB *sql.DB, after string) ([]blobRow, erro
 	return out, rows.Err()
 }
 
-// assetsOf lists the assets (and their folders) that use the original sha.
+// assetsOf lists the assets (and their folders) that use the original sha,
+// as their own original or as a component (a Live Photo's video).
 func assetsOf(ctx context.Context, sqlDB *sql.DB, sha string) ([]AssetRef, error) {
-	rows, err := sqlDB.QueryContext(ctx, `SELECT COALESCE(fa.folder_id, ''), a.asset_id, a.original_filename
-		FROM assets a LEFT JOIN folder_assets fa ON fa.asset_id = a.asset_id
-		WHERE a.original_sha256 = ? ORDER BY a.asset_id LIMIT 50`, sha)
+	rows, err := sqlDB.QueryContext(ctx, `SELECT folder_id, asset_id, filename, role FROM (
+		SELECT COALESCE(fa.folder_id, '') AS folder_id, a.asset_id, a.original_filename AS filename, '' AS role
+			FROM assets a LEFT JOIN folder_assets fa ON fa.asset_id = a.asset_id WHERE a.original_sha256 = ?
+		UNION ALL
+		SELECT COALESCE(fa.folder_id, ''), c.asset_id, c.filename, c.role
+			FROM asset_components c LEFT JOIN folder_assets fa ON fa.asset_id = c.asset_id WHERE c.sha256 = ?)
+		ORDER BY asset_id, role LIMIT 50`, sha, sha)
 	if err != nil {
 		return nil, err
 	}
@@ -367,12 +385,32 @@ func assetsOf(ctx context.Context, sqlDB *sql.DB, sha string) ([]AssetRef, error
 	out := []AssetRef{}
 	for rows.Next() {
 		var a AssetRef
-		if err := rows.Scan(&a.FolderID, &a.AssetID, &a.Filename); err != nil {
+		if err := rows.Scan(&a.FolderID, &a.AssetID, &a.Filename, &a.Role); err != nil {
 			return nil, err
 		}
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+// checkLivePhotos counts Live Photo assets that have no paired video row
+// (a warning: the still is intact and served as a photo).
+func checkLivePhotos(ctx context.Context, sqlDB *sql.DB, r *Report) error {
+	rows, err := sqlDB.QueryContext(ctx, `SELECT a.asset_id FROM assets a WHERE a.media_kind = 'live_photo'
+		AND NOT EXISTS(SELECT 1 FROM asset_components c WHERE c.asset_id = a.asset_id AND c.role = 'paired_video') ORDER BY a.asset_id`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		r.LivePhotosWithoutVideo++
+		addSample(&r.LivePhotosWithoutVideoList, id)
+	}
+	return rows.Err()
 }
 
 // checkPool reports pool files without a blobs row and entries WithAlbum

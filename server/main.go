@@ -301,9 +301,9 @@ func openApp(ctx context.Context, root string, opt appOptions) (*app, error) {
 	if err != nil {
 		return fail(fmt.Errorf("RECOVERY: upload sessions: %w", err))
 	}
-	if rec.Dropped+rec.Truncated+rec.OrphansRemoved+rec.Unexpected > 0 {
-		log.Printf("recovery: upload sessions=%d dropped=%d truncated=%d orphan_parts_removed=%d unexpected=%d",
-			rec.Sessions, rec.Dropped, rec.Truncated, rec.OrphansRemoved, rec.Unexpected)
+	if rec.Dropped+rec.Restarted+rec.Truncated+rec.OrphansRemoved+rec.Unexpected > 0 {
+		log.Printf("recovery: upload sessions=%d dropped=%d bundle_components_restarted=%d truncated=%d orphan_parts_removed=%d unexpected=%d",
+			rec.Sessions, rec.Dropped, rec.Restarted, rec.Truncated, rec.OrphansRemoved, rec.Unexpected)
 	}
 	return a, nil
 }
