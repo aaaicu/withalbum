@@ -4,6 +4,10 @@
 
 아래 [0.1.0-alpha.1] 초안 이후의 변경을 여기에 적습니다.
 
+### Added (storage totals: originals stored once)
+- `GET /api/v1/admin/server/storage`에 `usage`(SERVER_ADMIN, 합계만·앨범별 없음): `stored_originals`·`stored_bytes`(pool에 실제로 저장된 원본, SHA-256당 1개), `album_copies`·`album_bytes`(앨범이 담은 대로 센 원본 수·바이트 — 보관된 앨범 포함, 라이브 포토 영상 포함), `dedup_saved_bytes`(같은 바이트를 한 번만 저장해서 아낀 용량). 읽지 못하면 `usage` 없음. 관리 화면 저장 공간에 "저장된 원본 · 중복 제거로 아낀 용량" 줄.
+- 테스트 `TestSameBytesStoredOnce`: 같은 바이트를 같은 앨범에 반복(다른 키·같은 키 재시도·업로드 세션·다른 계정), 다른 앨범, 다른 계정의 앨범, UPLOADER, 라이브 포토 두 앨범으로 보내도 pool 파일 1개·디스크 사용량 불변·`blobs` 행 1개·임시 영역 비어 있음, 같은 앨범은 `already_present`(새 자산·이벤트 없음), 다른 앨범은 새 자산이 같은 원본을 가리킴, UPLOADER는 처음 보는 바이트와 같은 202. 중복 저장 버그는 발견되지 않음(동작 변경 없음).
+
 ### Added (macOS menu bar app + DMG, M32)
 - `macos/`: 메뉴 막대 앱 "WithAlbum Server"(Swift Package, SwiftUI `MenuBarExtra`, macOS 13+, arm64+x86_64, `LSUIElement`). 번들 `Contents/Helpers/withalbum-server`에 유니버설 서버. 서버는 `scripts/install-macos.sh`와 같은 사용자 LaunchAgent(`org.withalbum.server`, `RunAtLoad`·`KeepAlive`·`ThrottleInterval` 30, `~/Library/Logs/WithAlbum` 0700, `WITHALBUM_CONFIG`·`WITHALBUM_ROOT` 그대로)로 실행하고 `launchctl bootstrap|bootout|kickstart`로 관리. 로그인 시 시작을 끄면 plist를 `~/Library/Application Support/WithAlbum/ServerApp/`로 옮김.
 - 상태: 기존 `GET /api/v1/health`(설치 모드는 `/setup` 200)와 `launchctl print`만 사용(새 API 없음). 정상 실행 중·무결성 경고·저장 중단·설치 필요·시작하는 중·시작하지 못함(error.log 마지막 오류)·멈춤·관리하지 않는 서버. 프록시를 쓰지 않음.

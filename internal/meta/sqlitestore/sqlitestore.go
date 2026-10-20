@@ -503,6 +503,29 @@ func nullable(s string) any {
 	return s
 }
 
+// StorageUsage reports what the albums hold against what the pool stores
+// (meta.StorageUsageReporter). One statement, so one consistent snapshot
+// without taking the write lock (_txlock=immediate makes every explicit
+// transaction a writer).
+func (s *Store) StorageUsage(ctx context.Context) (meta.StorageUsage, error) {
+	var u meta.StorageUsage
+	var distinct int64
+	err := s.db.QueryRowContext(ctx, `WITH linked(sha) AS (
+		SELECT a.original_sha256 FROM folder_assets fa JOIN assets a ON a.asset_id = fa.asset_id WHERE fa.removed_at IS NULL
+		UNION ALL
+		SELECT c.sha256 FROM folder_assets fa JOIN asset_components c ON c.asset_id = fa.asset_id WHERE fa.removed_at IS NULL)
+		SELECT (SELECT count(*) FROM blobs), (SELECT COALESCE(SUM(bytes), 0) FROM blobs),
+			(SELECT count(*) FROM linked l JOIN blobs b ON b.sha256 = l.sha),
+			(SELECT COALESCE(SUM(b.bytes), 0) FROM linked l JOIN blobs b ON b.sha256 = l.sha),
+			(SELECT COALESCE(SUM(bytes), 0) FROM blobs WHERE sha256 IN (SELECT sha FROM linked))`).
+		Scan(&u.StoredOriginals, &u.StoredBytes, &u.AlbumCopies, &u.AlbumBytes, &distinct)
+	if err != nil {
+		return meta.StorageUsage{}, classify(err)
+	}
+	u.SavedBytes = max(u.AlbumBytes-distinct, 0)
+	return u, nil
+}
+
 // CommitUpload implements meta.MetadataStore. Everything happens in one
 // BEGIN IMMEDIATE transaction: authorization re-check, blob row (upsert),
 // asset row with a random asset_id, folder link, folder sequence bump and

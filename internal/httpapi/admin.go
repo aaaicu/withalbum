@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"errors"
+	"log"
 	"net/http"
 
 	"github.com/aaaicu/withalbum/internal/authz"
@@ -33,9 +34,10 @@ type StartupCheck struct {
 
 // serverStorage answers GET /api/v1/admin/server/storage (SERVER_ADMIN):
 // whether the storage volume is present, its free space and upload
-// reserve, and the startup check. No path or volume identifier. The full
-// check (withalbum-server verify) is a console command; its result is not
-// kept by the server.
+// reserve, the stored and album totals (usage: how much storing every
+// SHA-256 once saves, totals only), and the startup check. No path or
+// volume identifier. The full check (withalbum-server verify) is a console
+// command; its result is not kept by the server.
 func (s *Server) serverStorage(w http.ResponseWriter, r *http.Request) {
 	state := "ok"
 	if err := s.vol.Check(); err != nil {
@@ -50,6 +52,14 @@ func (s *Server) serverStorage(w http.ResponseWriter, r *http.Request) {
 		body["free_bytes"] = free
 	} else if !errors.Is(err, storage.ErrFreeSpaceUnsupported) {
 		body["storage"] = "unavailable"
+	}
+	if ur, ok := s.meta.(meta.StorageUsageReporter); ok {
+		if u, err := ur.StorageUsage(r.Context()); err == nil {
+			body["usage"] = map[string]int64{"stored_originals": u.StoredOriginals, "stored_bytes": u.StoredBytes,
+				"album_copies": u.AlbumCopies, "album_bytes": u.AlbumBytes, "dedup_saved_bytes": u.SavedBytes}
+		} else {
+			log.Printf("admin storage: cannot read storage usage: %v", err)
+		}
 	}
 	if c := s.startup; c != nil {
 		body["startup_check"] = map[string]int{"blobs": c.Blobs, "missing": c.Missing, "size_mismatch": c.SizeMismatch,

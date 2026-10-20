@@ -505,6 +505,28 @@ type FolderMatch struct {
 	PairedSHA256 string
 }
 
+// StorageUsage compares the originals the albums hold with what the pool
+// stores. Every SHA-256 is stored once, however many albums (or accounts)
+// hold it, so AlbumBytes can be larger than StoredBytes. Totals only:
+// nothing about any one album.
+type StorageUsage struct {
+	StoredOriginals int64 // originals in the pool (blobs rows)
+	StoredBytes     int64 // their bytes
+	// AlbumCopies counts originals as the albums hold them: one per asset
+	// currently in a folder, plus one for its paired video, archived
+	// folders included (their data is kept).
+	AlbumCopies int64
+	AlbumBytes  int64 // the bytes of AlbumCopies, as if each were its own file
+	// SavedBytes is AlbumBytes minus the bytes of the distinct originals
+	// those copies use: what storing each SHA-256 once saves.
+	SavedBytes int64
+}
+
+// StorageUsageReporter is a MetadataStore that can report StorageUsage.
+type StorageUsageReporter interface {
+	StorageUsage(ctx context.Context) (StorageUsage, error)
+}
+
 // EventPage is one page of a folder's change feed.
 type EventPage struct {
 	Events []Event // never nil
