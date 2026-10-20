@@ -11,6 +11,8 @@
 !/.env.example
 
 /dist-check/
+/withalbum-server
+/withalbum-relay
 
 # macOS menu bar app build outputs (scripts/build-macos-app.sh writes to dist/macos)
 /macos/.build/

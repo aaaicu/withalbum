@@ -48,6 +48,7 @@ jobs:
         run: |
           go build ./...
           go build -trimpath -o withalbum-server ./server
+          go build -trimpath -o withalbum-relay ./relay
   macos-app:
     name: macOS menu bar app (swift test, scripts)
     runs-on: macos-latest

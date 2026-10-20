@@ -28,6 +28,20 @@ info:
     its own); HSTS is sent over TLS for DNS host names other than localhost.
 
 
+    Relay (outside the home, docs/RELAY_DESIGN.md). A server started with
+    -relay host:port keeps an outbound tunnel to a relay; apps connect to
+    the relay, send "WITHALBUM-RELAY/1 CONNECT <rid>", and run the same
+    pinned TLS 1.3 session with the server through it, so the relay sees
+    ciphertext only. The pairing payload then also carries
+    relay=<host:port>&rid=<rendezvous id> (still v=1; rid is derived from
+    the pin and must be checked), and GET /api/v1/me returns "relay".
+    Through the relay only GET /api/v1/health, /api/v1/auth/*,
+    /api/v1/me*, /api/v1/folders* and /api/v1/invitations* are served; the
+    dashboard page and every /api/v1/admin/* path answer 403
+    {"error":"not_available_via_relay"}. Clients try the LAN URL first and
+    the relay second, and never fall back on a pin mismatch.
+
+
     Access. Only the dashboard page (GET /), GET /api/v1/health,
     /api/v1/auth/login and /api/v1/auth/refresh work without a session;
     every other path under /api/v1/, including unknown ones, answers 401
@@ -359,6 +373,16 @@ paths:
                       "asset_duration": assets and components carry
                       duration_ms. Absent on older servers; clients must
                       ignore unknown values.
+                  relay:
+                    type: object
+                    description: >-
+                      Only when the server is reachable through a relay
+                      (-relay). Lets an app paired without relay fields
+                      learn them over its pinned connection.
+                    required: [endpoint, rendezvous_id]
+                    properties:
+                      endpoint: {type: string, example: 'relay.example.org:443'}
+                      rendezvous_id: {type: string, pattern: '^[a-z2-7]{32}$'}
         '401': {description: unauthorized}
   /api/v1/me/password:
     post:
@@ -707,7 +731,15 @@ paths:
                       required: [url, payload]
                       properties:
                         url: {type: string, example: 'https://192.0.2.10:8787'}
-                        payload: {type: string, example: 'withalbum://pair?spki_sha256=...&url=https%3A%2F%2F192.0.2.10%3A8787&v=1'}
+                        payload: {type: string, example: 'withalbum://pair?relay=relay.example.org%3A443&rid=...&spki_sha256=...&url=https%3A%2F%2F192.0.2.10%3A8787&v=1', description: 'relay and rid only when the server uses a relay'}
+                  relay:
+                    type: object
+                    description: Only with -relay. Not available through the relay itself (403 not_available_via_relay).
+                    required: [endpoint, rendezvous_id]
+                    properties:
+                      endpoint: {type: string}
+                      rendezvous_id: {type: string, pattern: '^[a-z2-7]{32}$'}
+                      connected: {type: boolean, description: whether the tunnel is up now}
         '401': {description: unauthorized}
         '403': {description: forbidden (not a SERVER_ADMIN)}
   /api/v1/folders:

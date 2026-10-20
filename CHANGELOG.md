@@ -4,6 +4,13 @@
 
 아래 [0.1.0-alpha.1] 초안 이후의 변경을 여기에 적습니다.
 
+### Added (end-to-end encrypted relay for access from outside the home, M35)
+- 새 바이너리 `withalbum-relay`(`./relay`, 표준 라이브러리만): 집 서버 터널(키 증명으로 인증)과 앱 연결(랑데부 ID)을 받아 바이트만 이어 줌. TLS 1.3 전용 바깥 TLS(`-cert`/`-key` PEM, 파일이 바뀌면 다시 읽음), 연결·IP·터널·스트림·속도·대역폭·유휴 제한, 내용·IP 없는 JSON 로그(`-log-ips`로만 IP), 사설 주소의 `GET /healthz`(개수만), SIGTERM 시 드레인. 운영: `docs/RELAY_OPERATIONS.md`.
+- `internal/relay`: 프로토콜(`WITHALBUM-RELAY/1 CONNECT|SERVE`, CHALLENGE/PROVE), 랑데부 ID = SPKI 핀에서 유도(base32 32자), 바깥 TLS exporter에 묶인 ECDSA P-256 키 증명, 9바이트 헤더 프레임 다중화(스트림당 256 KiB 신용 기반 흐름 제어, FIN/RST, PING), 재연결 지수 백오프+지터 클라이언트, 퍼즈 `FuzzReadFrame`·`FuzzHandshake`.
+- 서버 `-relay host:port` / `WITHALBUM_RELAY`(기본 꺼짐, `-tls`·로그인 가능한 관리자 필요, 수신 포트 없음), `WITHALBUM_RELAY_CA_FILE`(사설 CA 중계). 중계로 온 연결은 같은 핀 TLS·같은 ACL, 단 앱 경로만 허용 — `GET /`와 `/api/v1/admin/*`는 403 `not_available_via_relay`. 로그인 속도 제한은 중계가 알려 준 앱 IP 기준(루프백·잘못된 값은 `relay-unknown`).
+- 페어링 페이로드에 선택 `relay=<host:port>&rid=<id>`(버전은 `v=1` 유지 — 기존 앱이 v≠1을 거부하므로), `withalbum-server tls -relay`, `GET /api/v1/me`의 `relay`, `GET /api/v1/admin/server/tls`의 `relay`(`connected` 포함).
+- 문서: `docs/RELAY_DESIGN.md`(위협 모델, 메타데이터 고지, 프로토콜, 결정, 앱 연동 계약), `SECURITY.md` 중계 절, `docs/API_v2.yaml`.
+
 ### Added (macOS menu bar app + DMG, M32)
 - `macos/`: 메뉴 막대 앱 "WithAlbum Server"(Swift Package, SwiftUI `MenuBarExtra`, macOS 13+, arm64+x86_64, `LSUIElement`). 번들 `Contents/Helpers/withalbum-server`에 유니버설 서버. 서버는 `scripts/install-macos.sh`와 같은 사용자 LaunchAgent(`org.withalbum.server`, `RunAtLoad`·`KeepAlive`·`ThrottleInterval` 30, `~/Library/Logs/WithAlbum` 0700, `WITHALBUM_CONFIG`·`WITHALBUM_ROOT` 그대로)로 실행하고 `launchctl bootstrap|bootout|kickstart`로 관리. 로그인 시 시작을 끄면 plist를 `~/Library/Application Support/WithAlbum/ServerApp/`로 옮김.
 - 상태: 기존 `GET /api/v1/health`(설치 모드는 `/setup` 200)와 `launchctl print`만 사용(새 API 없음). 정상 실행 중·무결성 경고·저장 중단·설치 필요·시작하는 중·시작하지 못함(error.log 마지막 오류)·멈춤·관리하지 않는 서버. 프록시를 쓰지 않음.

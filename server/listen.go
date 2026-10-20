@@ -180,23 +180,27 @@ func serverURLs(addr string, interfaceAddrs func() ([]net.Addr, error)) []string
 	return urls
 }
 
-// tlsInfo is what the dashboard shows administrators about id.
-func tlsInfo(id *tlsid.Identity, urls []string) *httpapi.TLSInfo {
+// tlsInfo is what the dashboard shows administrators about id. With a
+// relay, every pairing payload also names it (relay.go).
+func tlsInfo(id *tlsid.Identity, urls []string, rt relayTarget) *httpapi.TLSInfo {
 	info := &httpapi.TLSInfo{SPKISHA256: id.SPKIHex(), CertSHA256: id.CertHex(), NotAfter: id.Leaf.NotAfter}
 	for _, u := range urls {
-		info.Pairing = append(info.Pairing, httpapi.Pairing{URL: u, Payload: tlsid.PairingPayload(u, id.SPKIHex())})
+		info.Pairing = append(info.Pairing, httpapi.Pairing{URL: u, Payload: tlsid.PairingPayloadRelay(u, id.SPKIHex(), rt.Addr, rt.RID)})
 	}
 	return info
 }
 
 // writeFingerprints prints the pin and pairing payloads (never the key).
-func writeFingerprints(w io.Writer, id *tlsid.Identity, urls []string) {
+func writeFingerprints(w io.Writer, id *tlsid.Identity, urls []string, rt relayTarget) {
 	fmt.Fprintf(w, "TLS public key pin (SPKI SHA-256): %s\n", tlsid.Colons(id.SPKIHex()))
 	fmt.Fprintf(w, "TLS pin for curl --pinnedpubkey:   sha256//%s\n", id.SPKIBase64())
 	fmt.Fprintf(w, "TLS certificate SHA-256:           %s\n", tlsid.Colons(id.CertHex()))
 	fmt.Fprintf(w, "TLS certificate valid until:       %s\n", id.Leaf.NotAfter.UTC().Format(time.RFC3339))
+	if rt.Addr != "" {
+		fmt.Fprintf(w, "Relay:                             %s (rendezvous id %s)\n", rt.Addr, rt.RID)
+	}
 	for _, u := range urls {
-		fmt.Fprintf(w, "Pairing payload for %s: %s\n", u, tlsid.PairingPayload(u, id.SPKIHex()))
+		fmt.Fprintf(w, "Pairing payload for %s: %s\n", u, tlsid.PairingPayloadRelay(u, id.SPKIHex(), rt.Addr, rt.RID))
 	}
 }
 
@@ -236,9 +240,10 @@ func runTLSInfo(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("tls", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "Print as JSON")
+	relayFlag := fs.String("relay", "", "Relay host:port to include in the pairing payloads (default: WITHALBUM_RELAY)")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "usage: withalbum-server tls [-json]")
-		fmt.Fprintln(stderr, "Prints the TLS public key pin and the pairing payloads for WITHALBUM_LISTEN. The identity is created by the first start with -tls.")
+		fmt.Fprintln(stderr, "usage: withalbum-server tls [-json] [-relay host:port]")
+		fmt.Fprintln(stderr, "Prints the TLS public key pin and the pairing payloads for WITHALBUM_LISTEN (and WITHALBUM_RELAY). The identity is created by the first start with -tls.")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -250,6 +255,13 @@ func runTLSInfo(args []string, stdout, stderr io.Writer) int {
 	if fs.NArg() != 0 {
 		fs.Usage()
 		return exitUsage
+	}
+	relayAddr := relayAddrSetting(*relayFlag)
+	if relayAddr != "" {
+		if err := checkRelayAddr(relayAddr); err != nil {
+			fmt.Fprintf(stderr, "tls: %v\n", err)
+			return exitUsage
+		}
 	}
 	vol, ok := openSource("tls", stderr)
 	if !ok {
@@ -265,15 +277,20 @@ func runTLSInfo(args []string, stdout, stderr io.Writer) int {
 		return exitProblems
 	}
 	urls := serverURLs(listenAddr(), net.InterfaceAddrs)
+	rt := relayTargetFor(id, relayAddr)
 	if *asJSON {
-		info := tlsInfo(id, urls)
-		if err := printJSON(stdout, map[string]any{"spki_sha256": info.SPKISHA256, "spki_sha256_base64": id.SPKIBase64(),
-			"cert_sha256": info.CertSHA256, "not_after": info.NotAfter.UTC().Format(time.RFC3339), "pairing": info.Pairing}); err != nil {
+		info := tlsInfo(id, urls, rt)
+		out := map[string]any{"spki_sha256": info.SPKISHA256, "spki_sha256_base64": id.SPKIBase64(),
+			"cert_sha256": info.CertSHA256, "not_after": info.NotAfter.UTC().Format(time.RFC3339), "pairing": info.Pairing}
+		if rt.Addr != "" {
+			out["relay"] = map[string]string{"endpoint": rt.Addr, "rendezvous_id": rt.RID}
+		}
+		if err := printJSON(stdout, out); err != nil {
 			fmt.Fprintf(stderr, "tls: %v\n", err)
 			return exitProblems
 		}
 		return exitOK
 	}
-	writeFingerprints(stdout, id, urls)
+	writeFingerprints(stdout, id, urls, rt)
 	return exitOK
 }

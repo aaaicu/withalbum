@@ -28,6 +28,18 @@ On the plain loopback listener, requests whose `Host` is not `localhost` or a lo
 - Backups (`backup -to`) do not contain the TLS key. After `restore`, the old `.system` (with `tls/`) is kept as `.system.before-restore-<UTC>`; move its `tls/server.pem` back before starting to keep the pairing, or pair devices again (restore signs every device out anyway).
 - curl example: `curl -k --pinnedpubkey 'sha256//<base64 pin>' https://<lan-ip>:8787/api/v1/health` (`-k` only skips CA/host-name checks; the pin is still enforced).
 
+### Relay: access from outside the home (M35)
+
+Off by default. With `-relay host:port` (or `WITHALBUM_RELAY`) the server **dials out** to a relay (`withalbum-relay`, public, AGPL) and keeps that one connection; it opens no inbound port. Apps connect to the relay and run the **same pinned TLS 1.3 session** with the server through it, so the relay forwards ciphertext only and never holds the server key. Full threat model, metadata list and protocol: [`docs/RELAY_DESIGN.md`](docs/RELAY_DESIGN.md).
+
+- Requires `-tls` and an administrator who can log in (same gate as a LAN listener); `-allow-lan` is not needed.
+- The server proves its TLS key to the relay with a signature bound to the outer TLS connection (exporter); the rendezvous ID is derived from the key's pin, so no one can register under another server's ID, and a malicious relay cannot impersonate the server (the app's pin check fails).
+- **Enabling the relay makes the login endpoint reachable from the internet** for anyone who knows the rendezvous ID (it is in the pairing QR and derived from the pin; it is not a secret). Use strong passwords; login limits apply per app IP (as reported by the relay), per account and IP, and per account.
+- Through the relay only app routes are served: `GET /` (dashboard) and `/api/v1/admin/*` answer `403 not_available_via_relay`, also for administrators. Administer on the Mac or the home network.
+- The relay operator can see: rendezvous IDs, IP addresses, connection times and durations, byte counts per connection, the inner TLS ClientHello. Never content. The relay logs no IPs unless started with `-log-ips`, and keeps nothing on disk.
+- Relay abuse limits: connections and new connections per IP, tunnels per IP and in total, streams and new streams per server, bandwidth per server, handshake and idle timeouts; strict framing (fuzzed) that closes a tunnel on any violation.
+- The connection to the relay itself is TLS 1.3 verified against the system roots (or `WITHALBUM_RELAY_CA_FILE`).
+
 ### Response hardening
 
 Every response carries `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Cross-Origin-Resource-Policy: same-origin` and `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'` (the dashboard page sets its own: its single inline script and single inline style are allowed by SHA-256 hash only — no `'unsafe-inline'` —, `connect-src 'self'`, `img-src blob:` (album preview tiles the script fetched through the session API; no image is loaded by URL), `form-action 'none'`, `frame-ancestors 'none'`, and `require-trusted-types-for 'script'`; the page writes the DOM with `textContent` only; the setup page is the same with `img-src 'none'`). Downloaded originals additionally get `sandbox` and `Content-Disposition: attachment`, so a stored HTML or SVG file never runs as a page of the server origin.

@@ -27,6 +27,7 @@
 - **부분 구현(로컬 빌드·실행 확인, 서명·공증·다른 Mac 미검증):** Mac 메뉴 막대 앱 "WithAlbum Server"(M32, `macos/`, macOS 13+). 앱 안에 유니버설 서버 바이너리를 담고, `scripts/install-macos.sh`와 같은 사용자 LaunchAgent(`org.withalbum.server`)를 등록·시작·멈춤·다시 시작합니다. 상태(정상 실행 중·설치 필요·저장 중단·멈춤), 관리 화면 열기, 설치 코드 보기(이 Mac의 로그에서만 읽음), 로그 폴더, 로그인 시 시작, LAN 접속 허용(`-tls -allow-lan`, 사설 주소만, 서버 게이트 그대로), 페어링 QR. DMG는 `scripts/build-macos-app.sh`(서명 없음), 배포용 서명·공증은 관리자가 `scripts/sign-notarize-macos.sh`로 직접. 설치: [`docs/INSTALL_MACOS.md`](docs/INSTALL_MACOS.md).
 - **아직 없음:** 서명·공증된 DMG 배포본(스크립트만 있음), 정식 Google Drive OAuth 연결, 모바일 앱, 프로덕션 안정성 보장.
 - **부분 구현(테스트·LAN 바이너리 스모크 검증, 실기기 앱 미검증):** TLS·LAN 게이트(M15). 기본은 `127.0.0.1` 평문 HTTP. LAN 주소(사설 IP 또는 와일드카드)는 `-allow-lan` + `-tls` + 로그인 가능한 활성 SERVER_ADMIN이 모두 있을 때만 listen하고, 하나라도 없으면 기동을 거부합니다. 공인 IP·호스트 이름은 항상 거부. `-tls`는 자체 서명 인증서(`.system/tls/server.pem`, 0600, ECDSA P-256, TLS 1.3 전용)를 만들고, 앱은 공개키 지문(SPKI SHA-256)을 핀닝합니다(`withalbum-server tls`, 대시보드 관리자 화면에 페어링 페이로드). 보안 헤더·원본 다운로드 sandbox·IPv6 /64 속도 제한 키·루프백 Host 검사. 자세한 내용과 보안 점검 결과: [`SECURITY.md`](SECURITY.md).
+- **부분 구현(Go 통합 테스트 검증, 공인 서버·실기기·앱 미검증):** 집 밖 접속 E2EE 중계(M35, 기본 꺼짐). 서버는 `-tls -relay host:port`로 중계에 바깥쪽 연결만 맺고(수신 포트 없음), 앱은 중계 위에서 LAN과 같은 핀 TLS를 쓰므로 중계는 암호문만 전달합니다. 관리 화면·관리 API는 중계로 제공하지 않음. 중계 프로그램 `withalbum-relay`(`./relay`). 설계·위협 모델: [`docs/RELAY_DESIGN.md`](docs/RELAY_DESIGN.md), 운영: [`docs/RELAY_OPERATIONS.md`](docs/RELAY_OPERATIONS.md).
 - **보안 경고:** **인터넷에 공개(포트포워딩·공개 리버스 프록시)하거나 대체할 수 없는 원본 사진의 단일 보관소로 사용하지 마세요.**
 
 <!-- 구현 범위 확인:

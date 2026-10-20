@@ -109,7 +109,20 @@ func Colons(h string) string {
 // PairingPayload is the text a device scans (QR) or receives to connect:
 // withalbum://pair?v=1&url=<server URL>&spki_sha256=<hex pin>.
 func PairingPayload(serverURL, spkiHex string) string {
+	return PairingPayloadRelay(serverURL, spkiHex, "", "")
+}
+
+// PairingPayloadRelay is PairingPayload with the relay through which the
+// server is also reachable (docs/RELAY_DESIGN.md): relay=<host:port> and
+// rid=<rendezvous ID> are added when relayAddr is not empty. The version
+// stays 1: the fields are optional, and apps that do not know them ignore
+// them (they still pin the same key).
+func PairingPayloadRelay(serverURL, spkiHex, relayAddr, rid string) string {
 	q := url.Values{"v": {"1"}, "url": {serverURL}, "spki_sha256": {spkiHex}}
+	if relayAddr != "" {
+		q.Set("relay", relayAddr)
+		q.Set("rid", rid)
+	}
 	return "withalbum://pair?" + q.Encode()
 }
 
