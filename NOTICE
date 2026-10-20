@@ -13,7 +13,8 @@ licenses:
    Copyright Daangn Market Co., Ltd.
    Licensed under the Apache License, Version 2.0.
    Colour, type, spacing, radius and shadow values of the built-in web
-   pages are derived (and modified) from SEED Design
+   pages and colours of the macOS menu bar app are derived (and
+   modified) from SEED Design
    (https://github.com/daangn/seed-design).
    See third_party/seed-design/.
 

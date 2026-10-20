@@ -4,6 +4,16 @@
 
 아래 [0.1.0-alpha.1] 초안 이후의 변경을 여기에 적습니다.
 
+### Added (macOS menu bar app + DMG, M32)
+- `macos/`: 메뉴 막대 앱 "WithAlbum Server"(Swift Package, SwiftUI `MenuBarExtra`, macOS 13+, arm64+x86_64, `LSUIElement`). 번들 `Contents/Helpers/withalbum-server`에 유니버설 서버. 서버는 `scripts/install-macos.sh`와 같은 사용자 LaunchAgent(`org.withalbum.server`, `RunAtLoad`·`KeepAlive`·`ThrottleInterval` 30, `~/Library/Logs/WithAlbum` 0700, `WITHALBUM_CONFIG`·`WITHALBUM_ROOT` 그대로)로 실행하고 `launchctl bootstrap|bootout|kickstart`로 관리. 로그인 시 시작을 끄면 plist를 `~/Library/Application Support/WithAlbum/ServerApp/`로 옮김.
+- 상태: 기존 `GET /api/v1/health`(설치 모드는 `/setup` 200)와 `launchctl print`만 사용(새 API 없음). 정상 실행 중·무결성 경고·저장 중단·설치 필요·시작하는 중·시작하지 못함(error.log 마지막 오류)·멈춤·관리하지 않는 서버. 프록시를 쓰지 않음.
+- 설치 코드: 설치 모드에서 이 Mac의 error.log 마지막 `SETUP: open` 줄을 읽어 표시·복사(어디에도 보내지 않음), 루프백 URL만.
+- LAN 접속 허용: 저장소 등록 + 정상 실행 중일 때만, 이 Mac 인터페이스의 사설 주소(RFC 1918, fc00::/7)만 골라 `-tls -allow-lan`. 주소 규칙은 서버 `scopeOf`·스크립트 `--lan` 패턴과 같고, 공유 픽스처 `macos/Tests/Fixtures/listen_scope_cases.json`을 Go(`server/listen_shared_test.go`)와 Swift 테스트가 함께 검사. LAN 동안 상태 확인·관리 화면 창은 `withalbum-server tls -json`의 SPKI 핀이 같은 인증서만 믿음. 페어링 QR(CoreImage).
+- 기존 스크립트 설치 감지: 다른 실행 파일을 가리키는 plist는 덮어쓰지 않고 "이 앱으로 관리 전환"(저장소·설정·환경 변수·LAN 주소 유지, 규칙에 맞지 않는 LAN 주소는 루프백으로). DMG·앱 이동(translocation) 경로에서는 등록 거부.
+- `scripts/build-macos-app.sh`: 서버 arm64/amd64(`CGO_ENABLED=0 -trimpath -ldflags "-s -w -X main.version"`) + `lipo`, Swift release 빌드(디버그 맵 심볼 strip), Info.plist·LICENSE·NOTICE·`third_party/` 포함, ad-hoc 서명, `--self-check`, 빌드 경로 누출 검사, `hdiutil` UDZO DMG(Applications 링크) + `.sha256`. 서명 없음.
+- `scripts/sign-notarize-macos.sh`: `WITHALBUM_SIGN_IDENTITY`(Developer ID Application)·`WITHALBUM_NOTARY_PROFILE`(사람이 `xcrun notarytool store-credentials`로 저장한 키체인 프로필)만 받음. hardened runtime, 예외 없는 entitlements, 앱 공증·staple → DMG 서명·공증·staple → `spctl`. 암호·키 인자 없음. DMG는 GoReleaser가 아닌 관리자 수동 단계(`docs/RELEASING.md` "macOS DMG").
+- 테스트: `cd macos && swift test`(29: plist 생성·XML 이스케이프·plutil, 스크립트 plist 감지·전환, 주소 규칙·공유 픽스처, health·launchctl·설치 코드·tls JSON 파싱, P-256 SPKI 핀, 컨트롤러 dry-run 파일 동작, 문구 규칙). `.gitignore`에 `macos/.build/`·`*.dmg`.
+
 ### Added (idempotent album creation, video duration)
 - `POST /api/v1/folders`에 선택 헤더 `Idempotency-Key`(업로드와 같은 형식 `^[A-Za-z0-9._:-]{1,128}$`, 계정·세션 기기 범위). 같은 키+같은 이름(trim 후) 재시도는 새 폴더를 만들지 않고 처음 만든 폴더를 201 + `Idempotency-Replayed: true`로 돌려줌(역할·`member_count`는 지금 기준, 보관됐으면 404 `folder_not_found`). 같은 키+다른 이름 422 `idempotency_key_reused`, 형식 오류 400 `invalid_idempotency_key`. 재시도도 새 요청처럼 권한 판정(생성 권한이 없어졌으면 403). 같은 키 동시 요청은 폴더 하나(BEGIN IMMEDIATE 트랜잭션 안에서 조회·기록). 키는 30일(업로드 영수증과 같은 정리). 헤더가 없으면 이전과 같음.
 - 동영상 재생 시간: 자산 JSON `duration_ms`(정수 ms, 버림, 모르면·영상 아님·아직 안 읽음 null)와 라이브 포토 `components[].duration_ms`. 라이브 포토 자산 자체의 `duration_ms`는 항상 null(원본이 사진; 영상 길이는 구성에). `internal/capturetime.Duration`: QuickTime/MP4 `moov/mvhd`(version 0/1, timescale), mvhd duration이 0인 조각 MP4는 `mvex/mehd`, 무한(all ones)·timescale 0·1주 초과는 모름. 촬영 시각과 같은 읽기 제한·퍼즈 `FuzzDuration`.
