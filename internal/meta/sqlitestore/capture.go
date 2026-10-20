@@ -13,7 +13,9 @@ func (s *Store) PendingCaptures(ctx context.Context, limit int) ([]string, error
 	if limit <= 0 {
 		return nil, meta.ErrInvalidLimit
 	}
-	rows, err := s.db.QueryContext(ctx, "SELECT sha256 FROM blobs WHERE capture_state = 'pending' ORDER BY sha256 LIMIT ?", limit)
+	// Two partial indexes, one per state; UNION removes the duplicates.
+	rows, err := s.db.QueryContext(ctx, `SELECT sha256 FROM blobs WHERE capture_state = 'pending'
+		UNION SELECT sha256 FROM blobs WHERE duration_state = 'pending' ORDER BY sha256 LIMIT ?`, limit)
 	if err != nil {
 		return nil, classify(err)
 	}
@@ -43,6 +45,9 @@ func (s *Store) setCaptureTimes(ctx context.Context, results []meta.CaptureResul
 		if r.CapturedAt == "" && r.CapturedUTC != "" {
 			return 0, errors.New("sqlitestore: a capture instant without a capture time")
 		}
+		if r.DurationMS < 0 {
+			return 0, errors.New("sqlitestore: a negative duration")
+		}
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -57,15 +62,33 @@ func (s *Store) setCaptureTimes(ctx context.Context, results []meta.CaptureResul
 		if err != nil {
 			return 0, err
 		}
-		if n, err := res.RowsAffected(); err != nil {
+		captured, err := res.RowsAffected()
+		if err != nil {
 			return 0, err
-		} else if n == 0 || r.CapturedAt == "" {
+		}
+		var dur any
+		if r.DurationMS > 0 {
+			dur = r.DurationMS
+		}
+		res, err = tx.ExecContext(ctx, "UPDATE blobs SET duration_state = 'done', duration_ms = ? WHERE sha256 = ? AND duration_state = 'pending'", dur, r.SHA256)
+		if err != nil {
+			return 0, err
+		}
+		timed, err := res.RowsAffected()
+		if err != nil {
+			return 0, err
+		}
+		newTime, newDuration := captured > 0 && r.CapturedAt != "", timed > 0 && r.DurationMS > 0
+		if !newTime && !newDuration {
 			continue // settled already, or nothing a client sees changed
 		}
 		// Every folder link of an asset of these bytes. The event carries
 		// the uploader label of the link, like its asset_added event.
+		// A duration is also shown on the component it belongs to (the
+		// paired video of a Live Photo), so its assets change too.
 		rows, err := tx.QueryContext(ctx, `SELECT fa.folder_id, fa.asset_id, fa.uploader_device_label FROM assets a JOIN folder_assets fa ON fa.asset_id = a.asset_id
-			WHERE a.original_sha256 = ? AND fa.removed_at IS NULL ORDER BY fa.folder_id, fa.asset_id`, r.SHA256)
+			WHERE fa.removed_at IS NULL AND (a.original_sha256 = ? OR (? AND a.asset_id IN (SELECT asset_id FROM asset_components WHERE sha256 = ?)))
+			ORDER BY fa.folder_id, fa.asset_id`, r.SHA256, newDuration, r.SHA256)
 		if err != nil {
 			return 0, err
 		}

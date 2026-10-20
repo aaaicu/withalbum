@@ -38,8 +38,8 @@ func TestEmbeddedMigrationsAreContiguous(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ms) != 11 || LatestVersion() != 11 {
-		t.Fatalf("got %d migrations, LatestVersion %d; want 11", len(ms), LatestVersion())
+	if len(ms) != 12 || LatestVersion() != 12 {
+		t.Fatalf("got %d migrations, LatestVersion %d; want 12", len(ms), LatestVersion())
 	}
 }
 
@@ -580,5 +580,44 @@ func TestMigration0011LivePhotos(t *testing.T) {
 	mustExec(t, sqlDB, "DELETE FROM upload_bundles")
 	if err := sqlDB.QueryRow("SELECT count(*) FROM upload_sessions").Scan(&n); err != nil || n != 0 {
 		t.Fatalf("component sessions left after the bundle: %d, %v", n, err)
+	}
+}
+
+// TestMigration0012FolderReceiptsDuration: settled capture times are kept,
+// every original becomes pending for its duration (the backfill), and the
+// folder receipt table holds one row per account, device and key.
+func TestMigration0012FolderReceiptsDuration(t *testing.T) {
+	ctx := context.Background()
+	sqlDB, _ := openTemp(t)
+	migrateTo(t, sqlDB, 11)
+	addUser(t, sqlDB, "owner", "active")
+	mustExec(t, sqlDB, "INSERT INTO folders(folder_id, folder_name, owner_user_id) VALUES ('f1', 'Trip', 'owner')")
+	mustExec(t, sqlDB, "INSERT INTO devices(device_id, user_id, device_name, platform) VALUES ('d1', 'owner', 'phone', 'ios')")
+	a := strings.Repeat("a", 64)
+	mustExec(t, sqlDB, "INSERT INTO blobs(sha256, bytes, mime_type, relative_path, verified_at) VALUES (?, 10, 'video/quicktime', 'pool/a', 'v')", a)
+	mustExec(t, sqlDB, "UPDATE blobs SET capture_state = 'done', captured_at = '2026-10-19T14:03:22+09:00', captured_utc = '2026-10-19T05:03:22Z'")
+	if err := Migrate(ctx, sqlDB); err != nil {
+		t.Fatal(err)
+	}
+	var row string
+	if err := sqlDB.QueryRow("SELECT capture_state || captured_at || duration_state || COALESCE(duration_ms, '-') FROM blobs").Scan(&row); err != nil ||
+		row != "done2026-10-19T14:03:22+09:00pending-" {
+		t.Fatalf("blob after migration %q, %v", row, err)
+	}
+	expectReject(t, sqlDB, "CHECK constraint", "UPDATE blobs SET duration_ms = 1000")
+	expectReject(t, sqlDB, "CHECK constraint", "UPDATE blobs SET duration_state = 'done', duration_ms = 0")
+	expectReject(t, sqlDB, "CHECK constraint", "UPDATE blobs SET duration_state = 'maybe'")
+	mustExec(t, sqlDB, "UPDATE blobs SET duration_state = 'done', duration_ms = 14000")
+	var idx int
+	if err := sqlDB.QueryRow("SELECT count(*) FROM sqlite_schema WHERE type = 'index' AND name IN ('idx_blobs_duration_pending', 'idx_folder_create_receipts_created')").Scan(&idx); err != nil || idx != 2 {
+		t.Fatalf("indexes %d, %v", idx, err)
+	}
+	mustExec(t, sqlDB, "INSERT INTO folder_create_receipts(user_id, device_id, idempotency_key, folder_name, folder_id, created_at) VALUES ('owner', 'd1', 'k', 'Trip', 'f1', 't')")
+	expectReject(t, sqlDB, "UNIQUE constraint", "INSERT INTO folder_create_receipts(user_id, device_id, idempotency_key, folder_name, folder_id, created_at) VALUES ('owner', 'd1', 'k', 'Other', 'f1', 't')")
+	expectReject(t, sqlDB, "FOREIGN KEY", "INSERT INTO folder_create_receipts(user_id, device_id, idempotency_key, folder_name, folder_id, created_at) VALUES ('owner', 'd1', 'k2', 'x', 'nope', 't')")
+	mustExec(t, sqlDB, "DELETE FROM folders WHERE folder_id = 'f1'")
+	var n int
+	if err := sqlDB.QueryRow("SELECT count(*) FROM folder_create_receipts").Scan(&n); err != nil || n != 0 {
+		t.Fatalf("receipts of a deleted folder: %d, %v", n, err)
 	}
 }

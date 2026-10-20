@@ -188,13 +188,32 @@ func insertReceipt(ctx context.Context, tx *sql.Tx, req meta.CommitRequest, resu
 	return err
 }
 
-// PruneUploadReceipts implements meta.MetadataStore.
+// PruneUploadReceipts implements meta.MetadataStore. Upload and folder
+// creation receipts go in one transaction.
 func (s *Store) PruneUploadReceipts(ctx context.Context, before time.Time) (int64, error) {
-	res, err := s.db.ExecContext(ctx, "DELETE FROM upload_receipts WHERE created_at < ?", before.UTC().Format(timeLayout))
+	n, err := s.pruneReceipts(ctx, before.UTC().Format(timeLayout))
+	return n, classify(err)
+}
+
+func (s *Store) pruneReceipts(ctx context.Context, before string) (int64, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, classify(err)
+		return 0, err
 	}
-	return res.RowsAffected()
+	defer tx.Rollback()
+	var total int64
+	for _, q := range []string{"DELETE FROM upload_receipts WHERE created_at < ?", "DELETE FROM folder_create_receipts WHERE created_at < ?"} {
+		res, err := tx.ExecContext(ctx, q, before)
+		if err != nil {
+			return 0, err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return 0, err
+		}
+		total += n
+	}
+	return total, tx.Commit()
 }
 
 // assetByID reads an asset whatever its folder links.

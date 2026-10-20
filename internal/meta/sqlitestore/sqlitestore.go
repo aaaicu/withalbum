@@ -198,41 +198,73 @@ func classify(err error) error {
 
 // CreateFolder implements meta.MetadataStore.
 func (s *Store) CreateFolder(ctx context.Context, req meta.NewFolder) (meta.Folder, error) {
-	f, err := s.createFolder(ctx, req)
+	f, _, err := s.createFolder(ctx, req, nil)
 	return f, classify(err)
 }
 
-func (s *Store) createFolder(ctx context.Context, req meta.NewFolder) (meta.Folder, error) {
+// CreateFolderOnce implements meta.MetadataStore. Transactions start with
+// BEGIN IMMEDIATE, so a concurrent request with the same key waits for
+// this one and then finds its receipt.
+func (s *Store) CreateFolderOnce(ctx context.Context, req meta.NewFolder, id meta.Idempotency) (meta.Folder, bool, error) {
+	if id.DeviceID == "" || id.Key == "" {
+		return meta.Folder{}, false, errors.New("sqlitestore: an idempotency key needs a device and a key")
+	}
+	f, replayed, err := s.createFolder(ctx, req, &id)
+	return f, replayed, classify(err)
+}
+
+func (s *Store) createFolder(ctx context.Context, req meta.NewFolder, idem *meta.Idempotency) (meta.Folder, bool, error) {
 	id, err := newID()
 	if err != nil {
-		return meta.Folder{}, err
+		return meta.Folder{}, false, err
 	}
 	folder := meta.Folder{ID: id, Name: req.Name, CreatedAt: now()}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return meta.Folder{}, err
+		return meta.Folder{}, false, err
 	}
 	defer tx.Rollback()
 	if req.Authorize != nil {
 		p, err := principalTx(ctx, tx, req.OwnerID, req.SessionID)
 		if err != nil {
-			return meta.Folder{}, err
+			return meta.Folder{}, false, err
 		}
 		if err := req.Authorize(p, authz.AlbumAccess{}); err != nil {
-			return meta.Folder{}, fmt.Errorf("authorize: %w", err)
+			return meta.Folder{}, false, fmt.Errorf("authorize: %w", err)
+		}
+	}
+	if idem != nil {
+		var name string
+		var f meta.Folder
+		err := tx.QueryRowContext(ctx, `SELECT r.folder_name, f.folder_id, f.folder_name, f.created_at FROM folder_create_receipts r
+			JOIN folders f ON f.folder_id = r.folder_id WHERE r.user_id = ? AND r.device_id = ? AND r.idempotency_key = ?`,
+			req.OwnerID, idem.DeviceID, idem.Key).Scan(&name, &f.ID, &f.Name, &f.CreatedAt)
+		switch {
+		case err == nil && name != req.Name:
+			return meta.Folder{}, false, meta.ErrIdempotencyMismatch
+		case err == nil:
+			return f, true, nil // nothing written; the rollback ends the transaction
+		case !errors.Is(err, sql.ErrNoRows):
+			return meta.Folder{}, false, err
 		}
 	}
 	if _, err := tx.ExecContext(ctx, "INSERT INTO folders (folder_id, folder_name, owner_user_id, created_at) VALUES (?, ?, ?, ?)",
 		folder.ID, folder.Name, req.OwnerID, folder.CreatedAt); err != nil {
-		return meta.Folder{}, err
+		return meta.Folder{}, false, err
 	}
 	if _, err := tx.ExecContext(ctx, "INSERT INTO folder_sequences (folder_id, last_seq) VALUES (?, 0)", folder.ID); err != nil {
-		return meta.Folder{}, err
+		return meta.Folder{}, false, err
+	}
+	if idem != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO folder_create_receipts (user_id, device_id, idempotency_key, folder_name, folder_id, created_at)
+			VALUES (?, ?, ?, ?, ?, ?)`, req.OwnerID, idem.DeviceID, idem.Key, req.Name, folder.ID, folder.CreatedAt); err != nil {
+			return meta.Folder{}, false, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
-		return meta.Folder{}, err
+		return meta.Folder{}, false, err
 	}
-	return folder, nil
+	return folder, false, nil
 }
 
 // BootstrapOwnerID returns the user_id of the bootstrap administrator, the
@@ -355,12 +387,12 @@ func (s *Store) GetFolder(ctx context.Context, id string) (meta.Folder, error) {
 }
 
 // assetColumns selects a meta.Asset (scanAsset) from assets a JOIN blobs b.
-const assetColumns = "a.asset_id, a.original_sha256, a.original_filename, b.mime_type, b.bytes, a.preview_ready, a.preview_state, a.created_at, b.captured_at, " +
+const assetColumns = "a.asset_id, a.original_sha256, a.original_filename, b.mime_type, b.bytes, a.preview_ready, a.preview_state, a.created_at, b.captured_at, b.duration_ms, " +
 	uploaderName + ", a.media_kind, a.pairing_state, " + pairedVideo
 
 // pairedVideo selects the paired video of assets a as a JSON object
-// (sha256, filename, mime_type, bytes), NULL when it has none.
-const pairedVideo = `(SELECT json_object('sha256', c.sha256, 'filename', c.filename, 'mime_type', cb.mime_type, 'bytes', cb.bytes)
+// (sha256, filename, mime_type, bytes, duration_ms), NULL when it has none.
+const pairedVideo = `(SELECT json_object('sha256', c.sha256, 'filename', c.filename, 'mime_type', cb.mime_type, 'bytes', cb.bytes, 'duration_ms', cb.duration_ms)
 	FROM asset_components c JOIN blobs cb ON cb.sha256 = c.sha256 WHERE c.asset_id = a.asset_id AND c.role = 'paired_video')`
 
 // setLivePhoto fills the media kind, pairing and paired video of a from
@@ -375,11 +407,15 @@ func setLivePhoto(a *meta.Asset, kind, pairing, paired sql.NullString) error {
 		Filename string `json:"filename"`
 		MimeType string `json:"mime_type"`
 		Bytes    int64  `json:"bytes"`
+		Duration *int64 `json:"duration_ms"`
 	}
 	if err := json.Unmarshal([]byte(paired.String), &c); err != nil {
 		return fmt.Errorf("asset %s: paired video: %w", a.ID, err)
 	}
 	a.PairedVideo = meta.Component{Role: meta.RolePairedVideo, SHA256: c.SHA256, Filename: c.Filename, MimeType: c.MimeType, Bytes: c.Bytes}
+	if c.Duration != nil {
+		a.PairedVideo.DurationMS = *c.Duration
+	}
 	return nil
 }
 
@@ -391,7 +427,8 @@ const uploaderName = "(SELECT u.display_name FROM users u WHERE u.user_id = a.up
 func scanAsset(row scanner) (meta.Asset, error) {
 	var a meta.Asset
 	var state, captured, uploader, kind, pairing, paired sql.NullString
-	err := row.Scan(&a.ID, &a.SHA256, &a.Filename, &a.MimeType, &a.Bytes, &a.PreviewReady, &state, &a.UploadedAt, &captured, &uploader,
+	var dur sql.NullInt64
+	err := row.Scan(&a.ID, &a.SHA256, &a.Filename, &a.MimeType, &a.Bytes, &a.PreviewReady, &state, &a.UploadedAt, &captured, &dur, &uploader,
 		&kind, &pairing, &paired)
 	if errors.Is(err, sql.ErrNoRows) {
 		return meta.Asset{}, meta.ErrAssetNotFound
@@ -400,7 +437,7 @@ func scanAsset(row scanner) (meta.Asset, error) {
 		return meta.Asset{}, err
 	}
 	a.PreviewStatus = previewStatus(a.PreviewReady, state)
-	a.CapturedAt, a.UploaderName = captured.String, uploader.String
+	a.CapturedAt, a.DurationMS, a.UploaderName = captured.String, dur.Int64, uploader.String
 	return a, setLivePhoto(&a, kind, pairing, paired)
 }
 
@@ -679,7 +716,7 @@ func (s *Store) ListEvents(ctx context.Context, folderID string, cursor int64, l
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT c.seq, c.event_type, c.asset_id, COALESCE(c.uploader_device_label, ''), c.occurred_at,
 			a.original_sha256, a.original_filename, b.mime_type, b.bytes, a.preview_ready, a.preview_state, a.created_at,
-			b.captured_at, `+uploaderName+`, fa.asset_id IS NOT NULL AND fa.removed_at IS NULL, a.media_kind, a.pairing_state, `+pairedVideo+`
+			b.captured_at, b.duration_ms, `+uploaderName+`, fa.asset_id IS NOT NULL AND fa.removed_at IS NULL, a.media_kind, a.pairing_state, `+pairedVideo+`
 		FROM folder_changes c
 		LEFT JOIN assets a ON a.asset_id = c.asset_id
 		LEFT JOIN blobs b ON b.sha256 = a.original_sha256
@@ -693,11 +730,11 @@ func (s *Store) ListEvents(ctx context.Context, folderID string, cursor int64, l
 	for rows.Next() {
 		e := meta.Event{FolderID: folderID}
 		var sha, filename, mime, uploadedAt, state, captured, uploader, kind, pairing, paired sql.NullString
-		var size sql.NullInt64
+		var size, dur sql.NullInt64
 		var preview sql.NullBool
 		var linked bool
 		if err := rows.Scan(&e.Seq, &e.Kind, &e.AssetID, &e.UploaderDeviceID, &e.OccurredAt,
-			&sha, &filename, &mime, &size, &preview, &state, &uploadedAt, &captured, &uploader, &linked, &kind, &pairing, &paired); err != nil {
+			&sha, &filename, &mime, &size, &preview, &state, &uploadedAt, &captured, &dur, &uploader, &linked, &kind, &pairing, &paired); err != nil {
 			return meta.EventPage{}, err
 		}
 		if !sha.Valid || !mime.Valid {
@@ -709,7 +746,7 @@ func (s *Store) ListEvents(ctx context.Context, folderID string, cursor int64, l
 		if (e.Kind == meta.EventAssetAdded || e.Kind == meta.EventAssetUpdated) && linked {
 			a := meta.Asset{ID: e.AssetID, SHA256: sha.String, Filename: filename.String, MimeType: mime.String,
 				Bytes: size.Int64, PreviewReady: preview.Bool, PreviewStatus: previewStatus(preview.Bool, state), UploadedAt: uploadedAt.String,
-				CapturedAt: captured.String, UploaderName: uploader.String}
+				CapturedAt: captured.String, DurationMS: dur.Int64, UploaderName: uploader.String}
 			if err := setLivePhoto(&a, kind, pairing, paired); err != nil {
 				return meta.EventPage{}, err
 			}

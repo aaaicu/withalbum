@@ -277,9 +277,19 @@ func recheck(action authz.Action, canRead *bool) meta.Authorizer {
 
 // createFolder: SERVER_ADMIN or can_create_albums (checked by the route
 // policy and again inside the transaction); the creator is the only owner.
+// An optional Idempotency-Key (same form as for uploads, scoped to the
+// account and the session's device) makes a retry safe: a key already
+// used with the same name creates nothing and gets the folder it created
+// (201, Idempotency-Replayed: true) as the caller sees it now; with
+// another name it is 422 idempotency_key_reused.
 func (s *Server) createFolder(w http.ResponseWriter, r *http.Request) {
 	id, _ := IdentityFrom(r.Context())
 	p := principal(id)
+	key, hasKey := r.Header[http.CanonicalHeaderKey(headerIdempotencyKey)]
+	if hasKey && (len(key) != 1 || !validIdempotencyKey(key[0])) {
+		errorReply(w, 400, "invalid_idempotency_key")
+		return
+	}
 	var request struct {
 		Name string `json:"name"`
 	}
@@ -295,17 +305,43 @@ func (s *Server) createFolder(w http.ResponseWriter, r *http.Request) {
 	if !s.storageReady(w) {
 		return
 	}
-	folder, err := s.meta.CreateFolder(r.Context(), meta.NewFolder{Name: request.Name, OwnerID: p.UserID, SessionID: id.SessionID,
-		Authorize: recheck(authz.CreateAlbum, nil)})
+	req := meta.NewFolder{Name: request.Name, OwnerID: p.UserID, SessionID: id.SessionID, Authorize: recheck(authz.CreateAlbum, nil)}
+	var folder meta.Folder
+	var replayed bool
+	var err error
+	if hasKey {
+		folder, replayed, err = s.meta.CreateFolderOnce(r.Context(), req, meta.Idempotency{DeviceID: id.DeviceID, Key: key[0]})
+	} else {
+		folder, err = s.meta.CreateFolder(r.Context(), req)
+	}
 	switch {
 	case errors.Is(err, errDenied):
 		errorReply(w, 403, "forbidden")
+		return
+	case errors.Is(err, meta.ErrIdempotencyMismatch):
+		errorReply(w, 422, "idempotency_key_reused")
 		return
 	case errors.Is(err, meta.ErrIDGeneration):
 		errorReply(w, 500, "random_failure")
 		return
 	case err != nil:
 		writeFailed(w, "create folder", err, "metadata_write_failed")
+		return
+	}
+	if replayed {
+		// The folder as the caller sees it now (role, member count): it
+		// may have been shared, transferred or archived since.
+		fa, err := s.meta.GetFolderAccess(r.Context(), folder.ID, p.UserID)
+		if errors.Is(err, meta.ErrFolderNotFound) || err == nil && !authz.Allowed(p, authz.GetAlbumMetadata, &fa.Access) {
+			errorReply(w, 404, "folder_not_found")
+			return
+		}
+		if err != nil {
+			metaReadFailed(w, err)
+			return
+		}
+		w.Header().Set("Idempotency-Replayed", "true")
+		jsonReply(w, 201, folderView(p, fa))
 		return
 	}
 	// A new folder has its creator (active, just re-checked) and nobody else.

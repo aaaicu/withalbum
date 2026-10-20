@@ -4,6 +4,13 @@
 
 아래 [0.1.0-alpha.1] 초안 이후의 변경을 여기에 적습니다.
 
+### Added (idempotent album creation, video duration)
+- `POST /api/v1/folders`에 선택 헤더 `Idempotency-Key`(업로드와 같은 형식 `^[A-Za-z0-9._:-]{1,128}$`, 계정·세션 기기 범위). 같은 키+같은 이름(trim 후) 재시도는 새 폴더를 만들지 않고 처음 만든 폴더를 201 + `Idempotency-Replayed: true`로 돌려줌(역할·`member_count`는 지금 기준, 보관됐으면 404 `folder_not_found`). 같은 키+다른 이름 422 `idempotency_key_reused`, 형식 오류 400 `invalid_idempotency_key`. 재시도도 새 요청처럼 권한 판정(생성 권한이 없어졌으면 403). 같은 키 동시 요청은 폴더 하나(BEGIN IMMEDIATE 트랜잭션 안에서 조회·기록). 키는 30일(업로드 영수증과 같은 정리). 헤더가 없으면 이전과 같음.
+- 동영상 재생 시간: 자산 JSON `duration_ms`(정수 ms, 버림, 모르면·영상 아님·아직 안 읽음 null)와 라이브 포토 `components[].duration_ms`. 라이브 포토 자산 자체의 `duration_ms`는 항상 null(원본이 사진; 영상 길이는 구성에). `internal/capturetime.Duration`: QuickTime/MP4 `moov/mvhd`(version 0/1, timescale), mvhd duration이 0인 조각 MP4는 `mvex/mehd`, 무한(all ones)·timescale 0·1주 초과는 모름. 촬영 시각과 같은 읽기 제한·퍼즈 `FuzzDuration`.
+- 촬영 시각 워커가 재생 시간도 읽음(커밋 후, 업로드 경로 불변). 새로 알게 되면 `asset_updated`(촬영 시각과 같이 찾으면 한 번) — 영상 원본을 가진 자산 + 그 영상을 `paired_video` 구성으로 가진 자산. 마이그레이션 0012가 기존 원본을 모두 `duration_state = pending`으로 두어 백필(이미 정해진 `captured_at`은 그대로, 사진은 이벤트 없음).
+- `GET /me` `server_features`에 `folder_create_idempotency`, `asset_duration` 추가.
+- 마이그레이션 0012: `folder_create_receipts`(user·device·key PK, 폴더 삭제 시 함께 삭제), `blobs.duration_state`·`blobs.duration_ms`, 부분 인덱스 `idx_blobs_duration_pending`.
+
 ### Added (Live Photos: still + paired video as one asset)
 - 라이브 포토 묶음 업로드: `POST /folders/{id}/bundles`(`kind: live_photo`, 구성 `still` 1 + `paired_video` 1, `Idempotency-Key`), `GET|DELETE /folders/{id}/bundles/{bid}`, `POST .../bundles/{bid}/complete`. 각 구성은 기존 재개 업로드 세션(`PATCH /uploads/{uid}`)으로 보냄. 완료 시 두 파일 SHA-256·크기 재계산(틀린 구성만 offset 0, 422 `hash_mismatch` + `role`), 형식(사진 HEIC/HEIF/JPEG, 영상 QuickTime/MP4 아니면 415 `unsupported_component_type`), Apple content identifier 비교(둘 다 있고 다르면 422 `pairing_mismatch`, 하나라도 없으면 `pairing: unverified`로 보관). 두 원본이 pool에 들어간 뒤 한 트랜잭션(권한·볼륨 재확인)에서 커밋 — 그 전에는 자산·이벤트·영수증 없음.
 - 중복 규칙(폴더 기준): 새 사진 → 201 `created`; 같은 사진만 있는 자산 → 영상을 붙여 200 `upgraded`(같은 asset_id, `asset_updated`, 감사 `asset.attach_component`); 같은 사진+같은 영상 → 200 `already_present`; 같은 사진+다른 영상 → 409 `component_conflict`(기존 원본 불변). UPLOADER는 언제나 같은 202 영수증(충돌이면 별도 자산으로 보관).

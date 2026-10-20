@@ -121,6 +121,12 @@ type assetJSON struct {
 	// when unknown or not read yet (an asset_updated event follows when it
 	// is found). Never the upload time.
 	CapturedAt *string `json:"captured_at"`
+	// DurationMS: the playing time in whole milliseconds, read by the
+	// server from the movie header of the original, or null when it is not
+	// a movie, unknown or not read yet (an asset_updated event follows when
+	// it is found). Always null for a live_photo: its own original is the
+	// still; the video's length is on its component.
+	DurationMS *int64 `json:"duration_ms"`
 	// UploadedByName: the uploader's display name, null when there is no
 	// uploader or the account is disabled or cannot log in.
 	UploadedByName *string `json:"uploaded_by_name"`
@@ -144,6 +150,8 @@ type componentJSON struct {
 	Bytes    int64  `json:"bytes"`
 	MimeType string `json:"mime_type"`
 	Filename string `json:"filename"`
+	// DurationMS: as assetJSON.DurationMS, for this original.
+	DurationMS *int64 `json:"duration_ms"`
 }
 
 func assetView(as meta.Asset) assetJSON {
@@ -151,15 +159,26 @@ func assetView(as meta.Asset) assetJSON {
 		PreviewReady: as.PreviewReady, PreviewStatus: as.PreviewStatus, UploadedAt: as.UploadedAt,
 		CapturedAt: nonEmpty(as.CapturedAt), UploadedByName: nonEmpty(as.UploaderName), MediaKind: as.MediaKind,
 		Pairing: nonEmpty(as.Pairing), Components: componentsView(as)}
+	if as.MediaKind != meta.MediaLivePhoto {
+		v.DurationMS = positive(as.DurationMS)
+	}
 	return v
 }
 
 // componentsView lists the extra originals of an asset (nil: none).
 func componentsView(as meta.Asset) []componentJSON {
 	if c := as.PairedVideo; c.SHA256 != "" {
-		return []componentJSON{{Role: c.Role, SHA256: c.SHA256, Bytes: c.Bytes, MimeType: c.MimeType, Filename: c.Filename}}
+		return []componentJSON{{Role: c.Role, SHA256: c.SHA256, Bytes: c.Bytes, MimeType: c.MimeType, Filename: c.Filename, DurationMS: positive(c.DurationMS)}}
 	}
 	return nil
+}
+
+// positive is nil for n <= 0 (JSON null).
+func positive(n int64) *int64 {
+	if n <= 0 {
+		return nil
+	}
+	return &n
 }
 
 // nonEmpty is nil for "" (JSON null).

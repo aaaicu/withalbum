@@ -383,14 +383,15 @@ func (s *Store) commitBundle(ctx context.Context, req meta.BundleCommit) (meta.C
 	for rows.Next() {
 		var a meta.Asset
 		var state, captured, uploader, kind, pairing, paired sql.NullString
+		var dur sql.NullInt64
 		var shared int
-		if err := rows.Scan(&a.ID, &a.SHA256, &a.Filename, &a.MimeType, &a.Bytes, &a.PreviewReady, &state, &a.UploadedAt, &captured, &uploader,
+		if err := rows.Scan(&a.ID, &a.SHA256, &a.Filename, &a.MimeType, &a.Bytes, &a.PreviewReady, &state, &a.UploadedAt, &captured, &dur, &uploader,
 			&kind, &pairing, &paired, &shared); err != nil {
 			rows.Close()
 			return meta.CommitResult{}, err
 		}
 		a.PreviewStatus = previewStatus(a.PreviewReady, state)
-		a.CapturedAt, a.UploaderName = captured.String, uploader.String
+		a.CapturedAt, a.DurationMS, a.UploaderName = captured.String, dur.Int64, uploader.String
 		if err := setLivePhoto(&a, kind, pairing, paired); err != nil {
 			rows.Close()
 			return meta.CommitResult{}, err
