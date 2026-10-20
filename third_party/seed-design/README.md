@@ -2,7 +2,9 @@
 
 The built-in dashboard (`internal/httpapi/web/index.html`) and setup screen
 use colour, type scale, spacing, radius and shadow values derived from
-**SEED Design** design tokens. Only token values (CSS custom properties)
+**SEED Design** design tokens. The macOS menu bar app
+(`macos/Sources/WithAlbumServerApp/Windows.swift`, `Theme`) reuses seven of
+the same derived colours. Only token values (CSS custom properties)
 were copied and adapted; no code, fonts, images or icon files.
 
 - Source: SEED Design, https://github.com/daangn/seed-design

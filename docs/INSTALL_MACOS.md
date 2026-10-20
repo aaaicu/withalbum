@@ -1,6 +1,54 @@
-# macOS 설치 — 개발용 패키지 (Apple Silicon 우선)
+# macOS 설치 (Apple Silicon 우선)
 
-> 아직 누구나 더블클릭하는 DMG가 아닙니다. **현재는 실험용**이며 로컬 컴퓨터에서만 접근할 수 있습니다.
+> **현재는 실험용**입니다. 서명·공증된 DMG는 아직 발행되지 않았습니다. 아래 메뉴 막대 앱은 소스에서 직접 빌드할 수 있고, 다른 방법으로는 서버 실행 파일과 개발용 LaunchAgent 스크립트를 씁니다.
+
+## 메뉴 막대 앱 "WithAlbum Server" (M32, macOS 13 이상)
+
+앱 하나에 서버(유니버설: Apple Silicon + Intel)가 들어 있고, 메뉴 막대 아이콘에서 서버를 관리합니다. 서버는 앱이 아니라 사용자 LaunchAgent(`org.withalbum.server`, `scripts/install-macos.sh`와 같은 이름·설정)로 실행되므로, 메뉴 막대 앱을 종료해도 서버는 계속 돕니다.
+
+### 설치
+
+1. `WithAlbumServer_<버전>.dmg`를 열고 **WithAlbum Server**를 **Applications(응용 프로그램)** 폴더로 끌어 놓습니다. 디스크 이미지 안에서 바로 실행하면 서버를 등록하지 않습니다(이미지를 꺼내면 경로가 사라지기 때문).
+2. 응용 프로그램 폴더에서 앱을 엽니다. 메뉴 막대에 사진 묶음 아이콘이 생깁니다(Dock에는 없음).
+3. 메뉴에서 **서버 등록하고 시작** → 저장소가 아직 없으면 서버가 설치 모드로 뜨고 **설치 코드** 창이 열립니다. **설치 화면 열기**로 `http://127.0.0.1:8787/setup`을 열어 코드를 입력하고 저장장치·관리자를 정하세요(아래 "설치 화면으로 시작하기"와 같은 흐름). 설치 화면이 이미 등록한 저장소(`~/Library/Application Support/WithAlbum/server.json`)가 있으면 그것을 그대로 씁니다.
+
+**서명 없는 빌드(직접 빌드한 DMG)의 Gatekeeper:** 서명·공증 전 앱은 다른 Mac에서 내려받으면 "확인되지 않은 개발자" 또는 "손상됨"으로 열리지 않습니다. 직접 빌드한 Mac에서는 그냥 열립니다. 다른 Mac에서 시험하려면 내용을 확인한 뒤 Finder에서 앱을 Control-클릭 → 열기(macOS 15 이상은 시스템 설정 > 개인정보 보호 및 보안 > "그래도 열기")를 쓰세요. `xattr -dr com.apple.quarantine`로 격리 속성을 지우는 방법은 권하지 않습니다. 배포본은 관리자가 서명·공증합니다([`RELEASING.md`](RELEASING.md#macos-dmg)).
+
+### 메뉴
+
+| 항목 | 동작 |
+|---|---|
+| 상태 줄 | 정상 실행 중 / 실행 중 · 무결성 경고 / 실행 중 · 저장 중단(디스크 없음) / 설치 필요 / 시작하는 중 / 시작하지 못함(30초마다 다시 시도, error.log 마지막 오류 표시) / 멈춤 / 이 앱이 관리하지 않는 서버. 기존 `GET /api/v1/health`(설치 모드에서는 `/setup`)만 물어봄 — 새 API 없음 |
+| 저장 위치·접속·서버 버전 | LaunchAgent의 `WITHALBUM_ROOT` 또는 설정 파일의 저장소, "이 Mac에서만 접속" 또는 LAN 주소 |
+| 관리 화면 열기 | 이 Mac에서만 접속이면 기본 브라우저로 `http://127.0.0.1:8787`(설치 모드는 `/setup`). LAN 접속을 켠 동안에는 루프백이 열려 있지 않으므로 앱 안 창에서 `https://<사설 주소>`를 열고, 서버 인증서는 저장소의 공개키 지문과 같을 때만 믿습니다 |
+| 설치 코드 보기 | 설치 모드일 때만. 이 Mac의 `~/Library/Logs/WithAlbum/error.log`에서 마지막 코드를 읽어 보여 주고 복사합니다(어디에도 보내지 않음). 만료·잠김이면 "새 코드 받기(서버 다시 시작)" |
+| 시작 / 멈춤 / 다시 시작 | `launchctl bootstrap` / `bootout` / `kickstart -k`. 멈춤은 지금만 멈추며, "로그인 시 서버 시작"이 켜져 있으면 다음 로그인 때 다시 시작합니다 |
+| LAN에서 접속 허용 | 저장소가 등록되고 서버가 정상 실행 중일 때만(=설치 화면에서 관리자를 만들었음). 이 Mac 네트워크의 **사설 주소**(192.168.x.x, 10.x.x.x, 172.16–31.x.x, fd00::/8) 중 하나와 포트를 골라 `-tls -allow-lan`, `WITHALBUM_LISTEN=<주소>:<포트>`로 다시 시작합니다(스크립트의 `--lan`과 같음). 로그인 가능한 관리자가 없으면 서버가 기동을 거부하고, 앱은 그 이유를 보여 주며 "이 Mac에서만 접속으로 되돌리기"를 제공합니다 |
+| 기기 연결 정보(페어링 QR) | LAN일 때. `withalbum-server tls -json` 결과(공개키 지문, 주소별 `withalbum://pair…`)를 QR·문자열로 보여 줍니다. 비밀 값은 없습니다 |
+| 로그인 시 서버 시작 | 켜면 plist를 `~/Library/LaunchAgents/`에, 끄면 `~/Library/Application Support/WithAlbum/ServerApp/`에 둡니다(끈 상태에서는 "시작"을 누를 때만 로그아웃 전까지 실행) |
+| 로그인 시 이 앱 열기 | 메뉴 막대 앱 자체의 로그인 항목(Service Management). 서명 없는 빌드에서는 실패할 수 있습니다 |
+| 로그 폴더 열기 | `~/Library/Logs/WithAlbum`(0700: 설치 코드가 적힐 수 있음) |
+| 서버 등록 해제 | 서버를 멈추고 이 앱이 쓴 plist만 지웁니다. 사진 원본·저장소·설정 파일·로그는 남습니다 |
+| 메뉴 막대 앱 종료 / 서버를 멈추고 종료 | 기본은 앱만 종료(서버 계속 실행) |
+
+### 스크립트로 설치한 서버가 이미 있을 때
+
+`scripts/install-macos.sh`로 만든 `~/Library/LaunchAgents/org.withalbum.server.plist`가 있으면 앱은 그 파일을 덮어쓰지 않고 "스크립트로 설치한 서버가 있어요"를 보여 줍니다. **이 앱으로 관리 전환**을 누르면 저장 위치(`WITHALBUM_ROOT`)·설정 파일(`WITHALBUM_CONFIG`)·기타 환경 변수·접속 방식(`--lan` 주소)은 그대로 두고 실행 파일만 앱 안의 서버로 바꿔 다시 시작합니다. 예전 실행 파일(`~/.local/share/withalbum-server/`)은 지우지 않습니다. 기존 LAN 주소가 규칙(사설 주소)에 맞지 않으면 "이 Mac에서만 접속"으로 바꿉니다. 앱을 다른 위치로 옮겼을 때도 같은 전환으로 경로를 고칩니다. 읽을 수 없는 plist는 건드리지 않습니다.
+
+### 소스에서 빌드
+
+macOS 13 이상 + Xcode(명령행 도구 포함) + Go가 필요합니다.
+
+```bash
+bash scripts/build-macos-app.sh --version 0.1.0-alpha.1   # dist/macos/ 에 .app 과 _unsigned.dmg
+(cd macos && swift test)                                   # 순수 로직 단위 테스트
+```
+
+서버는 `./server`에서 `CGO_ENABLED=0 -trimpath -ldflags "-s -w -X main.version=<버전>"`으로 arm64·amd64를 빌드해 `lipo`로 합치고 `Contents/Helpers/withalbum-server`에 넣습니다. 앱 실행 파일은 Swift Package(`macos/`, SwiftUI `MenuBarExtra`)로 arm64+x86_64를 빌드합니다. 둘 다 ad-hoc 서명만 합니다. 앱의 `Contents/Resources`에 LICENSE·NOTICE·`third_party/`가 들어갑니다.
+
+진단: `"/Applications/WithAlbum Server.app/Contents/MacOS/WithAlbumServer" --status`는 창 없이 상태를 한 번 확인해 출력합니다(읽기만, 설치 코드 값은 출력하지 않음). `WITHALBUM_APP_DRY_RUN=1`로 앱을 실행하면 plist를 임시 폴더에만 쓰고 `launchctl`을 부르지 않습니다(개발·시험용).
+
+**왜 SMAppService.agent가 아닌가:** 번들에 넣는 고정 plist는 서명 후 바꿀 수 없어 `--lan` 주소·`WITHALBUM_ROOT`·로그 경로(`~` 확장 불가)를 사용자마다 다르게 둘 수 없고, 스크립트와 같은 이름의 에이전트와 충돌을 피하기 어렵습니다. 그래서 스크립트처럼 plist를 써서 `launchctl`로 관리합니다.
 
 ## 실행 파일 준비
 
@@ -83,4 +131,4 @@ bash scripts/install-macos.sh --lan 192.168.0.10:8787 ./withalbum-server
 
 ## 향후 정식 Mac 버전
 
-원클릭 DMG/PKG + 첫 실행 마법사 + 볼륨 선택 + 관리자 초기 계정 + 메뉴바 상태 + 자동 시작/중지 + 업데이트 지원. Apple 서명 및 공증을 완료해야 사용자에게 일반적인 Mac 설치 경험을 제공할 수 있습니다.
+메뉴 막대 앱(위)에 더해: 서명·공증된 DMG 발행, 자동 업데이트, 로그인 전 상시 실행(시스템 서비스). Apple 서명 및 공증을 완료해야 사용자에게 일반적인 Mac 설치 경험을 제공할 수 있습니다.

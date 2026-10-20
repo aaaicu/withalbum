@@ -48,3 +48,13 @@ jobs:
         run: |
           go build ./...
           go build -trimpath -o withalbum-server ./server
+  macos-app:
+    name: macOS menu bar app (swift test, scripts)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shell syntax
+        run: for f in scripts/*.sh; do bash -n "$f"; done
+      - name: Swift unit tests
+        working-directory: macos
+        run: swift test

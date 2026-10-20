@@ -24,7 +24,8 @@
 - **부분 구현:** HTTP 로그인·기기 세션·계정 관리 API(`/api/v1/auth/login|refresh|logout`, `/api/v1/me`, `/api/v1/me/password`, `/api/v1/me/devices`, `/api/v1/admin/users*`, 규격 [`docs/API_v2.yaml`](docs/API_v2.yaml)). access 15분/refresh 30일 회전(로그인 후 최대 90일)·재사용 감지(앱 응답 유실 30초 유예 1회), Bearer(앱)·HttpOnly 쿠키+CSRF(웹), 로그인 속도 제한·실패 감사, 비밀번호 재설정·계정 비활성화 시 세션 회수.
 - **부분 구현(테스트·로컬 바이너리 스모크 검증):** 앨범 ACL. 대시보드 페이지·health·login·refresh를 뺀 모든 API는 세션 필요(없으면 401). 폴더·업로드·동기화·원본/프리뷰는 요청마다 DB의 소유자·멤버십으로 `internal/authz` 판정(`internal/httpapi/middleware_authz.go`, 라우트별 정책 표, 미선언 라우트는 기동 시 panic). 관리자라도 소유·멤버가 아닌 앨범은 404, 역할 부족은 403, 다른 폴더의 자산 ID는 404. UPLOADER는 업로드만 가능하고 응답은 항상 같은 202 영수증. 업로드는 커밋 직전 DB 트랜잭션 안에서 권한을 재확인. 기본 USER는 앨범 생성 불가(`can_create_albums`). 무인증 `/api/v1/assets/{sha}/*`는 제거. 앨범 공유(OWNER만): 등록 계정 초대(7일, 대상 본인만 수락), 초대 취소, 역할 변경·추방(다음 요청부터 반영), 소유권 이전(이전 오너는 CONTRIBUTOR, 1 트랜잭션, 실패 시 롤백), 앨범 보관. 모든 변경은 같은 트랜잭션에서 감사 로그. 관리자는 **보관된 앨범만** 다른 활성 계정에 재배정할 수 있음(탈퇴 계정 비활성화용, 접근 권한은 생기지 않음, M17).
 - **설계만 완료:** Mac 설치 마법사, iOS/Android 앱, 역방향 모바일 동기화, Google Drive 어댑터, 장애 복구.
-- **아직 없음:** 서명·공증된 DMG, 정식 Google Drive OAuth 연결, 모바일 앱, 프로덕션 안정성 보장.
+- **부분 구현(로컬 빌드·실행 확인, 서명·공증·다른 Mac 미검증):** Mac 메뉴 막대 앱 "WithAlbum Server"(M32, `macos/`, macOS 13+). 앱 안에 유니버설 서버 바이너리를 담고, `scripts/install-macos.sh`와 같은 사용자 LaunchAgent(`org.withalbum.server`)를 등록·시작·멈춤·다시 시작합니다. 상태(정상 실행 중·설치 필요·저장 중단·멈춤), 관리 화면 열기, 설치 코드 보기(이 Mac의 로그에서만 읽음), 로그 폴더, 로그인 시 시작, LAN 접속 허용(`-tls -allow-lan`, 사설 주소만, 서버 게이트 그대로), 페어링 QR. DMG는 `scripts/build-macos-app.sh`(서명 없음), 배포용 서명·공증은 관리자가 `scripts/sign-notarize-macos.sh`로 직접. 설치: [`docs/INSTALL_MACOS.md`](docs/INSTALL_MACOS.md).
+- **아직 없음:** 서명·공증된 DMG 배포본(스크립트만 있음), 정식 Google Drive OAuth 연결, 모바일 앱, 프로덕션 안정성 보장.
 - **부분 구현(테스트·LAN 바이너리 스모크 검증, 실기기 앱 미검증):** TLS·LAN 게이트(M15). 기본은 `127.0.0.1` 평문 HTTP. LAN 주소(사설 IP 또는 와일드카드)는 `-allow-lan` + `-tls` + 로그인 가능한 활성 SERVER_ADMIN이 모두 있을 때만 listen하고, 하나라도 없으면 기동을 거부합니다. 공인 IP·호스트 이름은 항상 거부. `-tls`는 자체 서명 인증서(`.system/tls/server.pem`, 0600, ECDSA P-256, TLS 1.3 전용)를 만들고, 앱은 공개키 지문(SPKI SHA-256)을 핀닝합니다(`withalbum-server tls`, 대시보드 관리자 화면에 페어링 페이로드). 보안 헤더·원본 다운로드 sandbox·IPv6 /64 속도 제한 키·루프백 Host 검사. 자세한 내용과 보안 점검 결과: [`SECURITY.md`](SECURITY.md).
 - **보안 경고:** **인터넷에 공개(포트포워딩·공개 리버스 프록시)하거나 대체할 수 없는 원본 사진의 단일 보관소로 사용하지 마세요.**
 
@@ -44,7 +45,8 @@ SQLite 스키마와 YAML API 문서는 목표 규격으로만 분류할 것. 결
 |---|---|---|
 | [GitHub 최신 다운로드](../../releases/latest) | 저장소에 올린 뒤 태그 릴리스 발행 시 활성화되는 상대 링크 | **미게시** |
 | [GitHub 모든 버전·릴리스 노트](../../releases) | 버전별 변경 내용과 설치 파일 | **미게시** |
-| [Mac mini 설치](docs/INSTALL_MACOS.md) | Apple Silicon(`darwin_arm64`) 최우선; Intel도 목표 | 개발자용 CLI/LaunchAgent |
+| [Mac mini 설치](docs/INSTALL_MACOS.md) | Apple Silicon(`darwin_arm64`) 최우선; Intel도 목표 | 메뉴 막대 앱 DMG(직접 빌드, 서명 전) · 개발자용 CLI/LaunchAgent |
+| Mac 메뉴 막대 앱 DMG | `WithAlbumServer_<버전>.dmg`(서명·공증본)은 관리자가 macOS에서 만들어 Release에 직접 올림([`docs/RELEASING.md`](docs/RELEASING.md#macos-dmg)) | **미게시** — 지금은 `scripts/build-macos-app.sh`로 서명 없는 DMG만 |
 | [Linux·Raspberry Pi 설치](docs/INSTALL_LINUX.md) | Linux AMD64/ARM64/ARMv7, systemd | 개발자용 |
 | [배포 파이프라인](docs/RELEASING.md) | GitHub Actions · GoReleaser · checksum · `scripts/release-dryrun.sh` | prerelease(초안)만, dry-run 검증 |
 | [v0.1.0-alpha.1 릴리스 노트](docs/releases/v0.1.0-alpha.1.md) | 첫 prerelease 후보 | **초안, 미발행** |
@@ -53,7 +55,7 @@ SQLite 스키마와 YAML API 문서는 목표 규격으로만 분류할 것. 결
 <!-- 릴리스 요구사항:
 GitHub Releases는 git의 'release/' 폴더가 아니라 GitHub Releases 화면이다.
 파일 명명, checksums.txt, 릴리스 노트, prerelease 표시, 설치 방법, 지원 아키텍처를 매번 검증한다.
-고객용 Mac DMG/PKG는 아직 존재하지 않으므로 README에서 다운로드 가능하다고 적지 않는다.
+서명·공증된 Mac DMG가 Release에 올라가기 전에는 README에서 다운로드 가능하다고 적지 않는다(서명 없는 DMG는 직접 빌드용).
 실제 리포지터리가 만들어지면 GitHub URL, go.mod placeholder, workflow 동작, README 링크를 갱신한다.
 미서명 바이너리와 실제 Mac 실기기 테스트 여부를 명시한다.
 -->
@@ -62,7 +64,7 @@ GitHub Releases는 git의 'release/' 폴더가 아니라 GitHub Releases 화면�
 
 - **실험판(prerelease)**입니다. 인터넷 공개 금지, 대체 불가능한 원본의 유일한 보관소로 쓰지 말 것. alpha 동안 데이터 형식·API가 바뀔 수 있습니다.
 - **실기기 미검증:** Mac mini + 외장 디스크에서의 설치·launchd 자동 시작·디스크 분리/재연결·재부팅·전원 차단·백업 복원은 절차([`docs/MACMINI_E2E_CHECKLIST.md`](docs/MACMINI_E2E_CHECKLIST.md))만 있고 결과가 없습니다. Intel Mac·Linux·Raspberry Pi는 크로스빌드만 확인했습니다.
-- macOS 바이너리는 **서명·공증되지 않은 ZIP**입니다. DMG/PKG, 메뉴바 앱, 로그인 전 상시 실행(시스템 서비스)은 없습니다. `scripts/install-macos.sh`의 LaunchAgent는 사용자가 로그인한 세션에서만 동작합니다.
+- macOS 바이너리는 **서명·공증되지 않은 ZIP**입니다. 메뉴 막대 앱 DMG는 `scripts/build-macos-app.sh`로 직접 빌드할 수 있지만 서명·공증 전이라 다른 Mac에서는 Gatekeeper가 막습니다(서명·공증은 관리자 작업, 미수행). 로그인 전 상시 실행(시스템 서비스)은 없습니다. 앱과 `scripts/install-macos.sh`의 LaunchAgent는 사용자가 로그인한 세션에서만 동작합니다.
 - 외장 디스크를 다시 연결했을 때 장치 번호(st_dev)가 바뀌면 서버를 재시작해야 쓰기가 재개될 수 있습니다(fail closed 유지). 디스크 UUID 대조는 없고, 볼륨 마커를 복사한 다른 디스크는 구분하지 못할 수 있습니다.
 - 백업은 수동 명령(`backup -to`)뿐입니다. 예약 실행·원격/클라우드 백업·보존 정책은 없습니다.
 - LAN은 자체 서명 TLS + 공개키 지문 핀만 지원합니다(브라우저 경고). 앱의 핀닝은 실기기에서 검증하지 않았습니다. 인터넷 접속·원격 중계는 없습니다.
@@ -345,7 +347,7 @@ LAN은 TLS(자체 서명 + SPKI 핀닝) + 관리자 + -allow-lan일 때만(M15).
 
 | 대상 | 목표 패키지 | 현재 상태 |
 |---|---|---|
-| **Mac mini Apple Silicon (M1+)** | 서명·공증 DMG/PKG, 최초 설정 화면, 외장하드 지정, 메뉴바/백그라운드 서비스 | **기본 바이너리/실험용 LaunchAgent만** |
+| **Mac mini Apple Silicon (M1+)** | 서명·공증 DMG/PKG, 최초 설정 화면, 외장하드 지정, 메뉴바/백그라운드 서비스 | **메뉴 막대 앱 + 서명 없는 DMG 빌드(M32), 기본 바이너리/실험용 LaunchAgent** — 서명·공증본 미발행 |
 | Intel Mac | 동일 사용자 흐름 | 크로스빌드 대상 |
 | Linux x86-64 | tar.gz / 장차 `.deb` 또는 systemd | 기본 스크립트 존재 |
 | Raspberry Pi 64/32-bit | ARM64/ARMv7 바이너리, 메모리 경량화 | 크로스빌드 대상 |
