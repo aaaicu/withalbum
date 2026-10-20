@@ -84,7 +84,8 @@ info:
     Sync model (client state machine: docs/CLIENT_SYNC_STATES.md). Each
     folder has a change feed of events numbered 1, 2, ... (seq):
     asset_added, asset_removed (a tombstone) and asset_updated (an asset
-    still in the folder changed: its preview_status or its captured_at; the
+    still in the folder changed: its preview_status, captured_at,
+    duration_ms (or a component's), or a paired video was attached; the
     event's "assets" entry carries the new state). A client keeps a cursor per
     folder, an opaque string returned as next_cursor, and asks for the
     events after it (GET .../sync). It advances its stored cursor only after
@@ -122,6 +123,21 @@ info:
     receipt and never an asset_id.
 
 
+    Creating a folder (POST /api/v1/folders) may carry an Idempotency-Key
+    of the same form, scoped to the account and the session's device. A
+    retry with the same key and the same (trimmed) name creates nothing and
+    returns the folder the first request created: 201 with
+    Idempotency-Replayed: true, the folder as the caller sees it now (role
+    and member_count may have changed since; archived: 404
+    folder_not_found). The same key with another name is 422
+    idempotency_key_reused. A retry is authorized like a new request (403
+    when the account may no longer create albums). Concurrent requests with
+    one key create one folder. Keys are remembered 30 days. Servers with
+    this ability list "folder_create_idempotency" in GET /me
+    server_features; on older servers the header is ignored and a client
+    has to look for the folder itself before retrying.
+
+
     Previews. JPEG, PNG and GIF previews are made during the upload.
     HEIC/HEIF/AVIF and other stills and videos get theirs from optional
     external tools (macOS sips, ffmpeg) in a background worker after the
@@ -151,8 +167,16 @@ info:
     null and no event is sent. captured_at is never the upload time: a
     client that has none shows uploaded_at as "added" instead. Originals
     stored before a server upgrade are read in the background too (with
-    the same asset_updated events). An UPLOADER sees none of these fields:
-    it only gets the 202 receipt and the folder's name and role.
+    the same asset_updated events). The same worker reads the playing time
+    of QuickTime/MP4 movies from the movie header (duration_ms, whole
+    milliseconds): null until it has been read and when unknown, with an
+    asset_updated event when it is found (one event when the capture time
+    and the duration are found together). A live_photo asset has no
+    duration_ms of its own (its original is the still); the length of its
+    video is on the paired_video component. Servers that report it list
+    "asset_duration" in GET /me server_features. An UPLOADER sees none of
+    these fields: it only gets the 202 receipt and the folder's name and
+    role.
 
 
     Live Photos. A Live Photo (an iPhone still and its short video) is
@@ -326,11 +350,14 @@ paths:
                   server_features:
                     type: array
                     items: {type: string}
-                    examples: [[live_photo_bundles]]
+                    examples: [[live_photo_bundles, folder_create_idempotency, asset_duration]]
                     description: >-
                       Optional abilities of this server. "live_photo_bundles":
                       POST .../bundles stores Live Photos (still and video as
-                      one asset). Absent on older servers; clients must
+                      one asset). "folder_create_idempotency": POST
+                      /api/v1/folders honors an Idempotency-Key.
+                      "asset_duration": assets and components carry
+                      duration_ms. Absent on older servers; clients must
                       ignore unknown values.
         '401': {description: unauthorized}
   /api/v1/me/password:
@@ -690,7 +717,18 @@ paths:
       description: >-
         Requires SERVER_ADMIN or can_create_albums=true (checked on the
         request and again inside the transaction); membership never
-        authorizes creation. Cookie sessions need X-CSRF-Token.
+        authorizes creation. Cookie sessions need X-CSRF-Token. An optional
+        Idempotency-Key (scoped to the account and the session's device)
+        makes retries safe: the same key and name return the folder the
+        first request created (201, Idempotency-Replayed: true, as the
+        caller sees it now) without creating another; see the description
+        at the top.
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: false
+          description: 'Optional; 1-128 characters A-Z a-z 0-9 . _ : - (a UUID is recommended), kept for every retry of one creation. Scoped to account and device. Remembered 30 days.'
+          schema: {type: string, pattern: '^[A-Za-z0-9._:-]{1,128}$'}
       requestBody:
         required: true
         content:
@@ -702,13 +740,20 @@ paths:
                 name: {type: string, minLength: 1, maxLength: 80, description: 'trimmed; 1-80 characters'}
       responses:
         '201':
-          description: Created; role OWNER
+          description: >-
+            Created; role OWNER, member_count 1. With Idempotency-Replayed:
+            true, the folder an earlier request with this key created, with
+            the caller's current role and member_count.
+          headers:
+            Idempotency-Replayed: {$ref: '#/components/headers/IdempotencyReplayed'}
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Folder'}
-        '400': {description: 'invalid_json, invalid_folder_name'}
+        '400': {description: 'invalid_json, invalid_folder_name, invalid_idempotency_key'}
         '401': {description: unauthorized}
         '403': {description: 'forbidden (no album-creation permission) or csrf_failed'}
+        '404': {description: 'folder_not_found: a retried key whose folder was archived or is no longer visible to the caller'}
+        '422': {description: 'idempotency_key_reused (this key created a folder with another name)'}
         '503': {description: 'storage_unavailable, busy'}
         '507': {description: insufficient_storage}
     get:
@@ -1818,7 +1863,7 @@ components:
             member list and the invitations stay owner-only).
     Asset:
       type: object
-      required: [id, sha256, filename, mime_type, bytes, preview_ready, preview_status, uploaded_at, captured_at, uploaded_by_name, media_kind]
+      required: [id, sha256, filename, mime_type, bytes, preview_ready, preview_status, uploaded_at, captured_at, duration_ms, uploaded_by_name, media_kind]
       properties:
         id: {type: string, description: 'random; valid only under its folder'}
         sha256: {type: string, description: 'of the original, to verify a download'}
@@ -1843,6 +1888,20 @@ components:
             whose zone was not recorded (EXIF without OffsetTimeOriginal),
             which is not an instant and should be shown as it is. Never the
             upload time.
+        duration_ms:
+          type: [integer, 'null']
+          minimum: 1
+          example: 14000
+          description: >-
+            Playing time of a QuickTime/MP4 original in whole milliseconds
+            (rounded down), read by the server from the movie header
+            (mvhd duration / timescale; mehd for fragmented movies), or null
+            when it is not a movie, the length is unknown (more than a week
+            is not believed) or it has not been read yet (an asset_updated
+            event follows). Always null for media_kind live_photo: the
+            still is the asset's original; its video's length is on the
+            paired_video component. Servers before "asset_duration" omit
+            the key.
         uploaded_by_name:
           type: [string, 'null']
           description: >-
@@ -1871,13 +1930,17 @@ components:
           items: {$ref: '#/components/schemas/Component'}
     Component:
       type: object
-      required: [role, sha256, bytes, mime_type, filename]
+      required: [role, sha256, bytes, mime_type, filename, duration_ms]
       properties:
         role: {type: string, enum: [paired_video]}
         sha256: {type: string, description: 'of this original, to verify its download'}
         bytes: {type: integer}
         mime_type: {type: string}
         filename: {type: string}
+        duration_ms:
+          type: [integer, 'null']
+          minimum: 1
+          description: 'Playing time of this original, as Asset.duration_ms (null until read or when unknown).'
     Bundle:
       type: object
       required: [bundle_id, folder_id, kind, status, expires_at, components]
@@ -1931,7 +1994,7 @@ components:
       required: [seq, kind, asset_id, folder_id, uploader_device_id, occurred_at]
       properties:
         seq: {type: integer, minimum: 1}
-        kind: {type: string, enum: [asset_added, asset_removed, asset_updated], description: 'asset_updated: the asset (in "assets") changed: its preview_status or captured_at, or a paired video was attached (media_kind became live_photo)'}
+        kind: {type: string, enum: [asset_added, asset_removed, asset_updated], description: 'asset_updated: the asset (in "assets") changed: its preview_status, captured_at or duration_ms (its own or its paired video''s), or a paired video was attached (media_kind became live_photo)'}
         asset_id: {type: string}
         folder_id: {type: string}
         uploader_device_id: {type: string, description: 'X-Device-ID label of the upload that added the asset to this folder: on asset_added, and on asset_updated the same label as that asset_added (the server made the change, no device did; "" when the upload sent none); always "" for asset_removed'}

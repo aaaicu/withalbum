@@ -2,7 +2,8 @@
 // metadata of its original: EXIF DateTimeOriginal (with OffsetTimeOriginal)
 // in JPEG, TIFF and HEIF/HEIC/AVIF files, and the creation date of
 // QuickTime/MP4 movies (com.apple.quicktime.creationdate, else the mvhd
-// creation time).
+// creation time). Duration (duration.go) reads the playing time of a
+// QuickTime/MP4 movie from its movie header, with the same limits.
 //
 // Originals are untrusted input. Extract never panics, never allocates
 // more than a fixed amount, reads at most MaxReadBytes through at most
