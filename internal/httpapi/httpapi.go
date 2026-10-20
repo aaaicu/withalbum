@@ -109,6 +109,7 @@ type Server struct {
 	auth             *Auth
 	members          meta.Memberships
 	tls              *TLSInfo
+	relay            *RelayInfo
 	startup          *StartupCheck
 	denials          *denialLog
 	uploads          uploadLocks

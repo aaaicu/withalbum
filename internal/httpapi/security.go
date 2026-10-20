@@ -118,6 +118,26 @@ type Pairing struct {
 // SetTLSInfo records the TLS identity. Call it before Handler.
 func (s *Server) SetTLSInfo(info *TLSInfo) { s.tls = info }
 
+// RelayInfo describes the relay through which the server is reachable from
+// outside the home (docs/RELAY_DESIGN.md). nil: no relay.
+type RelayInfo struct {
+	Endpoint     string      // relay host:port
+	RendezvousID string      // this server's ID at the relay
+	Connected    func() bool // current tunnel state (nil: unknown)
+}
+
+// SetRelayInfo records the relay. Call it before Handler.
+func (s *Server) SetRelayInfo(info *RelayInfo) { s.relay = info }
+
+// relayJSON is the "relay" object of GET /me and the admin TLS view.
+func (s *Server) relayJSON(withState bool) map[string]any {
+	v := map[string]any{"endpoint": s.relay.Endpoint, "rendezvous_id": s.relay.RendezvousID}
+	if withState && s.relay.Connected != nil {
+		v["connected"] = s.relay.Connected()
+	}
+	return v
+}
+
 // serverTLS answers GET /api/v1/admin/server/tls (SERVER_ADMIN). It shows
 // fingerprints and pairing payloads only, never key material. Compare the
 // fingerprint with the one printed at the server console: a page served
@@ -131,6 +151,10 @@ func (s *Server) serverTLS(w http.ResponseWriter, r *http.Request) {
 	if pairing == nil {
 		pairing = []Pairing{}
 	}
-	jsonReply(w, 200, map[string]any{"enabled": true, "spki_sha256": s.tls.SPKISHA256, "cert_sha256": s.tls.CertSHA256,
-		"not_after": ts(s.tls.NotAfter), "pairing": pairing})
+	body := map[string]any{"enabled": true, "spki_sha256": s.tls.SPKISHA256, "cert_sha256": s.tls.CertSHA256,
+		"not_after": ts(s.tls.NotAfter), "pairing": pairing}
+	if s.relay != nil {
+		body["relay"] = s.relayJSON(true)
+	}
+	jsonReply(w, 200, body)
 }

@@ -27,6 +27,7 @@ import (
 	"github.com/aaaicu/withalbum/internal/meta"
 	"github.com/aaaicu/withalbum/internal/meta/jsonstore"
 	"github.com/aaaicu/withalbum/internal/meta/sqlitestore"
+	"github.com/aaaicu/withalbum/internal/relay"
 	"github.com/aaaicu/withalbum/internal/storage"
 	"github.com/aaaicu/withalbum/internal/tlsid"
 )
@@ -351,6 +352,7 @@ func main() {
 	initStorage := flag.Bool("init-storage", false, "Register the existing WITHALBUM_ROOT directory as the storage volume and exit")
 	useTLS := flag.Bool("tls", false, "Serve HTTPS with the server's self-signed certificate (created in .system/tls on first use); clients pin its key fingerprint")
 	allowLAN := flag.Bool("allow-lan", false, "Allow a non-loopback WITHALBUM_LISTEN address (private LAN address or wildcard). Requires -tls and an active server administrator")
+	relayFlag := flag.String("relay", "", "Also serve apps through the relay at host:port over an outbound connection (default: WITHALBUM_RELAY; see docs/RELAY_DESIGN.md). Requires -tls and an active server administrator")
 	flag.Parse()
 	if *showVersion {
 		fmt.Println("withalbum-server " + version)
@@ -382,6 +384,10 @@ func main() {
 	}
 	// The administrator condition needs the database; check the rest first.
 	if _, err := checkListen(lc, 1); err != nil {
+		log.Fatalf("SECURITY: %v", err)
+	}
+	relayAddr := relayAddrSetting(*relayFlag)
+	if err := checkRelay(lc, relayAddr); err != nil {
 		log.Fatalf("SECURITY: %v", err)
 	}
 	minFree, err := minFreeBytes(os.Getenv("WITHALBUM_MIN_FREE_BYTES"))
@@ -444,6 +450,7 @@ func main() {
 		setup     *setupRun
 		code      string
 		codeEnd   time.Time
+		relayc    *relay.Client
 	)
 	if setupMode {
 		sc, display, err := httpapi.NewSetupCode(time.Now())
@@ -477,8 +484,16 @@ func main() {
 				log.Printf("TLS: re-issued the certificate with the same key; the pin did not change.")
 			}
 			urls := serverURLs(lc.Addr, net.InterfaceAddrs)
-			writeFingerprints(log.Writer(), id, urls)
-			a.api.SetTLSInfo(tlsInfo(id, urls))
+			var rt relayTarget
+			if relayAddr != "" {
+				if relayc, err = a.setupRelay(ctx, relayAddr, id); err != nil {
+					a.Close()
+					log.Fatalf("SECURITY: %v", err)
+				}
+				rt = relayTargetFor(id, relayAddr)
+			}
+			writeFingerprints(log.Writer(), id, urls, rt)
+			a.api.SetTLSInfo(tlsInfo(id, urls, rt))
 			tlsConfig = tlsid.ServerConfig(id)
 		}
 		handler = a.api.Handler()
@@ -512,10 +527,19 @@ func main() {
 	if !setupMode {
 		normal(a)
 	}
+	var relayServer *http.Server
+	if relayc != nil {
+		relayServer = serveRelay(ctx, relayc, handler, tlsConfig)
+	}
 	go func() {
 		<-ctx.Done()
 		shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+		if relayServer != nil {
+			if err := relayServer.Shutdown(shutCtx); err != nil {
+				log.Printf("shutdown (relay): %v", err)
+			}
+		}
 		if err := server.Shutdown(shutCtx); err != nil {
 			log.Printf("shutdown: %v", err)
 		}
