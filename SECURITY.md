@@ -95,6 +95,25 @@ QuickTime video) through an upload bundle and committed as one asset.
   access checks and headers (attachment, sandbox CSP, no-store) as
   `/original`.
 
+## Video duration and idempotent folder creation (M31)
+
+- **Parsing untrusted files.** The playing time of a movie is read by
+  `internal/capturetime.Duration` from `moov/mvhd` (and `moov/mvex/mehd`
+  for fragmented movies) with the same limits as the capture time: at most
+  1 MiB in a bounded number of reads, counted boxes, the movie data box
+  skipped by seeking, nothing allocated by a size read from the file. The
+  value is computed without overflow and a length over one week is
+  discarded. Pure Go, fuzz-tested (`FuzzDuration`), read after the commit
+  by the capture worker, never on the upload path.
+- **Same visibility as the capture time.** `duration_ms` is part of the
+  asset only for readers of the folder; an UPLOADER still gets only its
+  202 receipt.
+- **Folder creation keys.** An `Idempotency-Key` on `POST /folders` is
+  scoped to the account and the session's device; another account's key
+  never matches. A retry is authorized exactly like a new request and
+  answers with the folder as the caller sees it now (404 once it is
+  archived), so a stored key never grants access the caller lost.
+
 ## Setup screen (M24): threat model
 
 The browser setup screen lets the person at the Mac pick the storage disk and create the first administrator without typing console commands. It runs **before any account exists**, so it is the most exposed moment of the server's life. Design and threat model, written before the implementation:

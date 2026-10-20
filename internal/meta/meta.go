@@ -46,6 +46,10 @@ type Asset struct {
 	// original by the server (capturetime.Time.String), or "" when it is
 	// unknown or not read yet. Never the upload time.
 	CapturedAt string `json:"-"`
+	// DurationMS is the playing time of the original in milliseconds, as
+	// read from its movie header (capturetime.Duration), or 0 when it is
+	// not a movie, unknown or not read yet.
+	DurationMS int64 `json:"-"`
 	// UploaderName is the display name of the account that uploaded the
 	// asset, or "" when there is none or the account is disabled or cannot
 	// log in. Read only; never the login name, user_id or e-mail.
@@ -71,6 +75,8 @@ type Component struct {
 	Filename string
 	MimeType string
 	Bytes    int64
+	// DurationMS: as Asset.DurationMS, for this original.
+	DurationMS int64
 }
 
 // Media kinds (assets.media_kind).
@@ -99,11 +105,12 @@ const (
 
 // CaptureResult is what the capture-time worker read from one original
 // (SetCaptureTimes). CapturedAt "" records that the original has no
-// readable capture time.
+// readable capture time, DurationMS 0 that it has no readable duration.
 type CaptureResult struct {
 	SHA256      string
 	CapturedAt  string // capturetime.Time.String
 	CapturedUTC string // the UTC instant (RFC 3339, "Z"), or "" without one
+	DurationMS  int64  // capturetime.Duration
 }
 
 // Preview states of an asset (Asset.PreviewStatus).
@@ -138,8 +145,8 @@ const (
 	EventAssetAdded   = "asset_added"   // written by CommitUpload
 	EventAssetRemoved = "asset_removed" // written by RemoveAsset
 	// EventAssetUpdated: the asset's metadata changed (its preview status,
-	// written by SetPreviewStatus, or its capture time, written by
-	// SetCaptureTimes); read it again. Its
+	// written by SetPreviewStatus, or its capture time or duration,
+	// written by SetCaptureTimes); read it again. Its
 	// UploaderDeviceID is that of the asset's asset_added event in the same
 	// folder (the server made the change, no device did).
 	EventAssetUpdated = "asset_updated"
@@ -694,6 +701,14 @@ type MetadataStore interface {
 	// CreateFolder stores a new folder with a fresh random ID, owned by
 	// req.OwnerID, which must be an active account.
 	CreateFolder(ctx context.Context, req NewFolder) (Folder, error)
+	// CreateFolderOnce is CreateFolder for a request named by an
+	// idempotency key of req.OwnerID's device id.DeviceID. In the same
+	// transaction it records the key (folder_create_receipts), or, if the
+	// key is recorded already, creates nothing and returns that folder
+	// with replayed true (after req.Authorize, like a new request). A key
+	// recorded with another name is ErrIdempotencyMismatch. Concurrent
+	// requests with one key create one folder.
+	CreateFolderOnce(ctx context.Context, req NewFolder, id Idempotency) (f Folder, replayed bool, err error)
 	// ListFolders returns all folders in unspecified order (never nil). It
 	// is for maintenance and tests, never for answering a user.
 	ListFolders(ctx context.Context) ([]Folder, error)
@@ -739,7 +754,8 @@ type MetadataStore interface {
 	// LookupReceipt returns the receipt of an upload request, or
 	// ErrReceiptNotFound. It is a read; CommitUpload decides again.
 	LookupReceipt(ctx context.Context, userID, folderID string, id Idempotency) (Receipt, error)
-	// PruneUploadReceipts deletes receipts created before t.
+	// PruneUploadReceipts deletes receipts created before t: upload
+	// receipts and folder creation receipts (CreateFolderOnce).
 	PruneUploadReceipts(ctx context.Context, before time.Time) (int64, error)
 	// CreateUploadSession starts an upload session, or returns the existing
 	// one of the same (account, device, folder, key) with created false when
@@ -817,15 +833,19 @@ type MetadataStore interface {
 	// EventAssetUpdated to each folder that holds one of them, in one
 	// transaction. It returns the number of assets changed.
 	SetPreviewStatus(ctx context.Context, sha, status string) (int, error)
-	// PendingCaptures returns up to limit originals whose capture time has
-	// not been read yet, by SHA-256.
+	// PendingCaptures returns up to limit originals whose capture time or
+	// duration has not been read yet, by SHA-256.
 	PendingCaptures(ctx context.Context, limit int) ([]string, error)
 	// SetCaptureTimes records what the capture-time worker read, in one
-	// transaction, for the originals that are still pending (others are
-	// left as they are). For each original with a capture time it appends
-	// one EventAssetUpdated to every folder holding an asset of it; an
-	// original without one changes nothing a client sees, so it gets no
-	// event. It returns the number of events appended.
+	// transaction: the capture time of the originals whose capture time is
+	// still pending and the duration of those whose duration is still
+	// pending (other values are left as they are). For each original whose
+	// newly recorded capture time or duration is known it appends one
+	// EventAssetUpdated to every folder holding an asset of it as its
+	// original, and for a newly known duration also to every folder holding
+	// an asset with it as a component (a Live Photo's paired video); an
+	// original with nothing known changes nothing a client sees, so it gets
+	// no event. It returns the number of events appended.
 	SetCaptureTimes(ctx context.Context, results []CaptureResult) (int, error)
 	// GetFolderAsset returns the asset with this ID if it is currently linked
 	// to the folder, and ErrAssetNotFound otherwise (unknown ID, removed, or
