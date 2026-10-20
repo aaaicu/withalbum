@@ -1603,6 +1603,11 @@
       }
       rows.push(s.integrity === 'ok' ? checkRow('ok', '무결성 · 정상', '서버 시작 시 점검 기준')
         : checkRow('bad', '무결성 · 경고', '서버 로그와 verify 결과를 확인하세요'));
+      const u = s.usage;
+      if (u) {
+        rows.push(checkRow('kept', '저장된 원본 ' + fmtBytes(u.stored_bytes) + ' · ' + u.stored_originals.toLocaleString('ko-KR') + '개',
+          '앨범에 담긴 사진·동영상 ' + u.album_copies.toLocaleString('ko-KR') + '개 · ' + fmtBytes(u.album_bytes) + ' · 중복 제거로 아낀 용량 ' + fmtBytes(u.dedup_saved_bytes) + ' (같은 파일은 한 번만 저장)'));
+      }
       const c = s.startup_check;
       if (c) {
         const good = c.blobs - c.missing - c.size_mismatch;

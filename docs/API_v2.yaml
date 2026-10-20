@@ -675,7 +675,7 @@ paths:
   /api/v1/admin/server/storage:
     get:
       tags: [Server Admin]
-      summary: Storage volume state, free space and startup check (SERVER_ADMIN only)
+      summary: Storage volume state, free space, stored and album totals, and startup check (SERVER_ADMIN only)
       description: >-
         No path or volume identifier. integrity and startup_check come from
         the reconciliation at server start (counts only). The full check
@@ -694,6 +694,20 @@ paths:
                   integrity: {type: string, enum: [ok, warning]}
                   free_bytes: {type: [integer, 'null'], description: 'Free bytes of the volume; null where the platform cannot tell'}
                   min_free_bytes: {type: integer, description: Reserve every upload must leave free}
+                  usage:
+                    type: object
+                    description: >-
+                      Totals only, never per album. Originals are stored once
+                      per SHA-256 however many albums or accounts hold them;
+                      album_bytes counts them as the albums hold them.
+                      Absent when it could not be read.
+                    required: [stored_originals, stored_bytes, album_copies, album_bytes, dedup_saved_bytes]
+                    properties:
+                      stored_originals: {type: integer, description: Originals in the pool (one per SHA-256)}
+                      stored_bytes: {type: integer, description: Their bytes (previews not included)}
+                      album_copies: {type: integer, description: 'Originals as albums hold them: one per asset in a folder (archived folders included) plus its paired video'}
+                      album_bytes: {type: integer, description: The bytes of album_copies as if each were its own file}
+                      dedup_saved_bytes: {type: integer, description: 'album_bytes minus the bytes of the distinct originals they use: what storing each SHA-256 once saves'}
                   startup_check:
                     type: object
                     properties:

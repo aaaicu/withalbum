@@ -176,7 +176,7 @@ func TestAdminServerStorageUnavailable(t *testing.T) {
 	}
 	r := e.as(t, "root", "GET", "/api/v1/admin/server/storage", nil, nil)
 	m := wantJSON(t, "storage", r, 200)
-	wantKeys(t, "storage", m, "storage", "integrity", "free_bytes", "min_free_bytes")
+	wantKeys(t, "storage", m, "storage", "integrity", "free_bytes", "min_free_bytes", "usage")
 	if m["storage"] != "unavailable" {
 		t.Fatalf("storage %v", m)
 	}
@@ -250,10 +250,12 @@ func TestAdminServerStorage(t *testing.T) {
 	}
 	r := e.as(t, "root", "GET", "/api/v1/admin/server/storage", nil, nil)
 	m := wantJSON(t, "admin", r, 200)
-	wantKeys(t, "storage", m, "storage", "integrity", "free_bytes", "min_free_bytes")
+	wantKeys(t, "storage", m, "storage", "integrity", "free_bytes", "min_free_bytes", "usage")
 	if m["storage"] != "ok" || m["integrity"] != "ok" {
 		t.Fatalf("storage %v", m)
 	}
+	// Totals only (TestSameBytesStoredOnce checks the numbers).
+	wantKeys(t, "usage", m["usage"].(map[string]any), "stored_originals", "stored_bytes", "album_copies", "album_bytes", "dedup_saved_bytes")
 	if strings.Contains(string(r.Body), e.Root) || strings.Contains(string(r.Body), e.Volume.ID()) {
 		t.Fatalf("storage reply leaks details: %s", r.Body)
 	}
