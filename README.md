@@ -16,16 +16,16 @@
 **이 저장소는 완성 앱이 아니라 개발용 서버 프로토타입 + 전체 제품 설계 + Claude 개발 인수인계 패키지입니다.**
 
 - **기능이 동작하는 코드:** Go 기반 localhost 전용 서버, 간단한 웹 페이지, 폴더 생성, 파일 업로드, SHA-256 중복 확인, 제한적인 이미지 프리뷰, 변경 이벤트 조회.
-- **부분 구현(실기기 미검증):** `internal/storage/` 저장소 볼륨 가드. 명시적으로 `-init-storage`한 디렉터리만 사용하고, 기동 시와 쓰기 직전에 볼륨 마커·장치 번호(st_dev)를 재확인해 외장 디스크가 빠지면 쓰기를 거부(503)합니다. 디스크 UUID 대조는 아직 없음.
+- **부분 구현(디스크 이미지 혼돈 시험 검증, 실기기 미검증):** `internal/storage/` 저장소 볼륨 가드. 명시적으로 `-init-storage`한 디렉터리만 사용하고, 기동 시와 쓰기 직전에 볼륨 마커·장치 번호(st_dev)를 재확인해 외장 디스크가 빠지면 쓰기를 거부(503)하며, 한 번 사라진 저장소는 재시작 전까지 다시 믿지 않습니다. 마커에 디스크 UUID를 기록해 다른 디스크로 복사된 마커는 기동을 거부합니다(M37).
 - **부분 구현:** 메타데이터는 SQLite(`.system/withalbum.db`, `internal/meta/sqlitestore`)에 저장합니다. 업로드 1건(blob·자산·폴더 연결·시퀀스·이벤트)은 트랜잭션 하나로 커밋되고, 자산 ID는 랜덤이며 폴더마다 따로 발급됩니다(같은 바이트라도 다른 폴더에서는 다른 자산). 새 폴더의 소유자는 만든 사람이고, 이전 버전·이관 데이터의 폴더는 bootstrap 관리자 계정이 소유합니다(처음에는 로그인할 수 없는 잠금 상태의 `admin`, 콘솔 `withalbum-server admin init`으로 인수하면 user_id가 유지되어 그 폴더를 그대로 소유). **이전 버전의 `.system/state.json`만 있는 저장소는 기동을 거부합니다(파일은 변경하지 않음). `withalbum-server migrate-legacy`(점검) → `migrate-legacy -apply`로 무손실 이관한 뒤 기동하세요. 절차·롤백: [`docs/MIGRATION_legacy_state.md`](docs/MIGRATION_legacy_state.md).**
 - **부분 구현(테스트 검증, 실기기 미검증):** 업로드 원자적 커밋·크래시 복구. 성공 응답(200/201)은 원본 파일(임시 파일 fsync → pool rename → 디렉터리 fsync)과 DB 트랜잭션이 모두 디스크에 기록된 뒤에만 보냅니다. 기동 시 재조정이 미완료 업로드 임시 파일을 지우고, DB에 없는 pool 파일은 `.system/orphans/`로 옮기며(삭제 안 함), DB에 있는데 파일이 없거나 크기가 다른 원본은 로그와 `/api/v1/health`의 `integrity: warning`으로 알립니다. 여유 공간이 예약분(`WITHALBUM_MIN_FREE_BYTES`, 기본 1GiB) 아래로 내려갈 업로드는 기록 전에 `507 insufficient_storage`로 거부합니다. 같은 저장소에 서버/이관 명령이 두 개 뜨지 않도록 `.system/withalbum.lock`을 잠급니다. 단계별 장애 주입과 실제 SIGKILL 테스트로 검증했고, 실제 전원 차단·외장 디스크 분리는 미검증입니다.
 - **부분 구현:** 계정 코어. Argon2id 비밀번호 해시(`internal/auth/password`), 사용자 저장소(`internal/users`, 마지막 활성 관리자 보호·감사 로그), 콘솔 명령 `withalbum-server admin init | create-user | reset-password`.
 - **부분 구현(테스트·로컬 바이너리 스모크 검증, Mac 브라우저 점검 전):** 설치 화면(M24). 저장소가 없거나 관리자가 없으면 서버가 **이 컴퓨터의 평문 루프백 리스너에서만** 설치 모드로 뜨고, 콘솔에 1회용 설치 코드(12자, 30분, 5회 오입력 시 잠김)를 출력합니다. 브라우저 `http://127.0.0.1:8787/setup`에서 코드 → 저장장치 선택(macOS `/Volumes`·홈 폴더·직접 경로, 쓰기 테스트) → 관리자 계정 → 같은 프로세스에서 정상 모드로 전환(설치 라우트 404). 선택한 루트와 볼륨 ID는 사용자 설정 파일(`WITHALBUM_CONFIG`, 기본 `~/Library/Application Support/WithAlbum/server.json`)에 고정됩니다. TLS·LAN 리스너에는 설치 라우트가 없고, 콘솔 경로(`-init-storage`, `admin init`)는 그대로입니다. 위협 모델: [`SECURITY.md`](SECURITY.md#setup-screen-m24-threat-model).
 - **부분 구현:** HTTP 로그인·기기 세션·계정 관리 API(`/api/v1/auth/login|refresh|logout`, `/api/v1/me`, `/api/v1/me/password`, `/api/v1/me/devices`, `/api/v1/admin/users*`, 규격 [`docs/API_v2.yaml`](docs/API_v2.yaml)). access 15분/refresh 30일 회전(로그인 후 최대 90일)·재사용 감지(앱 응답 유실 30초 유예 1회), Bearer(앱)·HttpOnly 쿠키+CSRF(웹), 로그인 속도 제한·실패 감사, 비밀번호 재설정·계정 비활성화 시 세션 회수.
 - **부분 구현(테스트·로컬 바이너리 스모크 검증):** 앨범 ACL. 대시보드 페이지·health·login·refresh를 뺀 모든 API는 세션 필요(없으면 401). 폴더·업로드·동기화·원본/프리뷰는 요청마다 DB의 소유자·멤버십으로 `internal/authz` 판정(`internal/httpapi/middleware_authz.go`, 라우트별 정책 표, 미선언 라우트는 기동 시 panic). 관리자라도 소유·멤버가 아닌 앨범은 404, 역할 부족은 403, 다른 폴더의 자산 ID는 404. UPLOADER는 업로드만 가능하고 응답은 항상 같은 202 영수증. 업로드는 커밋 직전 DB 트랜잭션 안에서 권한을 재확인. 기본 USER는 앨범 생성 불가(`can_create_albums`). 무인증 `/api/v1/assets/{sha}/*`는 제거. 앨범 공유(OWNER만): 등록 계정 초대(7일, 대상 본인만 수락), 초대 취소, 역할 변경·추방(다음 요청부터 반영), 소유권 이전(이전 오너는 CONTRIBUTOR, 1 트랜잭션, 실패 시 롤백), 앨범 보관. 모든 변경은 같은 트랜잭션에서 감사 로그. 관리자는 **보관된 앨범만** 다른 활성 계정에 재배정할 수 있음(탈퇴 계정 비활성화용, 접근 권한은 생기지 않음, M17).
-- **설계만 완료:** Mac 설치 마법사, iOS/Android 앱, 역방향 모바일 동기화, Google Drive 어댑터, 장애 복구.
+- **별도 비공개 저장소:** iOS/Android 앱(Flutter). 이 서버의 공개 규격 [`docs/API_v2.yaml`](docs/API_v2.yaml)만 사용하며(공유 시트 인입·업로드 큐·역방향 동기화·QR 페어링·앨범 만들기, 서버 없이 쓰는 Google Drive 모드 PoC), 이 저장소에는 앱 코드가 없습니다. 실제 휴대폰 검증·스토어 배포 전입니다.
 - **부분 구현(로컬 빌드·실행 확인, 서명·공증·다른 Mac 미검증):** Mac 메뉴 막대 앱 "WithAlbum Server"(M32, `macos/`, macOS 13+). 앱 안에 유니버설 서버 바이너리를 담고, `scripts/install-macos.sh`와 같은 사용자 LaunchAgent(`org.withalbum.server`)를 등록·시작·멈춤·다시 시작합니다. 상태(정상 실행 중·설치 필요·저장 중단·멈춤), 관리 화면 열기, 설치 코드 보기(이 Mac의 로그에서만 읽음), 로그 폴더, 로그인 시 시작, LAN 접속 허용(`-tls -allow-lan`, 사설 주소만, 서버 게이트 그대로), 페어링 QR. DMG는 `scripts/build-macos-app.sh`(서명 없음), 배포용 서명·공증은 관리자가 `scripts/sign-notarize-macos.sh`로 직접. 설치: [`docs/INSTALL_MACOS.md`](docs/INSTALL_MACOS.md).
-- **아직 없음:** 서명·공증된 DMG 배포본(스크립트만 있음), 정식 Google Drive OAuth 연결, 모바일 앱, 프로덕션 안정성 보장.
+- **아직 없음:** 서명·공증된 DMG 배포본(스크립트만 있음), 검증된 Google Drive OAuth 연결, 배포된 모바일 앱, 프로덕션 안정성 보장.
 - **부분 구현(테스트·LAN 바이너리 스모크 검증, 실기기 앱 미검증):** TLS·LAN 게이트(M15). 기본은 `127.0.0.1` 평문 HTTP. LAN 주소(사설 IP 또는 와일드카드)는 `-allow-lan` + `-tls` + 로그인 가능한 활성 SERVER_ADMIN이 모두 있을 때만 listen하고, 하나라도 없으면 기동을 거부합니다. 공인 IP·호스트 이름은 항상 거부. `-tls`는 자체 서명 인증서(`.system/tls/server.pem`, 0600, ECDSA P-256, TLS 1.3 전용)를 만들고, 앱은 공개키 지문(SPKI SHA-256)을 핀닝합니다(`withalbum-server tls`, 대시보드 관리자 화면에 페어링 페이로드). 보안 헤더·원본 다운로드 sandbox·IPv6 /64 속도 제한 키·루프백 Host 검사. 자세한 내용과 보안 점검 결과: [`SECURITY.md`](SECURITY.md).
 - **부분 구현(Go 통합 테스트 검증, 공인 서버·실기기·앱 미검증):** 집 밖 접속 E2EE 중계(M35, 기본 꺼짐). 서버는 `-tls -relay host:port`로 중계에 바깥쪽 연결만 맺고(수신 포트 없음), 앱은 중계 위에서 LAN과 같은 핀 TLS를 쓰므로 중계는 암호문만 전달합니다. 관리 화면·관리 API는 중계로 제공하지 않음. 중계 프로그램 `withalbum-relay`(`./relay`). 설계·위협 모델: [`docs/RELAY_DESIGN.md`](docs/RELAY_DESIGN.md), 운영: [`docs/RELAY_OPERATIONS.md`](docs/RELAY_OPERATIONS.md).
 - **보안 경고:** **인터넷에 공개(포트포워딩·공개 리버스 프록시)하거나 대체할 수 없는 원본 사진의 단일 보관소로 사용하지 마세요.**
@@ -61,16 +61,21 @@ GitHub Releases는 git의 'release/' 폴더가 아니라 GitHub Releases 화면�
 미서명 바이너리와 실제 Mac 실기기 테스트 여부를 명시한다.
 -->
 
-### Known limitations (알려진 제약, v0.1.0-alpha.1 기준)
+### Known limitations (알려진 제약, v0.1.0-alpha.1 기준, 2026-10-20 갱신)
 
 - **실험판(prerelease)**입니다. 인터넷 공개 금지, 대체 불가능한 원본의 유일한 보관소로 쓰지 말 것. alpha 동안 데이터 형식·API가 바뀔 수 있습니다.
-- **실기기 미검증:** Mac mini + 외장 디스크에서의 설치·launchd 자동 시작·디스크 분리/재연결·재부팅·전원 차단·백업 복원은 절차([`docs/MACMINI_E2E_CHECKLIST.md`](docs/MACMINI_E2E_CHECKLIST.md))만 있고 결과가 없습니다. Intel Mac·Linux·Raspberry Pi는 크로스빌드만 확인했습니다.
+- **실기기 미검증:** Mac mini + 실제 외장 디스크에서의 설치·launchd 자동 시작·케이블 분리/재연결·재부팅·전원 차단·백업 복원은 절차([`docs/MACMINI_E2E_CHECKLIST.md`](docs/MACMINI_E2E_CHECKLIST.md))만 있고 사람이 수행한 결과가 없습니다. 대신 이 Mac에서 디스크 이미지(hdiutil 스파스 이미지)를 외장 디스크로 흉내 낸 **혼돈 시험 100회**(업로드 중 SIGKILL·결정 지점 SIGKILL·동기화 없는 강제 분리·분리 후 재연결(장치 번호 변경 포함)·디스크 가득 참·SIGTERM)에서 손실·불일치 0건이었습니다: [`docs/CHAOS_RESULTS.md`](docs/CHAOS_RESULTS.md). 강제 분리는 전원 차단의 근사일 뿐이며 디스크 쓰기 캐시 소실은 재현하지 못합니다. Intel Mac·Linux·Raspberry Pi는 크로스빌드만 확인했습니다.
+- **모바일 앱은 비공개 저장소**에서 개발 중입니다(Flutter, iOS/Android). 에뮬레이터·시뮬레이터 빌드와 실서버 통합 테스트까지 확인했고, 실제 휴대폰에서의 설치·공유 시트·백그라운드 업로드·TLS 핀닝은 검증하지 않았습니다. 스토어·TestFlight 배포는 없습니다.
+- **Google Drive 모드**는 비공개 앱 안의 PoC(서버 없이 각자의 Drive에 보관)입니다. 실제 Google 계정·기기 검증과 OAuth 앱 검토는 아직입니다. 이 서버는 Drive와 통신하지 않습니다.
 - macOS 바이너리는 **서명·공증되지 않은 ZIP**입니다. 메뉴 막대 앱 DMG는 `scripts/build-macos-app.sh`로 직접 빌드할 수 있지만 서명·공증 전이라 다른 Mac에서는 Gatekeeper가 막습니다(서명·공증은 관리자 작업, 미수행). 로그인 전 상시 실행(시스템 서비스)은 없습니다. 앱과 `scripts/install-macos.sh`의 LaunchAgent는 사용자가 로그인한 세션에서만 동작합니다.
-- 외장 디스크를 다시 연결했을 때 장치 번호(st_dev)가 바뀌면 서버를 재시작해야 쓰기가 재개될 수 있습니다(fail closed 유지). 디스크 UUID 대조는 없고, 볼륨 마커를 복사한 다른 디스크는 구분하지 못할 수 있습니다.
-- 백업은 수동 명령(`backup -to`)뿐입니다. 예약 실행·원격/클라우드 백업·보존 정책은 없습니다.
+- **외장 디스크를 다시 연결하면 서버를 재시작해야 쓰기가 재개됩니다**(장치 번호가 같아도). 실행 중 저장소가 한 번 사라지면 서버는 재시작 전까지 모든 쓰기를 `503 storage_unavailable`로 거부하고 health `storage: unavailable`을 유지합니다 — 분리된 마운트에서 열었던 DB 핸들과 인스턴스 잠금을 다시 믿지 않기 위해서입니다(M37 혼돈 시험에서 발견해 수정). 실행 중인 프로세스는 launchd KeepAlive가 재시작하지 않으므로 메뉴 막대 앱의 "다시 시작" 또는 `launchctl kickstart -k gui/$(id -u)/org.withalbum.server`.
+- **디스크 UUID:** 볼륨 마커에 디스크 UUID(macOS 볼륨 UUID, Linux는 `/dev/disk/by-uuid`가 있을 때)를 기록하고 기동 때 대조해, 다른 디스크로 복사된 마커는 `SECURITY` 오류로 거부합니다. 이전 버전 마커는 첫 기동 때 그 디스크의 UUID를 채택합니다(로그). 라이브러리를 의도적으로 새 디스크에 복제했다면 서버를 멈추고 `-adopt-disk`. UUID를 읽을 수 없는 파일 시스템(일부 네트워크·FUSE, Linux btrfs 하위 볼륨 등)은 마커와 장치 번호로만 구분합니다. 실제 외장 디스크(exFAT/HFS+)의 UUID 동작은 실기기 미검증입니다.
+- **백업:** `backup -to DIR -keep N`(보존 개수), launchd 예약 실행 스크립트 `scripts/install-backup-macos.sh`, 자동 복원 훈련 `scripts/restore-drill.sh`가 있습니다. 원격/클라우드 백업, 백업 대상 원본 정리(GC), 메뉴 막대 앱의 백업 설정 화면은 없습니다. 실제 launchd 예약 실행은 실기기 미검증입니다.
+- **규모:** 합성 라이브러리(실제 사진 아님) 10만·50만 자산에서 기동·동기화 스냅샷·이벤트·업로드·verify 시간과 메모리를 측정했습니다: [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md). 동기화 페이지·업로드 시간은 크기와 무관했지만, **서버 기동(모든 원본 크기 확인)은 50만 원본에서 약 45초**(10만은 1.1초, 파일 시스템 vnode 캐시 한계)이고 그동안 `/health`가 응답하지 않습니다. 실제 사진 크기의 파일·HDD·Raspberry Pi에서는 측정하지 않았습니다.
 - LAN은 자체 서명 TLS + 공개키 지문 핀만 지원합니다(브라우저 경고). 앱의 핀닝은 실기기에서 검증하지 않았습니다. 인터넷 접속·원격 중계는 없습니다.
 - HEIC·영상 미리보기는 `sips`/`ffmpeg`가 있을 때만 만들어집니다(없으면 원본만 보관, `unsupported`). Linux 외부 도구는 미검증입니다.
-- 모바일 앱, Google Drive 모드, 실시간 푸시, 자진 탈퇴·보관 복원은 없습니다.
+- 동영상 길이(`duration_ms`)는 MP4/MOV의 `mvhd`/`mehd` 값이며 실제 iPhone·Android 영상과의 대조는 미검증입니다(조각 MP4 등 값이 없으면 null). 업로드·앨범 생성 멱등 키는 계정·기기 범위라, 다시 로그인한 기기의 재시도는 새 요청으로 처리됩니다.
+- 실시간 푸시, 자진 탈퇴·보관 복원은 없습니다.
 - 원본 다운로드의 416 응답 본문은 JSON 오류 객체가 아닌 짧은 text/plain입니다(`docs/API_v2.yaml`).
 
 ### 프로젝트 최상위 실행 명령
@@ -89,7 +94,7 @@ WITHALBUM_ROOT="$HOME/WithAlbumTest" ./withalbum-server
 
 **설치 화면으로 시작하기(M24, 이 Mac에서만):** `WITHALBUM_ROOT` 없이 `./withalbum-server`를 실행하면, 등록된 저장소가 없을 때 설치 모드로 뜨고 콘솔에 `SETUP: open http://127.0.0.1:8787/setup ... setup code XXXX-XXXX-XXXX`를 출력합니다. 같은 컴퓨터 브라우저에서 그 주소를 열고 코드를 입력한 뒤 저장장치와 관리자 계정을 정하면, 서버는 재시작 없이 일반 대시보드로 바뀝니다. 선택한 저장 폴더는 사용자 설정 파일에 기록되어 다음 기동과 콘솔 명령이 같은 저장소를 씁니다(`WITHALBUM_ROOT`가 있으면 그것이 우선, 설정 파일의 루트가 없으면 설치 모드로 가지 않고 종료). 설치 화면이 만드는 폴더는 사용자가 고른 디스크(또는 홈 폴더) 바로 아래 `WithAlbum` 하나뿐이며, 만들기 직전에 디스크가 마운트되어 있는지 다시 확인합니다. `-tls`·`-allow-lan`으로 시작하면 설치 화면은 열리지 않습니다(콘솔 명령을 쓰세요).
 
-서버는 **저장소 루트를 절대 만들지 않습니다.** 루트가 없거나 `-init-storage`로 등록되지 않았으면 원인을 안내하고 즉시 종료합니다(위 설치 모드 조건 제외). `-init-storage`는 이미 존재하는 디렉터리에 `.withalbum-volume.json`(volume_id) 마커만 추가하며 기존 `.system/` 데이터는 건드리지 않습니다. 이전 버전에서 쓰던 데이터 폴더도 같은 명령으로 한 번 등록하면 됩니다. 출력된 `volume_id`를 `WITHALBUM_VOLUME_ID` 환경변수로 지정하면 다른 볼륨으로는 기동하지 않습니다(선택). 실행 중 마커가 사라지거나 루트의 장치가 바뀌면 업로드·폴더 생성은 `503 storage_unavailable`로 거부되고 `/api/v1/health`의 `storage`가 `unavailable`이 됩니다. 디스크를 다시 연결했다면 서버를 재시작하세요. 프로덕션 외장하드 폴더를 지정하지 마세요.
+서버는 **저장소 루트를 절대 만들지 않습니다.** 루트가 없거나 `-init-storage`로 등록되지 않았으면 원인을 안내하고 즉시 종료합니다(위 설치 모드 조건 제외). `-init-storage`는 이미 존재하는 디렉터리에 `.withalbum-volume.json`(volume_id) 마커만 추가하며 기존 `.system/` 데이터는 건드리지 않습니다. 이전 버전에서 쓰던 데이터 폴더도 같은 명령으로 한 번 등록하면 됩니다. 출력된 `volume_id`를 `WITHALBUM_VOLUME_ID` 환경변수로 지정하면 다른 볼륨으로는 기동하지 않습니다(선택). 실행 중 마커가 사라지거나 루트의 장치가 바뀌면 업로드·폴더 생성은 `503 storage_unavailable`로 거부되고 `/api/v1/health`의 `storage`가 `unavailable`이 되며, 디스크를 다시 연결해도 재시작 전까지 그대로입니다. 디스크를 다시 연결했다면 서버를 재시작하세요. 마커에는 디스크 UUID도 기록되어 다른 디스크로 복사한 마커로는 기동하지 않습니다(의도적인 디스크 이전 뒤에는 서버를 멈추고 `withalbum-server -adopt-disk` 한 번). 프로덕션 외장하드 폴더를 지정하지 마세요.
 
 **업로드 안전성과 복구:** 업로드는 성공 응답 전에 파일과 DB가 모두 디스크에 기록됩니다(macOS는 `F_FULLFSYNC`). 실패 응답이나 연결 끊김이면 아무것도 확정되지 않았으므로 같은 파일을 다시 올리면 됩니다. 서버가 강제 종료되면 다음 기동 때 자동으로 정리합니다: `.system/incoming/`의 미완료 임시 파일 삭제, DB에 없는 원본은 `.system/orphans/<sha256>.orphan.<UTC>`로 이동(자동 삭제하지 않음, 필요 없으면 직접 지우세요), 결과는 로그 `recovery: ...` 한 줄로 요약됩니다. DB에 기록된 원본이 pool에 없거나 크기가 다르면 `INTEGRITY ERROR` 로그와 health `integrity: warning`이 나오며, 같은 파일을 다시 업로드하면 사라진 원본이 복원됩니다. 업로드 후 남을 여유 공간이 `WITHALBUM_MIN_FREE_BYTES`(바이트, 기본 `1073741824` = 1GiB) 미만이면 `507 insufficient_storage`, 디스크 I/O 오류는 `503 storage_io_error`, DB 쓰기 경합(5초 초과)은 `503 busy` + `Retry-After: 1`입니다. 같은 저장소로 서버를 두 번 띄우거나 서버 실행 중 `migrate-legacy -apply`를 실행하면 `LOCKED`로 거부됩니다(이 버전 이후끼리만; 이전 버전 서버는 잠금을 모르므로 직접 중지하세요).
 
@@ -300,7 +305,8 @@ WithAlbumRoot/
 **부분 해결(M1 볼륨 가드)** 루트 MkdirAll 제거, `-init-storage` 마커(volume_id) + st_dev 비교로 기동 시·쓰기 직전 fail-closed. 실기기(Mac mini 외장 디스크 언플러그) 미검증.
 **부분 해결(M6)** 커밋 순서(staging fsync → pool rename → 디렉터리 fsync → DB tx, tx 안에서 COMMIT 직전 볼륨·pool 파일 재확인), 기동 재조정(incoming 정리, 고아 → orphans/ 격리, 누락·크기 불일치 보고), 여유 공간 사전검사 507, ENOSPC/EIO/SQLITE_BUSY 구분, darwin F_FULLFSYNC(SQLite PRAGMA fullfsync), 단일 인스턴스 flock. 장애 주입·SIGKILL 테스트로 검증, 전원 차단·실기기 미검증.
 **부분 해결(M14)** `verify -hash` 전수 해시 scrub(같은 크기 손상 감지), orphans/ 자동 삭제 안 함 정책 문서화, `backup`/`restore`(스냅샷·매니페스트·검증 후 원자적 교체·저널 크래시 복구). 실기기 미검증.
-남은 것: 디스크 UUID(diskutil)·statfs 마운트 지점 대조, 점진 scrub·마지막 검사 시각 기록, 백업 대상 GC. 마커를 복사한 다른 디스크는 같은 volume_id로 기동 시 통과할 수 있다.
+**부분 해결(M37)** 마커 disk_uuid(macOS getattrlist ATTR_VOL_UUID, Linux /dev/disk/by-uuid) 대조로 복사된 마커 거부, 한 번 사라진 볼륨은 재시작 전까지 거부(latch), hdiutil 디스크 이미지 혼돈 시험 100회(docs/CHAOS_RESULTS.md), backup -keep, 복원 훈련 스크립트.
+남은 것: statfs 마운트 지점 대조, 점진 scrub·마지막 검사 시각 기록, 백업 대상 GC, 실제 전원 차단.
 CAS pool 원본에 대해 해시가 같더라도 멀티파일 Live Photo, 메타데이터/자산 ID/폴더 연결은 별도 객체.
 여러 계정·동시 업로드·디스크 전원 차단·DB 커밋 전후 실패·중복 응답 손실에서 원본 손실 없이 재시도.
 최종 원본은 불변(immutable) 처리, 파일 경로 외부 노출 금지, Finder로 옮기는 폴더와 시스템 pool 분리.
@@ -419,7 +425,7 @@ GitHub에 곧바로 public push, Release 발행, 실제 원본 정리/삭제 등
 | `server/maint.go` | **실행됨(콘솔):** `verify`·`backup`·`restore` 명령과 잠금 정책(verify·backup은 서버 실행 중 가능, restore는 중지 필요) |
 | `server/main_test.go` 및 각 패키지 `*_test.go` | **테스트:** 현 PoC 동작 확인, 볼륨 소실 시 503 fail-closed, 프로덕션 안전성 테스트 아님 |
 | `internal/db/` | **실행됨:** `Open`(모든 연결에 foreign_keys/WAL/synchronous=FULL/busy_timeout, 트랜잭션은 BEGIN IMMEDIATE), `Migrate`(`migrations/*.sql` 내장, `PRAGMA user_version`, 상위 버전 거부, integrity_check), 스키마 트리거·FK 테스트 |
-| `internal/storage/` | **부분 구현:** 볼륨 마커 생성(`-init-storage`)/검증/쓰기 직전 재확인(st_dev). 실기기 미검증, 디스크 UUID 대조 없음 |
+| `internal/storage/` | **부분 구현:** 볼륨 마커 생성(`-init-storage`)/검증/쓰기 직전 재확인(st_dev, 한 번 실패하면 재시작 전까지 실패), 디스크 UUID 기록·대조·채택(`-adopt-disk`). 디스크 이미지 혼돈 시험 검증, 실기기 미검증 |
 | `internal/authz/policy.go`, `policy_test.go` | **실행됨:** 역할 판정·단위 테스트. 모든 관리자·앨범 라우트가 매 요청 사용 |
 | `go.mod` | Go 모듈 버전, GitHub 주소 정하면 `module` 변경 필요 |
 | `.goreleaser.yaml` | 5개 CPU/OS 조합 릴리스 압축 산출물 설정(prerelease·초안만, `-trimpath`, `main.version`) |
@@ -428,6 +434,10 @@ GitHub에 곧바로 public push, Release 발행, 실제 원본 정리/삭제 등
 | `.github/workflows/ci.yml`, `release.yml` | 테스트/크로스빌드 및 태그 릴리스 CI/CD |
 | `.github/release.yml` | GitHub 릴리스 노트 분류 예시 |
 | `scripts/install-macos.sh`, `install-linux.sh` | 개발용 백그라운드 실행 설치 스크립트, 정식 설치기 아님(macOS: 설치 화면 설정 파일 또는 `WITHALBUM_ROOT`, `--lan`) |
+| `scripts/install-backup-macos.sh`, `scripts/restore-drill.sh` | 매일 `backup -keep N`(+ 주간 `verify -hash`) launchd LaunchAgent 설치·제거·`--print` / 백업 → 임시 루트 복원 → `verify -hash` → 임시 포트 기동 확인(`--demo`) |
+| `scripts/chaos-macos.sh` + `tools/chaos/` | macOS 혼돈 시험: hdiutil 스파스 디스크 이미지 위에서 실제 서버(`-tags chaos` 시험 빌드만 장애 지점에서 멈춤)에 SIGKILL·강제 분리·재연결·가득 참·SIGTERM을 반복 주입하고 매 회 재시작·`verify -hash`·API 대조. 결과 [`docs/CHAOS_RESULTS.md`](docs/CHAOS_RESULTS.md) |
+| `scripts/perf-bench.sh` + `tools/perf/` | 합성 라이브러리(10만·50만 자산, 실제 사진 없음) 성능 측정. 결과 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) |
+| `tools/internal/harness/` | 위 도구들이 실제 서버 바이너리를 자식 프로세스로 띄우고 API를 호출하는 공용 코드(서버에는 포함되지 않음) |
 | `Makefile`, `.env.example`, `.gitignore` | 개발 명령·환경·제외 경로 |
 | `LICENSE`, `SECURITY.md` | AGPL-3.0 라이선스, 현재 시제품 보안 경고 |
 

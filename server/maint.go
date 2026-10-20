@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/aaaicu/withalbum/internal/backup"
 	"github.com/aaaicu/withalbum/internal/integrity"
@@ -116,9 +117,10 @@ func runBackup(args []string, stdout, stderr io.Writer) int {
 	to := fs.String("to", "", "Backup target directory, registered once with -init (required)")
 	initTarget := fs.Bool("init", false, "Register the existing -to directory as a backup target and exit")
 	rehash := fs.Bool("rehash", false, "Re-hash originals already in the target; replace damaged copies (kept in damaged/)")
+	keep := fs.Int("keep", 0, "After a complete snapshot, remove the oldest snapshots so that this many remain (0: keep all). Shared originals stay")
 	asJSON := fs.Bool("json", false, "Print the report as JSON")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "usage: withalbum-server backup -to DIR [-init] [-rehash] [-json]")
+		fmt.Fprintln(stderr, "usage: withalbum-server backup -to DIR [-init] [-rehash] [-keep N] [-json]")
 		fmt.Fprintln(stderr, "Exit status: 0 complete, 1 failed (or complete but the library has missing/damaged originals), 2 usage.")
 		fmt.Fprintln(stderr, "Writes a consistent snapshot of WITHALBUM_ROOT (database + originals + previews, with a SHA-256 manifest)")
 		fmt.Fprintln(stderr, "to DIR/snapshots/<id>. Incremental: originals already in DIR are not copied again. Safe while the server runs.")
@@ -131,7 +133,7 @@ func runBackup(args []string, stdout, stderr io.Writer) int {
 		}
 		return exitUsage
 	}
-	if fs.NArg() != 0 || *to == "" {
+	if fs.NArg() != 0 || *to == "" || *keep < 0 {
 		fs.Usage()
 		return exitUsage
 	}
@@ -166,7 +168,7 @@ func runBackup(args []string, stdout, stderr io.Writer) int {
 	if !*asJSON {
 		progress = stderr
 	}
-	report, err := backup.Backup(context.Background(), vol, sqlDB, *to, backup.Options{Rehash: *rehash, ServerVersion: version, Progress: progress})
+	report, err := backup.Backup(context.Background(), vol, sqlDB, *to, backup.Options{Rehash: *rehash, ServerVersion: version, Progress: progress, Keep: *keep})
 	if report != nil && report.SameDevice {
 		fmt.Fprintln(stderr, "backup: WARNING: the backup target is on the same disk as the storage root. It does not protect against a failed or lost disk; use a separate disk.")
 	}
@@ -183,12 +185,15 @@ func runBackup(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "backup: no snapshot was finalized; earlier snapshots in the target are unchanged.")
 		return exitProblems
 	}
+	if report.PruneError != "" {
+		fmt.Fprintf(stderr, "backup: WARNING: the new snapshot is complete, but removing old snapshots (-keep %d) failed: %s. The remaining snapshots are intact; the next backup tries again.\n", *keep, report.PruneError)
+	}
 	if *asJSON {
 		if err := printJSON(stdout, report); err != nil {
 			fmt.Fprintf(stderr, "backup: %v\n", err)
 			return exitProblems
 		}
-		if len(report.SourceWarnings) > 0 {
+		if len(report.SourceWarnings) > 0 || report.PruneError != "" {
 			return exitProblems
 		}
 		return exitOK
@@ -198,10 +203,16 @@ func runBackup(args []string, stdout, stderr io.Writer) int {
 	if len(report.PreviewsLost) > 0 {
 		fmt.Fprintf(stdout, "  warning: %d preview(s) marked ready were missing in the source and are not in the backup\n", len(report.PreviewsLost))
 	}
+	if len(report.Pruned) > 0 {
+		fmt.Fprintf(stdout, "  removed %d old snapshot(s) to keep %d: %s\n", len(report.Pruned), *keep, strings.Join(report.Pruned, ", "))
+	}
 	fmt.Fprintf(stdout, "  restore with: withalbum-server restore -from %s\n", report.Path)
 	if len(report.SourceWarnings) > 0 {
 		fmt.Fprintf(stderr, "backup: WARNING: the snapshot is complete (the target already held good copies), but %d original(s) are missing or damaged in the library itself, e.g. %s. Run withalbum-server verify and restore them (docs/BACKUP_RESTORE.md).\n",
 			len(report.SourceWarnings), report.SourceWarnings[0])
+		return exitProblems
+	}
+	if report.PruneError != "" {
 		return exitProblems
 	}
 	return exitOK
