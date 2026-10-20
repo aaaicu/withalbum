@@ -192,3 +192,47 @@ func TestInitPreservesExistingData(t *testing.T) {
 		t.Fatalf("Open left probe files in .system: %v", entries)
 	}
 }
+
+// TestCheckStaysFailedAfterVolumeReturns: a volume that disappeared once is
+// not trusted again by the same Volume, even when the same disk comes back
+// at the same path; Open (a restart) is required.
+func TestCheckStaysFailedAfterVolumeReturns(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "WithAlbum")
+	if err := os.Mkdir(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Init(root); err != nil {
+		t.Fatal(err)
+	}
+	v, err := Open(root, OpenOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Check(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(root, root+".detached"); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Check(); !errors.Is(err, ErrVolumeChanged) {
+		t.Fatalf("Check while detached = %v", err)
+	}
+	if err := os.Rename(root+".detached", root); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := v.Check(); !errors.Is(err, ErrVolumeChanged) {
+			t.Fatalf("Check after the volume returned = %v, want ErrVolumeChanged", err)
+		}
+	}
+	if _, err := v.Lock(); !errors.Is(err, ErrVolumeChanged) {
+		t.Fatalf("Lock after the volume returned = %v", err)
+	}
+	again, err := Open(root, OpenOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := again.Check(); err != nil {
+		t.Fatalf("reopened Check = %v", err)
+	}
+}

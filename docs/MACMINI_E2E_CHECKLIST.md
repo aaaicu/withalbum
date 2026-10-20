@@ -115,7 +115,7 @@ LaunchAgent는 **사용자가 로그인한 세션**에서만 실행됩니다(로
 
 ## 5. 외장 디스크 분리·재연결 — fail closed와 복귀
 
-핵심 질문: 디스크를 다시 연결했을 때 **서버 재시작 없이** 복귀하는가? 서버는 기동 때 기록한 루트의 장치 번호(st_dev)와 볼륨 마커를 쓰기 직전마다 다시 확인합니다. macOS가 다시 마운트하며 장치 번호를 바꾸면 재시작 전까지 `503 storage_unavailable`이 계속됩니다. 이 장에서 실제로 어떤지 측정합니다.
+서버는 기동 때 기록한 루트의 장치 번호(st_dev)와 볼륨 마커를 쓰기 직전마다 다시 확인하고, **한 번 사라진 저장소는 다시 연결해도(장치 번호가 같아도) 재시작 전까지 `503 storage_unavailable`을 유지**합니다(M37: 디스크 이미지 혼돈 시험에서 같은 장치 번호로 재연결되면 health가 `ok`로 돌아오는데 DB 핸들·잠금은 분리된 마운트의 것이라 고침, [`CHAOS_RESULTS.md`](CHAOS_RESULTS.md)). 이 장은 실제 외장 디스크에서 그대로인지 확인합니다.
 
 | # | 명령 / 동작 | 기대 결과 | 결과 |
 |---|---|---|---|
@@ -126,11 +126,11 @@ LaunchAgent는 **사용자가 로그인한 세션**에서만 실행됩니다(로
 | 5.5 | `ls -la /Volumes; ls -la "$ROOT" 2>&1` | `$DISK`가 없거나 비어 있음. **내장 디스크에 `$ROOT`나 `.system`이 새로 생기지 않음** | |
 | 5.6 | 대시보드(브라우저) 새로고침 | 상단 "저장 중단됨", 저장장치 화면 경고 | |
 | 5.7 | 디스크 다시 연결, 마운트 확인 후 `stat -f 'st_dev=%d' "$ROOT"` | st_dev 값 기록: ____ (5.1과 같은지/다른지) | |
-| 5.8 | 재시작 **없이** `wa_health; wa_upload "$E2E/x.bin"` | 기록: st_dev가 같으면 `storage ok`·`HTTP 201`로 복귀 예상, 다르면 `503` 유지 예상. 실제 결과 기록 | |
+| 5.8 | 재시작 **없이** `wa_health; wa_upload "$E2E/x.bin"` | st_dev가 같든 다르든 `"storage":"unavailable"`, 업로드 `HTTP 503` 유지(재시작 필요). 실제 결과 기록 | |
 | 5.9 | `launchctl kickstart -k gui/$(id -u)/org.withalbum.server; sleep 5; wa_health; wa_login e2eadmin; wa_upload "$E2E/x.bin"` | 재시작 후 `storage ok`. 업로드는 새 키라 `HTTP 201`, 5.8에서 같은 파일이 이미 올라갔다면 `HTTP 200 already_present` | |
 | 5.10 | 디스크 없이 시작: 디스크 분리 → `launchctl kickstart -k gui/$(id -u)/org.withalbum.server; sleep 5; tail -3 ~/Library/Logs/WithAlbum/error.log; ls /Volumes` | `does not exist ... registered by the setup screen ... connect the disk` 로그 반복(30초 간격), `$ROOT`가 생기지 않음 | |
 | 5.11 | 디스크 연결 → 60초 대기 → `wa_health` | KeepAlive 재시도로 자동 기동, `storage ok`. 걸린 시간 기록 | |
-| 5.12 | 결론 기록: "디스크 재연결 시 재시작 필요: 예/아니오(조건: ____)" | 결과에 따라 문서·대시보드 문구 유지 또는 수정 필요 여부를 운영 기록에 남김 | |
+| 5.12 | 결론 기록: "디스크 재연결 후 재시작 전 503 유지: 예/아니오", 디스크 UUID: `plutil -extract disk_uuid raw "$ROOT/.withalbum-volume.json"`가 1.6의 Volume UUID와 같은지 | 다르면 문서·대시보드 문구 수정 필요 여부를 운영 기록에 남김 | |
 
 ## 6. 재부팅 복구
 

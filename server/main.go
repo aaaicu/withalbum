@@ -59,6 +59,11 @@ func openStorageHint(root string, err error) string {
 		return fmt.Sprintf("volume marker %s in %q is unreadable or unsupported; refusing to start.", storage.MarkerName, root)
 	case errors.Is(err, storage.ErrVolumeMismatch):
 		return fmt.Sprintf("storage root %q holds a different volume than WITHALBUM_VOLUME_ID; refusing to start. Check which disk is mounted.", root)
+	case errors.Is(err, storage.ErrDiskMismatch):
+		return fmt.Sprintf("SECURITY: the volume marker %s in %q was created on another disk: this is a copy, not the registered library disk. Refusing to start so that nothing is written to the wrong disk. "+
+			"Connect the original disk. Only if you deliberately copied or cloned the library to this disk and no longer use the old one, stop every WithAlbum process and run once: withalbum-server -adopt-disk", storage.MarkerName, root)
+	case errors.Is(err, storage.ErrDiskUnknown):
+		return fmt.Sprintf("SECURITY: the volume marker in %q records the disk it belongs to, but the UUID of the disk now holding %q cannot be read; refusing to start. Check the disk; if this is intended (for example a file system without a UUID), run: withalbum-server -adopt-disk", root, root)
 	case errors.Is(err, storage.ErrRestorePending):
 		return fmt.Sprintf("a restore into %q was interrupted (%s exists). Finish it by running the same withalbum-server restore -from ... command again; nothing else may use the storage until then.", root, storage.RestoreJournalName)
 	case errors.Is(err, storage.ErrNotWritable):
@@ -187,6 +192,36 @@ func runMigrateLegacy(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// runAdoptDisk implements -adopt-disk: the marker's disk UUID becomes the
+// one of the disk now holding root. It takes the instance lock.
+func runAdoptDisk(root, volumeID string, stdout, stderr io.Writer) int {
+	vol, err := storage.Open(root, storage.OpenOptions{ExpectedVolumeID: volumeID, IgnoreDiskUUID: true})
+	if err != nil {
+		fmt.Fprintf(stderr, "adopt-disk: STORAGE: %s (%v)\n", openStorageHint(root, err), err)
+		return 1
+	}
+	lock, err := vol.Lock()
+	if err != nil {
+		fmt.Fprintf(stderr, "adopt-disk: %s (%v)\n", lockHint(root, err), err)
+		return 1
+	}
+	defer lock.Release()
+	old, cur, err := vol.RebindDiskUUID()
+	if err != nil {
+		fmt.Fprintf(stderr, "adopt-disk: %v\n", err)
+		return 1
+	}
+	show := func(u string) string {
+		if u == "" {
+			return "(none)"
+		}
+		return u
+	}
+	log.Printf("storage: adopt-disk: the volume marker of %s now names disk %s (was %s)", root, show(cur), show(old))
+	fmt.Fprintf(stdout, "adopt-disk: %s volume_id=%s disk_uuid %s -> %s\n", root, vol.ID(), show(old), show(cur))
+	return 0
+}
+
 // lockHint explains a storage.Volume.Lock failure.
 func lockHint(root string, err error) string {
 	if errors.Is(err, storage.ErrLocked) {
@@ -261,6 +296,13 @@ func openApp(ctx context.Context, root string, opt appOptions) (*app, error) {
 		}
 		lock.Release()
 		return nil, err
+	}
+	// A marker written before markers recorded their disk gets the UUID of
+	// the disk it is on now; from then on a copy on another disk is refused.
+	if u, err := vol.AdoptDiskUUID(); err != nil {
+		return fail(fmt.Errorf("STORAGE: cannot record the disk UUID in %s: %w", storage.MarkerName, err))
+	} else if u != "" {
+		log.Printf("storage: recorded disk UUID %s in the volume marker (first start with the disk identity check); a copy of this marker on another disk is refused from now on", u)
 	}
 	// Decide on the metadata store before creating anything else in .system.
 	if a.meta, err = openMetadata(ctx, vol); err != nil {
@@ -349,6 +391,7 @@ func main() {
 	}
 	showVersion := flag.Bool("version", false, "Print WithAlbum Server version and exit")
 	initStorage := flag.Bool("init-storage", false, "Register the existing WITHALBUM_ROOT directory as the storage volume and exit")
+	adoptDisk := flag.Bool("adopt-disk", false, "Record the disk now holding WITHALBUM_ROOT as the library disk (after a deliberate copy or clone to a new disk) and exit; the server must be stopped")
 	useTLS := flag.Bool("tls", false, "Serve HTTPS with the server's self-signed certificate (created in .system/tls on first use); clients pin its key fingerprint")
 	allowLAN := flag.Bool("allow-lan", false, "Allow a non-loopback WITHALBUM_LISTEN address (private LAN address or wildcard). Requires -tls and an active server administrator")
 	flag.Parse()
@@ -373,7 +416,15 @@ func main() {
 			log.Fatalf("init storage: %v", err)
 		}
 		fmt.Printf("Initialized storage root %s\nvolume_id=%s\nOptional: set WITHALBUM_VOLUME_ID=%s to refuse any other volume.\n", root, m.VolumeID, m.VolumeID)
+		if m.DiskUUID != "" {
+			fmt.Printf("disk_uuid=%s (a copy of the marker on another disk is refused)\n", m.DiskUUID)
+		} else {
+			fmt.Println("disk_uuid: unknown for this file system; only the marker and the device number identify the volume")
+		}
 		return
+	}
+	if *adoptDisk {
+		os.Exit(runAdoptDisk(root, target.VolumeID, os.Stdout, os.Stderr))
 	}
 	// Validate the configuration before touching the storage.
 	lc := listenConfig{Addr: listenAddr(), AllowLAN: *allowLAN, TLS: *useTLS}
@@ -397,7 +448,7 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	opts := appOptions{VolumeID: target.VolumeID, MinFreeBytes: minFree, Converters: converters}
+	opts := appOptions{VolumeID: target.VolumeID, MinFreeBytes: minFree, Converters: converters, Faults: chaosFaults()}
 	a, err := openApp(ctx, root, opts)
 	// Setup mode (server/setup.go) when the storage can still be chosen, or
 	// when it has no administrator, and only on the plain loopback listener.

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -285,29 +286,6 @@ func TestCaptureBackfill(t *testing.T) {
 	}
 	all := pending()
 
-	// Storage gone: nothing is settled, nothing is lost.
-	marker := filepath.Join(e.Root, storage.MarkerName)
-	saved, err := os.ReadFile(marker)
-	if err != nil {
-		t.Fatal(err)
-	}
-	fi, err := os.Stat(marker)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Remove(marker); err != nil {
-		t.Fatal(err)
-	}
-	if n, err := e.API.ProcessCaptures(t.Context()); err == nil || n != 0 {
-		t.Fatalf("ProcessCaptures without storage = %d, %v", n, err)
-	}
-	if pending() != all {
-		t.Fatal("originals settled without storage")
-	}
-	if err := os.WriteFile(marker, saved, fi.Mode().Perm()); err != nil {
-		t.Fatal(err)
-	}
-
 	// An original that cannot be read (here: its pool file is gone).
 	if err := os.Remove(e.Blobs.PoolPath(shaHex(broken))); err != nil {
 		t.Fatal(err)
@@ -332,5 +310,47 @@ func TestCaptureBackfill(t *testing.T) {
 	// Running again changes nothing.
 	if n := processCaptures(t, e); n != 0 || famBefore+1 != e.events(t, e.family) {
 		t.Fatalf("second run settled %d", n)
+	}
+}
+
+// TestCaptureBackfillWithoutStorage: with the volume gone nothing is
+// settled and nothing is lost, and the worker keeps refusing after the
+// marker is back (the volume stays unavailable until a restart).
+func TestCaptureBackfillWithoutStorage(t *testing.T) {
+	e := newACLEnv(t)
+	shot := withExif(t, jpegBytes(t, 12, 12), "2019:07:04 12:00:00", "+02:00")
+	wantJSON(t, "upload", e.as(t, "owner", "POST", "/api/v1/folders/"+e.family+"/assets", shot, nil), 201)
+	processCaptures(t, e)
+	db := e.Meta.DB()
+	if _, err := db.Exec("UPDATE blobs SET capture_state = 'pending', captured_at = NULL, captured_utc = NULL"); err != nil {
+		t.Fatal(err)
+	}
+	pending := func() int {
+		var n int
+		if err := db.QueryRow("SELECT count(*) FROM blobs WHERE capture_state = 'pending'").Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	all := pending()
+	marker := filepath.Join(e.Root, storage.MarkerName)
+	saved, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := e.API.ProcessCaptures(t.Context()); err == nil || n != 0 {
+		t.Fatalf("ProcessCaptures without storage = %d, %v", n, err)
+	}
+	if err := os.WriteFile(marker, saved, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := e.API.ProcessCaptures(t.Context()); !errors.Is(err, storage.ErrVolumeChanged) || n != 0 {
+		t.Fatalf("ProcessCaptures after the marker is back = %d, %v; want the volume to stay unavailable", n, err)
+	}
+	if pending() != all || all == 0 {
+		t.Fatalf("pending %d, want %d: originals settled without storage", pending(), all)
 	}
 }

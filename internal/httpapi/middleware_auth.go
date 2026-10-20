@@ -165,6 +165,13 @@ func (s *Server) RequireSession(next http.Handler) http.Handler {
 			return
 		}
 		if err != nil {
+			// The database lives on the storage volume: with the disk gone
+			// this is the same refusal as for writes, not a server bug.
+			if s.vol.Check() != nil {
+				log.Printf("authenticate failed, storage unavailable: %v", err)
+				errorReply(w, 503, "storage_unavailable")
+				return
+			}
 			internalError(w, "authenticate", err)
 			return
 		}

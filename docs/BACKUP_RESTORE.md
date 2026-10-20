@@ -5,7 +5,7 @@ WithAlbum 서버는 세 개의 콘솔 명령으로 라이브러리(메타데이�
 | 명령 | 하는 일 | 서버 실행 중 |
 |---|---|---|
 | `withalbum-server verify [-hash] [-json]` | DB `integrity_check`·`foreign_key_check`, 모든 원본의 존재·크기(·`-hash`면 SHA-256) 확인. **아무것도 바꾸지 않음** | 가능 (잠금 안 잡음) |
-| `withalbum-server backup -to DIR [-rehash] [-json]` | 일관된 스냅샷(DB `VACUUM INTO` + 원본 증분 복사 + SHA-256 매니페스트) | 가능 (백업 대상의 잠금만) |
+| `withalbum-server backup -to DIR [-rehash] [-keep N] [-json]` | 일관된 스냅샷(DB `VACUUM INTO` + 원본 증분 복사 + SHA-256 매니페스트), `-keep N`이면 완성 후 오래된 스냅샷 정리 | 가능 (백업 대상의 잠금만) |
 | `withalbum-server restore -from SNAPSHOT [-check] [-replace] [-json]` | 스냅샷 검증 후 저장소에 원자적으로 활성화 | **불가** — 서버를 먼저 중지 (`LOCKED`로 거부) |
 
 `restore -check`는 저장소를 건드리지 않고 스냅샷만 전수 검증하므로 서버 실행 중에도 됩니다.
@@ -53,7 +53,9 @@ WithAlbumBackup/
 └── damaged/                        # -rehash가 찾은 손상 사본 (자동 삭제 안 함)
 ```
 
-오래된 스냅샷은 `snapshots/<id>` 디렉터리를 지워 정리할 수 있습니다. `pool/`의 원본은 다른 스냅샷이 쓸 수 있으므로 지우지 마세요(자동 가비지 컬렉션은 아직 없음).
+### 보존 개수 (`-keep N`)
+
+`backup -to DIR -keep N`은 새 스냅샷이 **완성된 뒤에만** 가장 오래된 완성 스냅샷부터 지워 N개(새 것 포함)를 남깁니다. 백업이 실패하면 아무것도 지우지 않습니다. 지울 스냅샷은 먼저 `snapshots/.partial-pruned-<id>`로 rename(원자적)한 뒤 삭제하므로, 중간에 끊겨도 반쯤 지워진 스냅샷이 정상 이름으로 남지 않고 다음 백업이 정리합니다. 스냅샷 이름 형식(`<UTC>-<6hex>`)이고 `manifest.json`이 있는 디렉터리만 셉니다(다른 디렉터리는 건드리지 않음). `pool/`·`previews/`의 원본은 모든 스냅샷이 공유하므로 지우지 않습니다 — 라이브러리는 원본을 지우지 않으므로(앨범에서 빼도 파일은 남음) 백업 대상의 원본도 라이브러리 크기만큼만 늘어납니다. 정리가 실패하면 새 스냅샷은 완성된 상태로 남고 경고와 종료 코드 1을 냅니다(JSON `prune_error`). 직접 지울 때도 `snapshots/<id>`만 지우고 `pool/`은 두세요.
 
 ## 무결성 검사 (verify)
 
@@ -119,40 +121,29 @@ WITHALBUM_ROOT=/Volumes/NewSSD/WithAlbum ./withalbum-server restore -from /Volum
 | `restore` | `.system/withalbum.lock` + 루트 `.withalbum-restore.lock` | **불가** |
 | `admin ...`, `migrate-legacy -apply` | `.system/withalbum.lock` | 불가 |
 
-## 정기 실행 예시 (macOS launchd)
+## 정기 실행 (macOS launchd)
 
-자동 스케줄러는 서버에 없습니다. 아래는 매일 03:00 백업, 매주 일요일 04:00 전수 검사 예시입니다. 경로는 본인 환경으로 바꾸세요. 결과는 종료 코드와 로그 파일로 확인합니다(실패 시 `StandardErrorPath`에 원인).
+서버 자체에는 스케줄러가 없고, launchd가 정해진 시각에 `backup` 명령을 실행합니다. `scripts/install-backup-macos.sh`가 사용자 LaunchAgent를 만듭니다(plist는 `plutil`로 생성해 경로의 특수문자도 안전).
 
-`~/Library/LaunchAgents/org.withalbum.backup.plist`:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>org.withalbum.backup</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/usr/local/bin/withalbum-server</string>
-    <string>backup</string>
-    <string>-to</string>
-    <string>/Volumes/BackupDisk/WithAlbumBackup</string>
-  </array>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>WITHALBUM_ROOT</key><string>/Volumes/ExternalSSD/WithAlbum</string>
-  </dict>
-  <key>StartCalendarInterval</key>
-  <dict><key>Hour</key><integer>3</integer><key>Minute</key><integer>0</integer></dict>
-  <key>StandardOutPath</key><string>/tmp/withalbum-backup.log</string>
-  <key>StandardErrorPath</key><string>/tmp/withalbum-backup.err</string>
-</dict>
-</plist>
+```bash
+# 백업 대상은 한 번 등록해 둔다
+./withalbum-server backup -init -to /Volumes/BackupDisk/WithAlbumBackup
+# 매일 03:00 백업, 14개 보존, 일요일 04:00 verify -hash
+bash scripts/install-backup-macos.sh --keep 14 --at 03:00 --verify-weekly "$PWD/withalbum-server" /Volumes/BackupDisk/WithAlbumBackup
+# 내용만 보기(설치 안 함): --print / 지금 한 번 실행: launchctl kickstart gui/$(id -u)/org.withalbum.backup
+# 제거: bash scripts/install-backup-macos.sh --uninstall
 ```
 
-전수 검사는 같은 형식으로 `ProgramArguments`를 `verify`, `-hash`로, `StartCalendarInterval`에 `<key>Weekday</key><integer>0</integer>`과 `Hour` 4를 넣은 `org.withalbum.verify.plist`를 만듭니다. 등록: `launchctl load ~/Library/LaunchAgents/org.withalbum.backup.plist`. 백업 디스크가 연결되지 않은 날은 "does not exist"로 실패하며 아무 데도 쓰지 않습니다. Linux는 같은 명령을 systemd timer나 cron으로 실행하세요.
+- 라벨 `org.withalbum.backup`(·`org.withalbum.verify`), `StartCalendarInterval`(Mac이 잠자고 있었으면 깨어날 때 한 번 실행), `LowPriorityIO`·`Nice 10`, 로그 `~/Library/Logs/WithAlbum/backup.log`·`backup.err`(디렉터리 0700).
+- 라이브러리는 서버와 같은 규칙으로 찾습니다: 스크립트를 실행할 때 `WITHALBUM_ROOT`(·`WITHALBUM_CONFIG`·`WITHALBUM_VOLUME_ID`)가 있으면 그 값을 에이전트에 기록하고, 없으면 설치 화면이 등록한 저장소(설정 파일)를 씁니다.
+- 서버 실행 중에도 백업합니다. 백업 디스크가 연결되지 않은 날은 "does not exist"로 실패하고 아무 데도 쓰지 않습니다(`backup.err` 확인). 저장소 디스크가 빠져 있으면 역시 실패합니다.
+- 메뉴 막대 앱에는 아직 백업 설정 화면이 없습니다. Linux는 같은 명령(`backup -to DIR -keep N`)을 systemd timer나 cron으로 실행하세요.
 
 ## 복원 훈련 (분기마다 권장)
+
+자동 스크립트: `bash scripts/restore-drill.sh [-n KEEP] /path/to/withalbum-server <백업 대상>`. 백업 → `restore -check` → 임시 디렉터리에 새 저장소를 만들어 복원(라이브러리 위에는 절대 복원하지 않음, 라이브러리의 `WITHALBUM_VOLUME_ID`·설정 파일도 쓰지 않음) → 그 루트에서 `verify -hash`(원본 수가 스냅샷과 같아야 함) → 임시 포트로 서버를 띄워 health `storage: ok`·`integrity: ok` → 임시 디렉터리 삭제(`-k`면 보존). 임시 디렉터리(`-t`, 기본 `$TMPDIR`)에는 라이브러리 전체 사본만큼의 공간이 필요합니다. `--demo`는 작은 임시 라이브러리로 절차만 시험합니다. 하나라도 실패하면 종료 코드 1.
+
+수동 절차:
 
 1. `restore -from <최신 스냅샷> -check` → `OK`.
 2. 빈 디렉터리에 `-init-storage` 후 `restore` (실제 라이브러리 아님).
@@ -162,5 +153,6 @@ WITHALBUM_ROOT=/Volumes/NewSSD/WithAlbum ./withalbum-server restore -from /Volum
 ## 알려진 한계
 
 - 실제 외장 디스크 분리·전원 차단 중 백업/복원은 실기기에서 검증하지 않았습니다(테스트는 단계별 장애 주입으로 재현).
-- 백업 대상의 오래된 원본 정리(가비지 컬렉션), 스냅샷 보존 정책, 원격/클라우드 백업, 점진(분할) scrub과 마지막 검사 시각 기록은 없습니다.
+- 백업 대상의 원본 정리(가비지 컬렉션), 원격/클라우드 백업, 점진(분할) scrub과 마지막 검사 시각 기록은 없습니다. 보존 개수(`-keep`)는 스냅샷만 정리합니다.
+- 예약 실행은 launchd/systemd에 맡깁니다(서버 내장 스케줄러·메뉴 막대 앱 설정 화면 없음). `install-backup-macos.sh`는 이 Mac에서 `--print`·`plutil -lint`까지 확인했고, 실제 launchd 등록 후 정해진 시각 실행은 실기기 점검 항목입니다.
 - 백업 대상이 exFAT이면 파일 모드(0600/0400)가 적용되지 않습니다.

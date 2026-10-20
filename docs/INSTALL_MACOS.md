@@ -127,7 +127,7 @@ bash scripts/install-macos.sh --lan 192.168.0.10:8787 ./withalbum-server
 
 이 방식은 **사용자가 로그인한 세션**에서만 실행되며, 로그인 전이나 사용자 로그아웃 후 상시 실행은 보장하지 않습니다. 최종 Mac 버전에서는 서명된 앱, Service Management와 시스템 수준의 백그라운드 실행을 검토합니다. 실기기 점검 절차: [`MACMINI_E2E_CHECKLIST.md`](MACMINI_E2E_CHECKLIST.md).
 
-> **부분 구현(실기기 미검증):** 루트가 없거나 마커가 없으면 기동하지 않고, 실행 중 마커가 사라지거나 루트의 장치 번호(st_dev)가 바뀌면 업로드를 `503 storage_unavailable`로 거부합니다. 다시 연결한 디스크의 장치 번호가 바뀌었으면 서버를 재시작해야 합니다. 실행 중인 서버는 503으로 버티며 종료하지 않으므로 KeepAlive가 재시작하지 않습니다: `launchctl kickstart -k gui/$(id -u)/org.withalbum.server`(재연결 후 재시작이 실제로 필요한지는 `MACMINI_E2E_CHECKLIST.md` 5장에서 측정). 디스크 UUID 대조와 본격적인 원본 복구는 아직 미구현이며, 마커 파일을 복사한 다른 디스크는 구분하지 못할 수 있습니다.
+> **부분 구현(디스크 이미지 혼돈 시험 검증, 실기기 미검증):** 루트가 없거나 마커가 없으면 기동하지 않고, 실행 중 마커가 사라지거나 루트의 장치 번호(st_dev)가 바뀌면 업로드를 `503 storage_unavailable`로 거부합니다. **한 번 사라진 저장소는 디스크를 다시 연결해도(장치 번호가 같아도) 재시작 전까지 거부합니다** — 분리된 마운트에서 열었던 DB 핸들과 잠금을 다시 쓰지 않기 위해서입니다. 실행 중인 서버는 503으로 버티며 종료하지 않으므로 KeepAlive가 재시작하지 않습니다: 메뉴 막대 앱의 "다시 시작" 또는 `launchctl kickstart -k gui/$(id -u)/org.withalbum.server`. 볼륨 마커에는 디스크 UUID가 기록되어(이전 버전 마커는 첫 기동 때 채택), 마커나 라이브러리를 다른 디스크로 복사하면 `SECURITY: ... created on another disk`로 기동을 거부합니다. 의도적으로 새 디스크로 옮겼다면(복제 후 옛 디스크를 더 쓰지 않을 때만) 서버를 멈추고 `withalbum-server -adopt-disk`를 한 번 실행합니다. 디스크 이미지로 흉내 낸 분리·재연결·강제 종료 시험 결과: [`CHAOS_RESULTS.md`](CHAOS_RESULTS.md).
 
 ## 향후 정식 Mac 버전
 

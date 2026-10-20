@@ -4,6 +4,15 @@
 
 아래 [0.1.0-alpha.1] 초안 이후의 변경을 여기에 적습니다.
 
+### Added / Changed (trust hardening, M37)
+- 디스크 식별: 볼륨 마커에 `disk_uuid`(macOS `getattrlist` ATTR_VOL_UUID, Linux `/dev/disk/by-uuid` 최선, 그 외 없음)를 `-init-storage`·설치 화면 등록 때 기록. 기동(`storage.Open`)에서 기록된 UUID와 다르면 `ErrDiskMismatch`, 읽을 수 없으면 `ErrDiskUnknown`으로 `SECURITY:` 안내와 함께 거부(복사된 마커·복제 디스크). 이전 버전 마커는 서버가 첫 기동 때 잠금을 잡은 뒤 그 디스크의 UUID를 채택하고 로그를 남김(`verify` 등 읽기 명령은 마커를 바꾸지 않음). 새 플래그 `-adopt-disk`(서버 중지 필요, 잠금): 의도적으로 옮긴 디스크를 라이브러리 디스크로 다시 기록. 이전 버전 바이너리는 새 필드를 무시(형식 1 유지).
+- **동작 변경:** 실행 중 저장소 확인(`Volume.Check`)이 한 번 실패하면 그 프로세스에서는 계속 실패(503 `storage_unavailable`, health `unavailable`) — 디스크를 다시 연결해도 재시작 전까지 쓰지 않음. 혼돈 시험에서 같은 장치 번호로 재연결되면 health가 `ok`로 돌아오지만 DB 핸들·인스턴스 잠금은 분리된 마운트의 것이던 문제를 수정. 저장소가 사라져 세션 확인이 실패하면 500 대신 503 `storage_unavailable`.
+- `backup -keep N`: 새 스냅샷이 완성된 뒤 가장 오래된 완성 스냅샷부터 지워 N개 유지(먼저 `.partial-pruned-<id>`로 rename, 공유 원본은 유지, 실패해도 새 스냅샷은 유효·JSON `pruned`/`prune_error`, 종료 코드 1).
+- `scripts/install-backup-macos.sh`(매일 `backup -keep N` + 선택 주간 `verify -hash` LaunchAgent, `--print`·`--uninstall`), `scripts/restore-drill.sh`(백업 → `restore -check` → 임시 루트 복원 → `verify -hash` → 임시 포트 기동 확인, `--demo`).
+- `scripts/chaos-macos.sh` + `tools/chaos`: hdiutil 스파스 디스크 이미지 위 혼돈 시험(SIGKILL 본문 중·장애 지점, 강제 분리, 재연결·장치 번호 변경, 가득 참, SIGTERM, 복사 마커, 디스크 없는 기동) — 100회 결과 `docs/CHAOS_RESULTS.md`. 장애 지점 정지는 `-tags chaos` 시험 빌드에서만(`server/chaos_on.go`; 기본 빌드는 `chaos_off.go`로 nil).
+- `scripts/perf-bench.sh` + `tools/perf`: 합성 10만·50만 자산 측정 `docs/PERFORMANCE.md`. 질의 계획 회귀 테스트(`queryplan_test.go`). 빠진 인덱스는 없었음; 50만 원본에서 기동 재조정이 약 45초(파일 시스템 한계)로 기록.
+- README Known limitations·INSTALL_MACOS·MACMINI_E2E_CHECKLIST 5장·DASHBOARD_CHECKLIST·BACKUP_RESTORE·SECURITY·API_v2(health `unavailable` 유지, 인증 경로 503) 갱신.
+
 ### Added (macOS menu bar app + DMG, M32)
 - `macos/`: 메뉴 막대 앱 "WithAlbum Server"(Swift Package, SwiftUI `MenuBarExtra`, macOS 13+, arm64+x86_64, `LSUIElement`). 번들 `Contents/Helpers/withalbum-server`에 유니버설 서버. 서버는 `scripts/install-macos.sh`와 같은 사용자 LaunchAgent(`org.withalbum.server`, `RunAtLoad`·`KeepAlive`·`ThrottleInterval` 30, `~/Library/Logs/WithAlbum` 0700, `WITHALBUM_CONFIG`·`WITHALBUM_ROOT` 그대로)로 실행하고 `launchctl bootstrap|bootout|kickstart`로 관리. 로그인 시 시작을 끄면 plist를 `~/Library/Application Support/WithAlbum/ServerApp/`로 옮김.
 - 상태: 기존 `GET /api/v1/health`(설치 모드는 `/setup` 200)와 `launchctl print`만 사용(새 API 없음). 정상 실행 중·무결성 경고·저장 중단·설치 필요·시작하는 중·시작하지 못함(error.log 마지막 오류)·멈춤·관리하지 않는 서버. 프록시를 쓰지 않음.

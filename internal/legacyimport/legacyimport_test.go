@@ -791,6 +791,13 @@ func TestFailuresDiscardTemporaryDatabase(t *testing.T) {
 			if !bytes.Equal(l.state(t), src) {
 				t.Fatal("state.json changed")
 			}
+			// The re-run is a new migrate-legacy process: it opens the volume
+			// again (a volume that failed a check stays failed in a process).
+			vol, err := storage.Open(l.root, storage.OpenOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			l.vol = vol
 			if r, err := apply(t, l.vol, nil); err != nil {
 				t.Fatalf("re-run: %v (%v)", err, r.Problems)
 			}

@@ -31,6 +31,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -64,6 +66,11 @@ type Options struct {
 	ServerVersion string
 	// Progress, if set, receives a line every few seconds.
 	Progress io.Writer
+	// Keep, when positive, removes the oldest finished snapshots after the
+	// new one is complete, so that Keep snapshots remain (the new one
+	// included). A failed backup never removes anything. Originals in the
+	// target pool are shared by all snapshots and are not removed.
+	Keep int
 	// hook is called at the Point* names; an error aborts there (tests).
 	hook func(point string) error
 }
@@ -88,6 +95,11 @@ type Report struct {
 	DBBytes        int64    `json:"db_bytes"`
 	SameDevice     bool     `json:"same_device_as_storage"`
 	Seconds        float64  `json:"seconds"`
+	// Pruned lists the snapshots removed for Options.Keep (oldest first).
+	Pruned []string `json:"pruned,omitempty"`
+	// PruneError is set when the new snapshot is complete but removing
+	// old snapshots failed; the snapshots that were not removed are intact.
+	PruneError string `json:"prune_error,omitempty"`
 }
 
 // target is an opened backup target.
@@ -271,8 +283,58 @@ func Backup(ctx context.Context, src *storage.Volume, srcDB *sql.DB, targetDir s
 		return r, err
 	}
 	r.Path = final
+	if opt.Keep > 0 {
+		if err := prune(t, r.ID, opt.Keep, r); err != nil {
+			r.PruneError = err.Error()
+		}
+	}
 	r.Seconds = time.Since(start).Seconds()
 	return r, tv.Check()
+}
+
+// snapshotIDRE matches the name of a finished snapshot (newSnapshotID).
+var snapshotIDRE = regexp.MustCompile(`^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{6}$`)
+
+// prune removes the oldest finished snapshots other than current so that
+// keep remain. Each one is first renamed to a .partial- name (atomic), so
+// an interruption leaves a directory the next backup removes, never a
+// half-deleted snapshot under a valid name. Only directories named like a
+// snapshot and holding a manifest count; anything else is left alone.
+func prune(t target, current string, keep int, r *Report) error {
+	dir := t.dir(SnapshotsDir)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	var others []string
+	for _, e := range entries {
+		if !e.IsDir() || e.Name() == current || !snapshotIDRE.MatchString(e.Name()) {
+			continue
+		}
+		if fi, err := os.Lstat(filepath.Join(dir, e.Name(), ManifestName)); err == nil && fi.Mode().IsRegular() {
+			others = append(others, e.Name())
+		}
+	}
+	sort.Strings(others) // the id starts with the UTC time: oldest first
+	extra := len(others) - (keep - 1)
+	for i := 0; i < extra; i++ {
+		id := others[i]
+		if err := t.vol.Check(); err != nil {
+			return err
+		}
+		doomed := filepath.Join(dir, partialPrefix+"pruned-"+id)
+		if err := os.Rename(filepath.Join(dir, id), doomed); err != nil {
+			return err
+		}
+		if err := syncDir(dir); err != nil {
+			return err
+		}
+		r.Pruned = append(r.Pruned, id)
+		if err := os.RemoveAll(doomed); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // prepareTarget creates the target's directories and removes what an
