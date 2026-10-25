@@ -737,7 +737,7 @@ func (s *Store) ListEvents(ctx context.Context, folderID string, cursor int64, l
 	if err != nil {
 		return meta.EventPage{}, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT c.seq, c.event_type, c.asset_id, COALESCE(c.uploader_device_label, ''), c.occurred_at,
+	rows, err := s.db.QueryContext(ctx, `SELECT c.seq, c.event_type, c.asset_id, COALESCE(c.uploader_device_label, ''), c.occurred_at, COALESCE(c.comment_id, ''),
 			a.original_sha256, a.original_filename, b.mime_type, b.bytes, a.preview_ready, a.preview_state, a.created_at,
 			b.captured_at, b.duration_ms, `+uploaderName+`, fa.asset_id IS NOT NULL AND fa.removed_at IS NULL, a.media_kind, a.pairing_state, `+pairedVideo+`
 		FROM folder_changes c
@@ -756,7 +756,7 @@ func (s *Store) ListEvents(ctx context.Context, folderID string, cursor int64, l
 		var size, dur sql.NullInt64
 		var preview sql.NullBool
 		var linked bool
-		if err := rows.Scan(&e.Seq, &e.Kind, &e.AssetID, &e.UploaderDeviceID, &e.OccurredAt,
+		if err := rows.Scan(&e.Seq, &e.Kind, &e.AssetID, &e.UploaderDeviceID, &e.OccurredAt, &e.CommentID,
 			&sha, &filename, &mime, &size, &preview, &state, &uploadedAt, &captured, &dur, &uploader, &linked, &kind, &pairing, &paired); err != nil {
 			return meta.EventPage{}, err
 		}
@@ -766,7 +766,7 @@ func (s *Store) ListEvents(ctx context.Context, folderID string, cursor int64, l
 			return meta.EventPage{}, fmt.Errorf("folder %s event %d references a missing asset or blob", folderID, e.Seq)
 		}
 		page.Events = append(page.Events, e)
-		if (e.Kind == meta.EventAssetAdded || e.Kind == meta.EventAssetUpdated) && linked {
+		if e.Kind != meta.EventAssetRemoved && linked {
 			a := meta.Asset{ID: e.AssetID, SHA256: sha.String, Filename: filename.String, MimeType: mime.String,
 				Bytes: size.Int64, PreviewReady: preview.Bool, PreviewStatus: previewStatus(preview.Bool, state), UploadedAt: uploadedAt.String,
 				CapturedAt: captured.String, DurationMS: dur.Int64, UploaderName: uploader.String}

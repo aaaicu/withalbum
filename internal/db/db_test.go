@@ -38,8 +38,8 @@ func TestEmbeddedMigrationsAreContiguous(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ms) != 12 || LatestVersion() != 12 {
-		t.Fatalf("got %d migrations, LatestVersion %d; want 12", len(ms), LatestVersion())
+	if len(ms) != 14 || LatestVersion() != 14 {
+		t.Fatalf("got %d migrations, LatestVersion %d; want 14", len(ms), LatestVersion())
 	}
 }
 
@@ -619,5 +619,52 @@ func TestMigration0012FolderReceiptsDuration(t *testing.T) {
 	var n int
 	if err := sqlDB.QueryRow("SELECT count(*) FROM folder_create_receipts").Scan(&n); err != nil || n != 0 {
 		t.Fatalf("receipts of a deleted folder: %d, %v", n, err)
+	}
+}
+
+// TestMigration0014ReactionsComments: the change feed is rebuilt with every
+// event kept, the social kinds and comment_id are accepted only together,
+// and the social tables follow their folder, comment and asset.
+func TestMigration0014ReactionsComments(t *testing.T) {
+	ctx := context.Background()
+	sqlDB, _ := openTemp(t)
+	migrateTo(t, sqlDB, 13)
+	addUser(t, sqlDB, "owner", "active")
+	mustExec(t, sqlDB, "INSERT INTO folders(folder_id, folder_name, owner_user_id) VALUES ('f1', 'Trip', 'owner')")
+	a := strings.Repeat("a", 64)
+	mustExec(t, sqlDB, "INSERT INTO blobs(sha256, bytes, mime_type, relative_path, verified_at) VALUES (?, 10, 'image/jpeg', 'pool/a', 'v')", a)
+	mustExec(t, sqlDB, "INSERT INTO assets(asset_id, original_sha256, original_filename, media_kind, uploaded_by_user_id) VALUES ('as1', ?, 'a.jpg', 'image', 'owner')", a)
+	mustExec(t, sqlDB, "INSERT INTO folder_changes(folder_id, seq, event_type, asset_id, occurred_at, uploader_device_label) VALUES ('f1', 1, 'asset_added', 'as1', 't1', 'phone')")
+	mustExec(t, sqlDB, "INSERT INTO folder_changes(folder_id, seq, event_type, asset_id, occurred_at) VALUES ('f1', 2, 'asset_updated', 'as1', 't2')")
+	expectReject(t, sqlDB, "CHECK constraint", "INSERT INTO folder_changes(folder_id, seq, event_type, asset_id) VALUES ('f1', 3, 'likes_updated', 'as1')")
+	if err := Migrate(ctx, sqlDB); err != nil {
+		t.Fatal(err)
+	}
+	var rows string
+	if err := sqlDB.QueryRow(`SELECT group_concat(seq || event_type || occurred_at || COALESCE(uploader_device_label, '-') || COALESCE(comment_id, '-'), ',')
+		FROM (SELECT * FROM folder_changes ORDER BY seq)`).Scan(&rows); err != nil || rows != "1asset_addedt1phone-,2asset_updatedt2--" {
+		t.Fatalf("events after migration %q, %v", rows, err)
+	}
+	mustExec(t, sqlDB, "INSERT INTO folder_changes(folder_id, seq, event_type, asset_id) VALUES ('f1', 3, 'likes_updated', 'as1')")
+	mustExec(t, sqlDB, "INSERT INTO folder_changes(folder_id, seq, event_type, asset_id, comment_id) VALUES ('f1', 4, 'comment_added', 'as1', 'c')")
+	expectReject(t, sqlDB, "CHECK constraint", "INSERT INTO folder_changes(folder_id, seq, event_type, asset_id) VALUES ('f1', 5, 'comment_removed', 'as1')")
+	expectReject(t, sqlDB, "CHECK constraint", "INSERT INTO folder_changes(folder_id, seq, event_type, asset_id, comment_id) VALUES ('f1', 5, 'likes_updated', 'as1', 'c')")
+	expectReject(t, sqlDB, "CHECK constraint", "INSERT INTO folder_changes(folder_id, seq, event_type, asset_id) VALUES ('f1', 5, 'surprise', 'as1')")
+	mustExec(t, sqlDB, "INSERT INTO asset_likes(folder_id, asset_id, user_id, created_at) VALUES ('f1', 'as1', 'owner', 't')")
+	expectReject(t, sqlDB, "UNIQUE constraint", "INSERT INTO asset_likes(folder_id, asset_id, user_id, created_at) VALUES ('f1', 'as1', 'owner', 't')")
+	c := strings.Repeat("c", 32)
+	mustExec(t, sqlDB, "INSERT INTO asset_comments(comment_id, folder_id, asset_id, author_user_id, body, client_key, created_at) VALUES (?, 'f1', 'as1', 'owner', 'hi', 'k', 't')", c)
+	expectReject(t, sqlDB, "UNIQUE constraint", "INSERT INTO asset_comments(comment_id, folder_id, asset_id, author_user_id, body, client_key, created_at) VALUES (?, 'f1', 'as1', 'owner', 'again', 'k', 't')", strings.Repeat("d", 32))
+	expectReject(t, sqlDB, "CHECK constraint", "INSERT INTO asset_comments(comment_id, folder_id, asset_id, author_user_id, body, created_at) VALUES (?, 'f1', 'as1', 'owner', '', 't')", strings.Repeat("e", 32))
+	expectReject(t, sqlDB, "CHECK constraint", "INSERT INTO asset_comments(comment_id, folder_id, asset_id, author_user_id, body, created_at) VALUES (?, 'f1', 'as1', 'owner', ?, 't')", strings.Repeat("e", 32), strings.Repeat("x", 16385))
+	expectReject(t, sqlDB, "FOREIGN KEY", "INSERT INTO comment_mentions(comment_id, user_id, display_name) VALUES (?, 'ghost', 'G')", c)
+	mustExec(t, sqlDB, "INSERT INTO comment_mentions(comment_id, user_id, display_name) VALUES (?, 'owner', 'O')", c)
+	mustExec(t, sqlDB, "DELETE FROM asset_comments")
+	var n int
+	if err := sqlDB.QueryRow("SELECT count(*) FROM comment_mentions").Scan(&n); err != nil || n != 0 {
+		t.Fatalf("mentions of a deleted comment: %d, %v", n, err)
+	}
+	if err := sqlDB.QueryRow("SELECT count(*) FROM sqlite_schema WHERE name = 'folder_changes_prev'").Scan(&n); err != nil || n != 0 {
+		t.Fatalf("old feed table left: %d, %v", n, err)
 	}
 }

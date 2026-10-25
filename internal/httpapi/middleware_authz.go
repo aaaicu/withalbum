@@ -102,6 +102,19 @@ var routePolicies = []RoutePolicy{
 	{"GET /api/v1/folders/{folderID}/assets/{assetID}/original", AccessAlbum, authz.DownloadAsset},
 	{"GET /api/v1/folders/{folderID}/assets/{assetID}/preview", AccessAlbum, authz.DownloadAsset},
 	{"GET /api/v1/folders/{folderID}/assets/{assetID}/components/{role}", AccessAlbum, authz.DownloadAsset},
+	// Likes, comments and mentions (social.go): readers only; edits and
+	// deletes of comments are checked against the author (and the owner
+	// for deletes) inside the transaction.
+	{"GET /api/v1/folders/{folderID}/assets/{assetID}/likes", AccessAlbum, authz.ListAlbumAssets},
+	{"PUT /api/v1/folders/{folderID}/assets/{assetID}/likes/me", AccessAlbum, authz.ReactToAsset},
+	{"DELETE /api/v1/folders/{folderID}/assets/{assetID}/likes/me", AccessAlbum, authz.ReactToAsset},
+	{"GET /api/v1/folders/{folderID}/assets/{assetID}/comments", AccessAlbum, authz.ListAlbumAssets},
+	{"POST /api/v1/folders/{folderID}/assets/{assetID}/comments", AccessAlbum, authz.ReactToAsset},
+	{"PATCH /api/v1/folders/{folderID}/assets/{assetID}/comments/{commentID}", AccessAlbum, authz.ReactToAsset},
+	{"DELETE /api/v1/folders/{folderID}/assets/{assetID}/comments/{commentID}", AccessAlbum, authz.ReactToAsset},
+	{"GET /api/v1/folders/{folderID}/mentionable", AccessAlbum, authz.ListAlbumAssets},
+	// Only the caller's own activity, in folders it can read now.
+	{"GET /api/v1/me/activity", AccessSession, ""},
 	{"DELETE /api/v1/folders/{folderID}", AccessAlbum, authz.DeleteAlbum},
 	{"GET /api/v1/folders/{folderID}/members", AccessAlbum, authz.ListMembers},
 	{"PATCH /api/v1/folders/{folderID}/members/{userID}", AccessAlbum, authz.ChangeMemberRole},

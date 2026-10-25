@@ -66,7 +66,8 @@ func TestCheckRelay(t *testing.T) {
 // dashboard and every administration route are not, whatever the spelling.
 func TestRelayAllowed(t *testing.T) {
 	for _, p := range []string{"/api/v1/health", "/api/v1/auth/login", "/api/v1/auth/refresh", "/api/v1/me", "/api/v1/me/devices/x",
-		"/api/v1/folders", "/api/v1/folders/f/assets/a/original", "/api/v1/invitations", "/api/v1/invitations/i/accept"} {
+		"/api/v1/folders", "/api/v1/folders/f/assets/a/original", "/api/v1/invitations", "/api/v1/invitations/i/accept",
+		"/api/v1/folders/f/assets/a/likes/me", "/api/v1/folders/f/assets/a/comments/c", "/api/v1/folders/f/mentionable", "/api/v1/me/activity"} {
 		if !relayAllowed(p) {
 			t.Errorf("%s refused", p)
 		}

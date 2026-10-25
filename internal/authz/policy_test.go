@@ -32,7 +32,7 @@ func TestGlobalPermissions(t *testing.T) {
 }
 
 func TestFolderRoles(t *testing.T) {
-	acts := []Action{GetAlbumMetadata, ListAlbumAssets, DownloadAsset, UploadAsset, DeleteAsset, InviteMember, RevokeMember, ChangeMemberRole, ListMembers, TransferOwner, DeleteAlbum}
+	acts := []Action{GetAlbumMetadata, ListAlbumAssets, DownloadAsset, UploadAsset, DeleteAsset, InviteMember, RevokeMember, ChangeMemberRole, ListMembers, TransferOwner, DeleteAlbum, ReactToAsset, ModerateComments}
 	roleCases := []struct {
 		name   string
 		user   Principal
@@ -41,10 +41,11 @@ func TestFolderRoles(t *testing.T) {
 	}{
 		{"owner", Principal{UserID: "owner", Active: true, ServerRole: ServerUser}, AlbumAccess{OwnerID: "owner"}, map[Action]bool{
 			GetAlbumMetadata: true, ListAlbumAssets: true, DownloadAsset: true, UploadAsset: true, DeleteAsset: true, InviteMember: true, RevokeMember: true, ChangeMemberRole: true, ListMembers: true, TransferOwner: true, DeleteAlbum: true,
+			ReactToAsset: true, ModerateComments: true,
 		}},
-		{"viewer", Principal{UserID: "v", Active: true, ServerRole: ServerUser}, AlbumAccess{OwnerID: "owner", HasMembership: true, MemberRole: Viewer}, map[Action]bool{GetAlbumMetadata: true, ListAlbumAssets: true, DownloadAsset: true}},
+		{"viewer", Principal{UserID: "v", Active: true, ServerRole: ServerUser}, AlbumAccess{OwnerID: "owner", HasMembership: true, MemberRole: Viewer}, map[Action]bool{GetAlbumMetadata: true, ListAlbumAssets: true, DownloadAsset: true, ReactToAsset: true}},
 		{"uploader", Principal{UserID: "u", Active: true, ServerRole: ServerUser}, AlbumAccess{OwnerID: "owner", HasMembership: true, MemberRole: Uploader}, map[Action]bool{GetAlbumMetadata: true, UploadAsset: true}},
-		{"contributor", Principal{UserID: "c", Active: true, ServerRole: ServerUser}, AlbumAccess{OwnerID: "owner", HasMembership: true, MemberRole: Contributor}, map[Action]bool{GetAlbumMetadata: true, ListAlbumAssets: true, DownloadAsset: true, UploadAsset: true}},
+		{"contributor", Principal{UserID: "c", Active: true, ServerRole: ServerUser}, AlbumAccess{OwnerID: "owner", HasMembership: true, MemberRole: Contributor}, map[Action]bool{GetAlbumMetadata: true, ListAlbumAssets: true, DownloadAsset: true, UploadAsset: true, ReactToAsset: true}},
 		{"outsider", Principal{UserID: "x", Active: true, ServerRole: ServerUser}, AlbumAccess{OwnerID: "owner"}, map[Action]bool{}},
 		{"server-admin-not-owner", Principal{UserID: "admin", Active: true, ServerRole: ServerAdmin}, AlbumAccess{OwnerID: "owner"}, map[Action]bool{}},
 		{"unregistered-membership", Principal{UserID: "x", Active: true, ServerRole: ServerUser}, AlbumAccess{OwnerID: "owner", HasMembership: false, MemberRole: Viewer}, map[Action]bool{}},

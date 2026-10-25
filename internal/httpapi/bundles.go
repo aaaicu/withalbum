@@ -42,9 +42,10 @@ const bundleCompleteRoute = "POST /api/v1/folders/{folderID}/bundles/{bundleID}/
 // ServerFeatures are the optional abilities this server announces in GET
 // /me, so that a client can tell an older server from this one:
 // live_photo_bundles (POST .../bundles), folder_create_idempotency
-// (Idempotency-Key on POST /folders) and asset_duration (duration_ms on
-// assets and components).
-var ServerFeatures = []string{"live_photo_bundles", "folder_create_idempotency", "asset_duration"}
+// (Idempotency-Key on POST /folders), asset_duration (duration_ms on
+// assets and components) and reactions_comments (likes, comments,
+// mentions and /me/activity, social.go).
+var ServerFeatures = []string{"live_photo_bundles", "folder_create_idempotency", "asset_duration", "reactions_comments"}
 
 func (s *Server) bundleRoutes(rt *router) {
 	rt.handleAlbum("POST /api/v1/folders/{folderID}/bundles", s.createBundle)

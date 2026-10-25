@@ -453,8 +453,17 @@ func (s *Store) SetMemberRole(ctx context.Context, c meta.AlbumChange) (meta.Mem
 			if _, err := tx.ExecContext(ctx, "UPDATE folder_members SET role = ? WHERE folder_id = ? AND user_id = ?", string(c.Role), c.FolderID, c.TargetID); err != nil {
 				return err
 			}
-			if err := recordAlbum(ctx, tx, c.ActorID, "member.role_change", "folder", c.FolderID,
-				map[string]any{"user_id": c.TargetID, "from_role": string(old), "to_role": string(c.Role)}); err != nil {
+			details := map[string]any{"user_id": c.TargetID, "from_role": string(old), "to_role": string(c.Role)}
+			if c.Role == authz.Uploader {
+				// An upload-only member sees nothing of the album, so its
+				// likes go (its comments stay, shown without author).
+				n, err := dropLikes(ctx, tx, c.FolderID, c.TargetID)
+				if err != nil {
+					return err
+				}
+				details["likes_removed"] = n
+			}
+			if err := recordAlbum(ctx, tx, c.ActorID, "member.role_change", "folder", c.FolderID, details); err != nil {
 				return err
 			}
 		}
@@ -477,8 +486,13 @@ func (s *Store) RemoveMember(ctx context.Context, c meta.AlbumChange) error {
 		if _, err := tx.ExecContext(ctx, "DELETE FROM folder_members WHERE folder_id = ? AND user_id = ?", c.FolderID, c.TargetID); err != nil {
 			return err
 		}
+		// Its likes go; its comments stay, shown without author.
+		n, err := dropLikes(ctx, tx, c.FolderID, c.TargetID)
+		if err != nil {
+			return err
+		}
 		return recordAlbum(ctx, tx, c.ActorID, "member.remove", "folder", c.FolderID,
-			map[string]any{"user_id": c.TargetID, "role": string(old)})
+			map[string]any{"user_id": c.TargetID, "role": string(old), "likes_removed": n})
 	})
 }
 
