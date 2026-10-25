@@ -11,8 +11,8 @@ import (
 	"github.com/aaaicu/withalbum/internal/meta"
 )
 
-// The capture-time worker reads when and where each original was taken
-// and, for a movie, how long it plays (internal/capturetime) and records them for
+// The capture-time worker reads when and where each original was taken,
+// with which camera and at which pixel size, and, for a movie, how long it plays (internal/capturetime) and records them for
 // every asset of those bytes (meta.SetCaptureTimes, which appends
 // asset_updated events when it found something). It runs after the commit, not inside it: the upload path stays the
 // same for new and already stored bytes (an upload-only caller must not
@@ -89,7 +89,7 @@ func (s *Server) ProcessCaptures(ctx context.Context) (int, error) {
 			stop = err
 			break
 		}
-		t, ms, loc, err := s.readCaptureTime(sha)
+		t, ms, loc, media, err := s.readCaptureTime(sha)
 		if err != nil {
 			if s.vol.Check() != nil {
 				stop = err // the volume went away: try again once it is back
@@ -99,7 +99,11 @@ func (s *Server) ProcessCaptures(ctx context.Context) (int, error) {
 			// capture time stays unknown; integrity checks report the file.
 			log.Printf("capture times: %s: %v", sha, err)
 		}
-		r := meta.CaptureResult{SHA256: sha, CapturedAt: t.String(), DurationMS: ms}
+		r := meta.CaptureResult{SHA256: sha, CapturedAt: t.String(), DurationMS: ms,
+			Media: meta.MediaInfo{Width: media.Width, Height: media.Height}}
+		if c := media.Camera; c != nil {
+			r.Media.Camera = &meta.Camera{Make: c.Make, Model: c.Model, Lens: c.Lens, Focal35mm: c.Focal35mm}
+		}
 		if loc != nil {
 			r.Location = &meta.Location{Lat: loc.Lat, Lon: loc.Lon, AccuracyM: loc.AccuracyM}
 		}
@@ -116,33 +120,39 @@ func (s *Server) ProcessCaptures(ctx context.Context) (int, error) {
 	return len(results), stop
 }
 
-// readCaptureTime reads the capture time, the duration (0: none) and the
-// location (nil: none) of the pool file of sha. The file is only read
-// (capturetime bounds how much, separately for each).
-func (s *Server) readCaptureTime(sha string) (capturetime.Time, int64, *capturetime.Location, error) {
+// readCaptureTime reads the capture time, the duration (0: none), the
+// location (nil: none) and the camera and pixel size of the pool file of
+// sha. The file is only read (capturetime bounds how much, separately for
+// each).
+func (s *Server) readCaptureTime(sha string) (capturetime.Time, int64, *capturetime.Location, capturetime.MediaInfo, error) {
+	var none capturetime.MediaInfo
 	f, err := os.Open(s.blobs.PoolPath(sha))
 	if err != nil {
-		return capturetime.Time{}, 0, nil, err
+		return capturetime.Time{}, 0, nil, none, err
 	}
 	defer f.Close()
 	fi, err := f.Stat()
 	if err != nil {
-		return capturetime.Time{}, 0, nil, err
+		return capturetime.Time{}, 0, nil, none, err
 	}
 	if !fi.Mode().IsRegular() {
-		return capturetime.Time{}, 0, nil, errors.New("pool entry is not a regular file")
+		return capturetime.Time{}, 0, nil, none, errors.New("pool entry is not a regular file")
 	}
 	t, err := capturetime.Extract(f, fi.Size())
 	if err != nil {
-		return capturetime.Time{}, 0, nil, err
+		return capturetime.Time{}, 0, nil, none, err
 	}
 	ms, err := capturetime.Duration(f, fi.Size())
 	if err != nil {
-		return capturetime.Time{}, 0, nil, err
+		return capturetime.Time{}, 0, nil, none, err
 	}
 	loc, err := capturetime.ExtractLocation(f, fi.Size())
 	if err != nil {
-		return capturetime.Time{}, 0, nil, err
+		return capturetime.Time{}, 0, nil, none, err
 	}
-	return t, ms, loc, nil
+	media, err := capturetime.ExtractMediaInfo(f, fi.Size())
+	if err != nil {
+		return capturetime.Time{}, 0, nil, none, err
+	}
+	return t, ms, loc, media, nil
 }

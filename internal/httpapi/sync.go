@@ -134,6 +134,16 @@ type assetJSON struct {
 	// the uploader set hide_my_location and the caller is someone else.
 	// For a live_photo the still's, else its video's.
 	Location *locationJSON `json:"location"`
+	// Camera: the device it was taken with, read by the server from the
+	// original's metadata (EXIF Make, Model, LensModel,
+	// FocalLengthIn35mmFilm; QuickTime make/model), or null when none is
+	// recorded or not read yet (an asset_updated event follows). For a
+	// live_photo the still's.
+	Camera *cameraJSON `json:"camera"`
+	// Width, Height: the original's pixel size as displayed (after its
+	// recorded orientation), both null when unknown or not read yet.
+	Width  *int `json:"width"`
+	Height *int `json:"height"`
 	// UploadedByName: the uploader's display name, null when there is no
 	// uploader or the account is disabled or cannot log in.
 	UploadedByName *string `json:"uploaded_by_name"`
@@ -159,6 +169,14 @@ type componentJSON struct {
 	Filename string `json:"filename"`
 	// DurationMS: as assetJSON.DurationMS, for this original.
 	DurationMS *int64 `json:"duration_ms"`
+}
+
+// cameraJSON: each field null when the original does not record it.
+type cameraJSON struct {
+	Make      *string `json:"make"`
+	Model     *string `json:"model"`
+	Lens      *string `json:"lens"`
+	Focal35mm *int    `json:"focal_35mm"`
 }
 
 // locationJSON is a position in WGS 84 degrees with the recorded
@@ -206,6 +224,17 @@ func assetView(as meta.Asset, viewer locationViewer) assetJSON {
 		Pairing: nonEmpty(as.Pairing), Components: componentsView(as)}
 	if as.MediaKind != meta.MediaLivePhoto {
 		v.DurationMS = positive(as.DurationMS)
+	}
+	if c := as.Camera; c != nil {
+		v.Camera = &cameraJSON{Make: nonEmpty(c.Make), Model: nonEmpty(c.Model), Lens: nonEmpty(c.Lens)}
+		if c.Focal35mm > 0 {
+			f := c.Focal35mm
+			v.Camera.Focal35mm = &f
+		}
+	}
+	if as.Width > 0 && as.Height > 0 {
+		w, h := as.Width, as.Height
+		v.Width, v.Height = &w, &h
 	}
 	if l := as.Location; showLocation && l != nil {
 		v.Location = &locationJSON{Lat: l.Lat, Lon: l.Lon}

@@ -28,10 +28,11 @@ func TestAssetDuration(t *testing.T) {
 	}
 	events := e.events(t, e.family)
 	processCaptures(t, e)
-	// One event for the clip (capture time and duration together) and one
-	// for the live photo (its video's duration).
-	if got := e.events(t, e.family); got != events+2 {
-		t.Fatalf("events %d -> %d, want two asset_updated", events, got)
+	// One event for the clip (capture time and duration together), one
+	// for the live photo's video (its duration) and one for its still (its
+	// pixel size, M48).
+	if got := e.events(t, e.family); got != events+3 {
+		t.Fatalf("events %d -> %d, want three asset_updated", events, got)
 	}
 	check := func(what string) {
 		t.Helper()

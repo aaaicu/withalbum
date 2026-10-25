@@ -38,8 +38,8 @@ func TestEmbeddedMigrationsAreContiguous(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ms) != 13 || LatestVersion() != 13 {
-		t.Fatalf("got %d migrations, LatestVersion %d; want 13", len(ms), LatestVersion())
+	if len(ms) != 15 || LatestVersion() != 15 {
+		t.Fatalf("got %d migrations, LatestVersion %d; want 15", len(ms), LatestVersion())
 	}
 }
 
@@ -619,5 +619,35 @@ func TestMigration0012FolderReceiptsDuration(t *testing.T) {
 	var n int
 	if err := sqlDB.QueryRow("SELECT count(*) FROM folder_create_receipts").Scan(&n); err != nil || n != 0 {
 		t.Fatalf("receipts of a deleted folder: %d, %v", n, err)
+	}
+}
+
+// TestMigration0015MediaInfo: existing originals become pending (the
+// backfill) and the columns accept only what the worker writes.
+func TestMigration0015MediaInfo(t *testing.T) {
+	ctx := context.Background()
+	sqlDB, _ := openTemp(t)
+	migrateTo(t, sqlDB, 14)
+	a := strings.Repeat("a", 64)
+	mustExec(t, sqlDB, "INSERT INTO blobs(sha256, bytes, mime_type, relative_path, verified_at) VALUES (?, 10, 'image/jpeg', 'pool/a', 'v')", a)
+	if err := Migrate(ctx, sqlDB); err != nil {
+		t.Fatal(err)
+	}
+	var state string
+	var set int
+	if err := sqlDB.QueryRow("SELECT media_state, count(camera_make) + count(camera_model) + count(camera_lens) + count(camera_focal_35mm) + count(pixel_width) + count(pixel_height) FROM blobs").Scan(&state, &set); err != nil || state != "pending" || set != 0 {
+		t.Fatalf("after migration %q %d, %v", state, set, err)
+	}
+	expectReject(t, sqlDB, "CHECK constraint", "UPDATE blobs SET camera_model = 'X'")
+	expectReject(t, sqlDB, "CHECK constraint", "UPDATE blobs SET media_state = 'maybe'")
+	expectReject(t, sqlDB, "CHECK constraint", "UPDATE blobs SET media_state = 'done', camera_model = ''")
+	expectReject(t, sqlDB, "CHECK constraint", "UPDATE blobs SET media_state = 'done', camera_lens = ?", strings.Repeat("x", 65))
+	expectReject(t, sqlDB, "CHECK constraint", "UPDATE blobs SET media_state = 'done', camera_focal_35mm = 0")
+	expectReject(t, sqlDB, "CHECK constraint", "UPDATE blobs SET media_state = 'done', pixel_width = 10")
+	expectReject(t, sqlDB, "CHECK constraint", "UPDATE blobs SET media_state = 'done', pixel_width = 0, pixel_height = 10")
+	mustExec(t, sqlDB, "UPDATE blobs SET media_state = 'done', camera_make = 'M', camera_model = 'X', camera_lens = 'L', camera_focal_35mm = 24, pixel_width = 4032, pixel_height = 3024")
+	var idx int
+	if err := sqlDB.QueryRow("SELECT count(*) FROM sqlite_schema WHERE type = 'index' AND name = 'idx_blobs_media_pending'").Scan(&idx); err != nil || idx != 1 {
+		t.Fatalf("index %d, %v", idx, err)
 	}
 }

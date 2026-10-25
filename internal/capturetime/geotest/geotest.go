@@ -218,3 +218,87 @@ func movie(brand string, seed int, parts ...[]byte) []byte {
 }
 
 func be32(v uint32) []byte { return binary.BigEndian.AppendUint32(nil, v) }
+
+// TIFFIFD0 builds a TIFF block whose IFD0 holds ifd0 (plus a pointer to
+// an Exif IFD holding exif, when exif is not nil).
+func TIFFIFD0(bo ByteOrder, ifd0, exif []Entry) []byte {
+	dirSize := func(n int) int { return 2 + n*12 + 4 }
+	n0 := len(ifd0)
+	if exif != nil {
+		n0++
+	}
+	// layout: header | IFD0 | IFD0 data | Exif IFD | Exif data
+	writeDir := func(base int, es []Entry, extra func(dir []byte) []byte) []byte {
+		count := len(es)
+		if extra != nil {
+			count++
+		}
+		dataOff := base + dirSize(count)
+		dir := bo.AppendUint16(nil, uint16(count))
+		var data []byte
+		for _, e := range es {
+			dir = bo.AppendUint16(dir, e.Tag)
+			dir = bo.AppendUint16(dir, e.Type)
+			dir = bo.AppendUint32(dir, e.Count)
+			if len(e.Data) <= 4 {
+				v := make([]byte, 4)
+				copy(v, e.Data)
+				dir = append(dir, v...)
+			} else {
+				dir = bo.AppendUint32(dir, uint32(dataOff+len(data)))
+				data = append(data, e.Data...)
+				if len(data)%2 == 1 {
+					data = append(data, 0)
+				}
+			}
+		}
+		if extra != nil {
+			dir = extra(dir)
+		}
+		dir = bo.AppendUint32(dir, 0)
+		return append(dir, data...)
+	}
+	// First pass for the size of IFD0 and its data.
+	probe := writeDir(8, ifd0, func(d []byte) []byte { return append(d, make([]byte, 12)...) })
+	if exif == nil {
+		probe = writeDir(8, ifd0, nil)
+	}
+	exifOff := 8 + len(probe)
+	var extra func([]byte) []byte
+	if exif != nil {
+		extra = func(d []byte) []byte {
+			d = bo.AppendUint16(d, 0x8769)
+			d = bo.AppendUint16(d, 4)
+			d = bo.AppendUint32(d, 1)
+			return bo.AppendUint32(d, uint32(exifOff))
+		}
+	}
+	var hdr []byte
+	if bo.String() == binary.LittleEndian.String() {
+		hdr = []byte("II")
+	} else {
+		hdr = []byte("MM")
+	}
+	hdr = bo.AppendUint16(hdr, 42)
+	hdr = bo.AppendUint32(hdr, 8)
+	out := append(hdr, writeDir(8, ifd0, extra)...)
+	if exif != nil {
+		out = append(out, writeDir(exifOff, exif, nil)...)
+	}
+	return out
+}
+
+// CameraJPEG is a decodable 8x8 JPEG whose EXIF records an invented
+// camera (Make, Model, LensModel, FocalLengthIn35mmFilm) and a pixel size
+// of w×h in its Exif IFD (the frame itself is 8×8).
+func CameraJPEG(maker, model, lens string, focal uint16, w, h uint32, seed int) []byte {
+	bo := binary.BigEndian
+	ifd0 := []Entry{ASCII(0x010F, maker), ASCII(0x0110, model)}
+	exif := []Entry{
+		{Tag: 0xA002, Type: 4, Count: 1, Data: bo.AppendUint32(nil, w)},
+		{Tag: 0xA003, Type: 4, Count: 1, Data: bo.AppendUint32(nil, h)},
+		{Tag: 0xA405, Type: 3, Count: 1, Data: bo.AppendUint16(nil, focal)},
+		ASCII(0xA434, lens),
+	}
+	return lpt.JPEGWithTIFF(TIFFIFD0(bo, ifd0, exif), seed)
+}

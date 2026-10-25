@@ -433,7 +433,7 @@ func TestLivePhotoAccess(t *testing.T) {
 	wantError(t, "demoted", e.completeBundle(t, "uploader", f, bid), 403, "forbidden")
 	e.setMember(t, "uploader", "UPLOADER")
 	me := wantJSON(t, "me", e.as(t, "uploader", "GET", "/api/v1/me", nil, nil), 200)
-	if fmt.Sprint(me["server_features"]) != "[live_photo_bundles folder_create_idempotency asset_duration asset_location]" {
+	if fmt.Sprint(me["server_features"]) != "[live_photo_bundles folder_create_idempotency asset_duration asset_location asset_camera]" {
 		t.Fatalf("server_features %v", me["server_features"])
 	}
 }

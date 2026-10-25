@@ -13,8 +13,9 @@
 // (the zero Time); it never guesses, and in particular never substitutes
 // the upload time or a file system time. It only reads; the original is
 // never changed. Location (location.go) reads where it was taken (the EXIF
-// GPS directory, QuickTime ISO 6709 location) with the same limits.
-// Nothing else (camera, altitude) is extracted.
+// GPS directory, QuickTime ISO 6709 location) and ExtractMediaInfo
+// (media.go) the camera and pixel size, with the same limits. Nothing
+// else (altitude, serial numbers, owner names) is extracted.
 package capturetime
 
 import (

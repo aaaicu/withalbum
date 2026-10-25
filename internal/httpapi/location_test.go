@@ -52,9 +52,10 @@ func TestAssetLocation(t *testing.T) {
 	}
 	events := e.events(t, e.family)
 	processCaptures(t, e)
-	// pic, clip (capture time from mvhd too), live (video), uploader's photo.
-	if got := e.events(t, e.family); got != events+4 {
-		t.Fatalf("events %d -> %d, want 4", events, got)
+	// pic, clip (capture time from mvhd too), live (video; and its still's
+	// pixel size, M48), uploader's photo.
+	if got := e.events(t, e.family); got != events+5 {
+		t.Fatalf("events %d -> %d, want 5", events, got)
 	}
 	check := func(what string) {
 		t.Helper()

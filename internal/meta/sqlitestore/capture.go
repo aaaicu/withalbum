@@ -17,7 +17,8 @@ func (s *Store) PendingCaptures(ctx context.Context, limit int) ([]string, error
 	// Partial indexes, one per state; UNION removes the duplicates.
 	rows, err := s.db.QueryContext(ctx, `SELECT sha256 FROM blobs WHERE capture_state = 'pending'
 		UNION SELECT sha256 FROM blobs WHERE duration_state = 'pending'
-		UNION SELECT sha256 FROM blobs WHERE location_state = 'pending' ORDER BY sha256 LIMIT ?`, limit)
+		UNION SELECT sha256 FROM blobs WHERE location_state = 'pending'
+		UNION SELECT sha256 FROM blobs WHERE media_state = 'pending' ORDER BY sha256 LIMIT ?`, limit)
 	if err != nil {
 		return nil, classify(err)
 	}
@@ -52,6 +53,9 @@ func (s *Store) setCaptureTimes(ctx context.Context, results []meta.CaptureResul
 		}
 		if l := r.Location; l != nil && (!capturetime.ValidPosition(l.Lat, l.Lon) || l.AccuracyM < 0 || l.AccuracyM > capturetime.MaxAccuracyM) {
 			return 0, errors.New("sqlitestore: an invalid location")
+		}
+		if err := validMedia(r.Media); err != nil {
+			return 0, err
 		}
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -99,8 +103,19 @@ func (s *Store) setCaptureTimes(ctx context.Context, results []meta.CaptureResul
 		if err != nil {
 			return 0, err
 		}
+		mk, mo, le, fo, w, h := mediaArgs(r.Media)
+		res, err = tx.ExecContext(ctx, `UPDATE blobs SET media_state = 'done', camera_make = ?, camera_model = ?, camera_lens = ?, camera_focal_35mm = ?,
+			pixel_width = ?, pixel_height = ? WHERE sha256 = ? AND media_state = 'pending'`, mk, mo, le, fo, w, h, r.SHA256)
+		if err != nil {
+			return 0, err
+		}
+		described, err := res.RowsAffected()
+		if err != nil {
+			return 0, err
+		}
+		newMedia := described > 0 && (r.Media.Camera != nil || r.Media.Width > 0)
 		newTime, newDuration, newLocation := captured > 0 && r.CapturedAt != "", timed > 0 && r.DurationMS > 0, located > 0 && r.Location != nil
-		if !newTime && !newDuration && !newLocation {
+		if !newTime && !newDuration && !newLocation && !newMedia {
 			continue // settled already, or nothing a client sees changed
 		}
 		// Every folder link of an asset of these bytes. The event carries
@@ -147,4 +162,32 @@ func (s *Store) setCaptureTimes(ctx context.Context, results []meta.CaptureResul
 		return 0, err
 	}
 	return events, nil
+}
+
+// validMedia rejects what ExtractMediaInfo never reports (the columns'
+// CHECK constraints would too, with a less useful error).
+func validMedia(m meta.MediaInfo) error {
+	if (m.Width == 0) != (m.Height == 0) || m.Width < 0 || m.Height < 0 || m.Width > capturetime.MaxDimension || m.Height > capturetime.MaxDimension {
+		return errors.New("sqlitestore: an invalid pixel size")
+	}
+	if c := m.Camera; c != nil {
+		if c.Focal35mm < 0 || c.Focal35mm > capturetime.MaxFocal35mm || len(c.Make) > 64 || len(c.Model) > 64 || len(c.Lens) > 64 {
+			return errors.New("sqlitestore: an invalid camera")
+		}
+	}
+	return nil
+}
+
+// mediaArgs are the column values of m (NULL for what is not recorded).
+func mediaArgs(m meta.MediaInfo) (mk, mo, le, fo, w, h any) {
+	if c := m.Camera; c != nil {
+		mk, mo, le = nullable(c.Make), nullable(c.Model), nullable(c.Lens)
+		if c.Focal35mm > 0 {
+			fo = c.Focal35mm
+		}
+	}
+	if m.Width > 0 {
+		w, h = m.Width, m.Height
+	}
+	return
 }

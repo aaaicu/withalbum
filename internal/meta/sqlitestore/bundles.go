@@ -382,11 +382,11 @@ func (s *Store) commitBundle(ctx context.Context, req meta.BundleCommit) (meta.C
 	held := false
 	for rows.Next() {
 		var a meta.Asset
-		var state, captured, uploader, kind, pairing, paired, loc, hiddenBy sql.NullString
+		var state, captured, uploader, kind, pairing, paired, loc, hiddenBy, media sql.NullString
 		var dur sql.NullInt64
 		var shared int
 		if err := rows.Scan(&a.ID, &a.SHA256, &a.Filename, &a.MimeType, &a.Bytes, &a.PreviewReady, &state, &a.UploadedAt, &captured, &dur, &uploader,
-			&kind, &pairing, &paired, &loc, &hiddenBy, &shared); err != nil {
+			&kind, &pairing, &paired, &loc, &hiddenBy, &media, &shared); err != nil {
 			rows.Close()
 			return meta.CommitResult{}, err
 		}
@@ -395,6 +395,9 @@ func (s *Store) commitBundle(ctx context.Context, req meta.BundleCommit) (meta.C
 		err := setLivePhoto(&a, kind, pairing, paired)
 		if err == nil {
 			err = setLocation(&a, loc)
+		}
+		if err == nil {
+			err = setMedia(&a, media)
 		}
 		if err != nil {
 			rows.Close()

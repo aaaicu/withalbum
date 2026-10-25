@@ -124,11 +124,15 @@ func TestAssetMetadataExposure(t *testing.T) {
 	if n := processCaptures(t, e); n != 3 { // owner's photo, admin's photo, the shot
 		t.Fatalf("settled %d originals, want 3", n)
 	}
-	// One asset_updated, for the only original with a capture time.
-	if n := e.events(t, e.family); n != eventsBefore+1 {
-		t.Fatalf("events %d -> %d, want one asset_updated", eventsBefore, n)
+	// One asset_updated per decodable original of the folder: the shot
+	// (capture time and pixel size together) and the owner's photo (pixel
+	// size only, M48).
+	if n := e.events(t, e.family); n != eventsBefore+2 {
+		t.Fatalf("events %d -> %d, want two asset_updated", eventsBefore, n)
 	}
-	if n := e.events(t, e.adminF); n != 1 {
+	// The admin's photo: its asset_added and one asset_updated for its
+	// pixel size (no capture time).
+	if n := e.events(t, e.adminF); n != 2 {
 		t.Fatalf("admin folder got events: %d", n)
 	}
 
@@ -151,9 +155,13 @@ func TestAssetMetadataExposure(t *testing.T) {
 			}
 			page := syncPage(t, asUser(e.Raw, e.tokens[login]), e.family, "")
 			evs := page["events"].([]any)
-			last := evs[len(evs)-1].(map[string]any)
-			if last["kind"] != "asset_updated" || last["asset_id"] != shotID {
-				t.Fatalf("last event %v", last)
+			updated := false // the order of the worker's events follows the SHA-256
+			for _, ev := range evs[len(evs)-2:] {
+				m := ev.(map[string]any)
+				updated = updated || m["kind"] == "asset_updated" && m["asset_id"] == shotID
+			}
+			if !updated {
+				t.Fatalf("no asset_updated for the shot in %v", evs)
 			}
 			a := page["assets"].(map[string]any)[shotID].(map[string]any)
 			if a["captured_at"] != "2026-10-19T14:03:22+09:00" || a["uploaded_by_name"] != "contributor" {
