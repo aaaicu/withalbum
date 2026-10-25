@@ -148,6 +148,12 @@ type assetJSON struct {
 	// Components (live photos only): the extra originals, each downloaded
 	// from .../components/{role}.
 	Components []componentJSON `json:"components,omitempty"`
+	// LikeCount: likes of people who can read the folder now; LikedByMe:
+	// the caller's own; CommentCount: every comment on the asset in this
+	// folder (social.go). Only readers ever get an asset.
+	LikeCount    int  `json:"like_count"`
+	LikedByMe    bool `json:"liked_by_me"`
+	CommentCount int  `json:"comment_count"`
 }
 
 // componentJSON is an extra original of an asset.
@@ -197,13 +203,15 @@ func (v locationViewer) sees(as meta.Asset) bool {
 	return v.album && (as.LocationHiddenBy == "" || as.LocationHiddenBy == v.userID)
 }
 
-// assetView is an asset as a reader sees it.
-func assetView(as meta.Asset, viewer locationViewer) assetJSON {
+// assetView is an asset as a reader sees it, with its social summary
+// (social.go) for the caller.
+func assetView(as meta.Asset, viewer locationViewer, sum meta.SocialSummary) assetJSON {
 	showLocation := viewer.sees(as)
 	v := assetJSON{ID: as.ID, SHA256: as.SHA256, Filename: as.Filename, MimeType: as.MimeType, Bytes: as.Bytes,
 		PreviewReady: as.PreviewReady, PreviewStatus: as.PreviewStatus, UploadedAt: as.UploadedAt,
 		CapturedAt: nonEmpty(as.CapturedAt), UploadedByName: nonEmpty(as.UploaderName), MediaKind: as.MediaKind,
-		Pairing: nonEmpty(as.Pairing), Components: componentsView(as)}
+		Pairing: nonEmpty(as.Pairing), Components: componentsView(as),
+		LikeCount: sum.LikeCount, LikedByMe: sum.LikedByMe, CommentCount: sum.CommentCount}
 	if as.MediaKind != meta.MediaLivePhoto {
 		v.DurationMS = positive(as.DurationMS)
 	}
@@ -242,9 +250,10 @@ func nonEmpty(s string) *string {
 }
 
 // syncEvents: GET /folders/{id}/sync?cursor=&limit=. Events after the
-// cursor in seq order: asset_added and asset_updated (with the asset as it
-// is now in "assets" while it is still in the folder) and asset_removed (a
-// tombstone, no asset entry).
+// cursor in seq order: asset_added, asset_updated and the social events
+// likes_updated, comment_added, comment_updated and comment_removed (with
+// the asset as it is now in "assets" while it is still in the folder) and
+// asset_removed (a tombstone, no asset entry).
 func (s *Server) syncEvents(w http.ResponseWriter, r *http.Request, a albumRequest) {
 	folderID := a.Folder.Folder.ID
 	cur, ok := parseCursor(r.URL.Query().Get("cursor"))
@@ -269,9 +278,17 @@ func (s *Server) syncEvents(w http.ResponseWriter, r *http.Request, a albumReque
 		errorReply(w, 409, code)
 		return
 	}
+	ids := make([]string, 0, len(page.Assets))
+	for id := range page.Assets {
+		ids = append(ids, id)
+	}
+	sums, ok := s.summaries(w, r, a, ids)
+	if !ok {
+		return
+	}
 	assets := make(map[string]assetJSON, len(page.Assets))
 	for id, as := range page.Assets {
-		assets[id] = assetView(as, a.locationViewer())
+		assets[id] = assetView(as, a.locationViewer(), sums[id])
 	}
 	jsonReply(w, 200, map[string]any{"folder_id": folderID, "events": page.Events, "assets": assets,
 		"next_cursor": encodeCursor(page.State.Epoch, page.NextCursor), "has_more": page.HasMore})
@@ -303,10 +320,18 @@ func (s *Server) listAssets(w http.ResponseWriter, r *http.Request, a albumReque
 		metaReadFailed(w, err)
 		return
 	}
+	ids := make([]string, 0, len(page.Assets))
+	for _, as := range page.Assets {
+		ids = append(ids, as.ID)
+	}
+	sums, ok := s.summaries(w, r, a, ids)
+	if !ok {
+		return
+	}
 	list := make([]assetJSON, 0, len(page.Assets))
 	next := ""
 	for _, as := range page.Assets {
-		list = append(list, assetView(as, a.locationViewer()))
+		list = append(list, assetView(as, a.locationViewer(), sums[as.ID]))
 		next = as.ID
 	}
 	if !page.HasMore {

@@ -184,6 +184,7 @@ Drive의 개인 My Drive ACL 역할은 `owner`, `writer`, `commenter`, `reader` 
   - 세션 절대 만료 90일, 로그인 성공 시 파라미터가 다르면 재해시(`account.password_rehash`), 6시간마다 30일 지난 폐기·만료 세션 행·만료된 used refresh·30일 지난 업로드 영수증 정리(기기 행은 유지).
   - 관리자: `GET /admin/users/{uid}/devices`, `DELETE /admin/users/{uid}/devices/{did}`(`device.admin_revoke`, 행위자 = 관리자). 앨범 열람권은 여전히 없음.
   - 감사: 본인 비밀번호 변경 실패(`account.password_change` denied), 권한 거부 요약(`access.denied`: 계정·라우트·상태별 첫 거부를 즉시, 이후 10분 창 동안은 개수만 세어 다음 행의 `suppressed_before`로). 401은 기록하지 않는다(행위자 없음, DB 쓰기 폭주 방지).
+- **좋아요·댓글·멘션 (M49, 서버 모드만):** 동작 `react_to_asset`(좋아요, 댓글 작성·본인 댓글 수정·삭제) = OWNER·CONTRIBUTOR·VIEWER, `moderate_comments`(남의 댓글 삭제) = OWNER. 읽기(누른 사람·댓글·멘션 대상 목록)는 `list_album_assets`와 같음. UPLOADER는 모두 403·이벤트 없음, 비멤버·관리자 404. 이름(누른 사람·작성자·멘션)은 읽는 순간 그 앨범 읽기 권한자인 활성 계정만 표시. 추방·UPLOADER로 변경 시 그 앨범의 좋아요 삭제, 댓글은 작성자 없이 유지, 사진 제거 시 좋아요·댓글 삭제. Drive 모드는 같은 보장을 할 수 없어 숨김(§6).
 - **미구현:** 멤버 스스로 탈퇴, 보관 앨범 복원·관리자 복구(설계 메모: 마일스톤 M16 파일), 앱 UX(핀닝 구현 포함), Drive 계정 연동, 이벤트 보존 기간·삭제(409 경로만 구현).
 - 구현 순서: SQLite 트랜잭션 및 마이그레이션 → 최초 관리자 생성/로그인 → 권한 미들웨어 → 폴더 오너/멤버 권한 → 초대/수락/회수 → 전체 통합 테스트 → Mac LAN 테스트.
 - **중요:** LAN 공개는 위 TLS 게이트에서만 가능하다(SECURITY.md). 인터넷 공개·대체 불가능한 원본의 유일 저장소로 사용하면 안 된다.

@@ -4,6 +4,12 @@
 
 아래 [0.1.0-alpha.1] 초안 이후의 변경을 여기에 적습니다.
 
+### Added (likes, comments and mentions, M49)
+- 좋아요(자산·앨범·계정당 1개, `PUT`/`DELETE .../assets/{asset_id}/likes/me` 멱등, `GET .../likes` 누른 사람 표시 이름), 댓글(`GET`/`POST .../comments`, `PATCH`/`DELETE .../comments/{comment_id}` — 수정은 작성자, 삭제는 작성자·앨범 OWNER, 삭제는 흔적 없이 지움), 멘션(본문 `<@user_id>` 토큰 + `mentions` 목록, 쓰는 순간 앨범 읽기 권한자만, 표시 이름은 읽을 때 현재 이름, 권한을 잃은 사람은 일반 텍스트), `GET /folders/{folder_id}/mentionable`, `GET /me/activity`(나를 멘션한 댓글·내 사진의 댓글·좋아요, 커서 페이지). 권한: OWNER·CONTRIBUTOR·VIEWER(새 동작 `react_to_asset`, 삭제 모더레이션 `moderate_comments`), UPLOADER 403, 비멤버·관리자 404.
+- 이벤트 피드에 `likes_updated`·`comment_added`·`comment_updated`·`comment_removed`(`comment_id`), 자산 JSON에 `like_count`·`liked_by_me`·`comment_count`(GET /assets, /sync). `/me` `server_features`에 `reactions_comments`. 모르는 이벤트 종류는 건너뛰는 기존 앱과 호환.
+- 정리: 멤버 추방·UPLOADER로 변경 시 그 앨범의 좋아요 삭제(+이벤트), 사진 제거 시 좋아요·댓글 삭제, 보관은 유지. 쓰기 속도 제한(좋아요 60회 후 초당 1, 댓글 20회 후 3초당 1, 429), 감사 로그(본문 없음), 댓글 표시 1,000자·멘션 20명.
+- 마이그레이션 **0014**(`asset_likes`, `asset_comments`, `comment_mentions`, `idx_assets_uploader`, `folder_changes` 재구성), 0013 위치 열 위에 적용 — 기존 이벤트·위치 값 보존 테스트).
+
 ### Added (access from outside the home through Tailscale Funnel, M47)
 - 서버 `-funnel-url https://<machine>.<tailnet>.ts.net` / `WITHALBUM_FUNNEL_URL`(기본 꺼짐, `-tls`·로그인 가능한 관리자 필요): 루프백 전용 두 번째 리스너(`-funnel-listen` / `WITHALBUM_FUNNEL_LISTEN`, 기본 `127.0.0.1:8788`, 루프백 IP만·바인드 후 재확인·`WITHALBUM_LISTEN`과 달라야 함). Tailscale Funnel **TCP 전달**(`tailscale funnel --bg --tcp=443 --proxy-protocol=2 tcp://127.0.0.1:8788`)로 앱의 핀 TLS가 서버까지 그대로 옴(TLS 종료 방식은 미지원). 중계와 같은 경로 분류(앱 경로만, 관리·대시보드·설치 403 `not_available_via_relay` + `"route":"funnel"`), 동시 연결 128.
 - `internal/proxyproto`: 선택 PROXY v1/v2 헤더(퍼즈 `FuzzRead`) → 로그인 속도 제한·감사의 클라이언트 IP, 없으면 경로 공용 키 `funnel-unknown`.

@@ -258,6 +258,24 @@ info:
     and a client then uploads the still alone.
 
 
+    Likes, comments and mentions ("reactions_comments"). Readers of an
+    album (OWNER, CONTRIBUTOR, VIEWER) like photos (one like per account,
+    PUT/DELETE .../likes/me, idempotent), see who liked them, and write
+    comments (oldest first); the author edits, the author or the owner
+    deletes (no tombstone). A mention is the token "<@user_id>" in the
+    body plus the same account in "mentions"; the server accepts only
+    readers of the album and renders each comment as "segments" with
+    current display names (an account that lost access becomes plain
+    text). Changes arrive in the feed as likes_updated, comment_added,
+    comment_updated and comment_removed with the asset's new like_count,
+    liked_by_me and comment_count; a client fetches the thread when it is
+    opened. GET /me/activity lists mentions of the caller and others'
+    comments and likes on its photos; there is no push. An UPLOADER sees
+    and writes none of it. Likes are a burst of 60 then one per second,
+    comment writes a burst of 20 then one per 3 seconds (429
+    rate_limited).
+
+
     Errors are {"error": "<code>"}. 401 responses carry
     WWW-Authenticate: Bearer. API responses are Cache-Control: no-store.
 servers:
@@ -277,6 +295,7 @@ tags:
   - name: Invitations
   - name: Assets
   - name: Sync
+  - name: Social
 paths:
   /:
     get:
@@ -408,7 +427,7 @@ paths:
                   server_features:
                     type: array
                     items: {type: string}
-                    examples: [[live_photo_bundles, folder_create_idempotency, asset_duration, asset_location]]
+                    examples: [[live_photo_bundles, folder_create_idempotency, asset_duration, asset_location, reactions_comments]]
                     description: >-
                       Optional abilities of this server. "live_photo_bundles":
                       POST .../bundles stores Live Photos (still and video as
@@ -417,8 +436,12 @@ paths:
                       "asset_duration": assets and components carry
                       duration_ms. "asset_location": assets carry location,
                       folders hide_location, and PATCH
-                      /api/v1/folders/{folder_id} sets it. Absent on older
-                      servers; clients must ignore unknown values.
+                      /api/v1/folders/{folder_id} sets it.
+                      "reactions_comments": likes, comments, mentions, GET
+                      /me/activity, the social event kinds and
+                      like_count/liked_by_me/comment_count on assets.
+                      Absent on older servers; clients must ignore unknown
+                      values.
                   relay:
                     type: object
                     description: >-
@@ -1162,7 +1185,11 @@ paths:
     patch:
       tags: [Albums]
       summary: Change a member's role (OWNER only)
-      description: The member's next request is decided with the new role. Setting the current role changes nothing.
+      description: >-
+        The member's next request is decided with the new role. Setting the
+        current role changes nothing. Changing a member to UPLOADER deletes
+        its likes in this album (likes_updated events); its comments stay,
+        shown without author.
       requestBody:
         required: true
         content:
@@ -1188,7 +1215,9 @@ paths:
       summary: Remove a member (OWNER only)
       description: >-
         The removed member's next request on the album is 404, an upload in
-        progress is refused at its commit. Files already downloaded cannot be
+        progress is refused at its commit. Its likes in this album are
+        deleted (likes_updated events); its comments stay, shown without
+        author. Files already downloaded cannot be
         recalled.
       responses:
         '204': {description: Member removed (audited)}
@@ -1821,7 +1850,10 @@ paths:
         CONTRIBUTOR, VIEWER and UPLOADER get 403, also for photos they
         uploaded themselves. The original file is not deleted (other folders
         may hold the same bytes; there is no garbage collection yet), and
-        copies already downloaded by members cannot be recalled. Removing
+        copies already downloaded by members cannot be recalled. The
+        photo's likes and comments in this album are deleted with it (no
+        comment_removed events; the asset_removed tombstone covers them).
+        Removing
         again is 404 asset_not_found; uploading the same bytes again creates
         a new asset with a new id. Cookie sessions need X-CSRF-Token.
       parameters:
@@ -1840,8 +1872,10 @@ paths:
       summary: Read the change feed after a cursor (OWNER, CONTRIBUTOR, VIEWER)
       description: >-
         Events after the cursor in seq order, at most "limit". "assets"
-        holds the assets of the asset_added events of this page that are
-        still in the folder; an asset_added whose asset is missing from
+        holds the assets of the events of this page other than
+        asset_removed (asset_added, asset_updated and the social kinds)
+        that are still in the folder, as they are now, with the caller's
+        like and comment summary; an asset_added whose asset is missing from
         "assets" was removed later, and its asset_removed event follows.
         Without a cursor the feed starts at the beginning. The latest cursor
         returns an empty page with the same next_cursor.
@@ -1986,6 +2020,285 @@ paths:
         '401': {description: unauthorized}
         '403': {description: forbidden (UPLOADER)}
         '404': {description: 'folder_not_found, asset_not_found, preview_not_ready'}
+  /api/v1/folders/{folder_id}/assets/{asset_id}/likes:
+    get:
+      tags: [Social]
+      summary: Who likes this photo (OWNER, CONTRIBUTOR, VIEWER)
+      description: >-
+        The likes of people who can read the folder now (owner, CONTRIBUTOR,
+        VIEWER with an account that can log in), oldest first. Likes of
+        people who lost access are not listed or counted.
+      parameters:
+        - $ref: '#/components/parameters/FolderID'
+        - $ref: '#/components/parameters/AssetID'
+      responses:
+        '200':
+          description: The like list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [folder_id, asset_id, like_count, liked_by_me, likes]
+                properties:
+                  folder_id: {type: string}
+                  asset_id: {type: string}
+                  like_count: {type: integer, minimum: 0}
+                  liked_by_me: {type: boolean}
+                  likes:
+                    type: array
+                    items:
+                      type: object
+                      required: [user_id, display_name, liked_at]
+                      properties:
+                        user_id: {type: string}
+                        display_name: {type: string, description: current display name}
+                        liked_at: {type: string}
+        '401': {description: unauthorized}
+        '403': {description: forbidden (UPLOADER)}
+        '404': {description: 'folder_not_found, asset_not_found (unknown, removed, or of another folder)'}
+  /api/v1/folders/{folder_id}/assets/{asset_id}/likes/me:
+    put:
+      tags: [Social]
+      summary: Like this photo (idempotent; OWNER, CONTRIBUTOR, VIEWER)
+      description: >-
+        Adds the caller's like; liking again changes nothing (changed
+        false, no event). A change appends a likes_updated event and an
+        audit row (asset.like). Rate limited per account (a burst of 60,
+        then one per second, shared with DELETE). Cookie sessions need
+        X-CSRF-Token.
+      parameters:
+        - $ref: '#/components/parameters/FolderID'
+        - $ref: '#/components/parameters/AssetID'
+      responses:
+        '200':
+          description: The caller's summary after the request
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/LikeState'}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (UPLOADER) or csrf_failed'}
+        '404': {description: 'folder_not_found, asset_not_found'}
+        '429': {description: 'rate_limited (Retry-After: seconds)'}
+        '503': {description: 'storage_unavailable, storage_io_error, busy'}
+        '507': {description: insufficient_storage}
+    delete:
+      tags: [Social]
+      summary: Remove the caller's like (idempotent)
+      description: >-
+        As PUT; removing a like that does not exist changes nothing.
+        asset.unlike is audited when something changed.
+      parameters:
+        - $ref: '#/components/parameters/FolderID'
+        - $ref: '#/components/parameters/AssetID'
+      responses:
+        '200':
+          description: The caller's summary after the request
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/LikeState'}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (UPLOADER) or csrf_failed'}
+        '404': {description: 'folder_not_found, asset_not_found'}
+        '429': {description: 'rate_limited (Retry-After: seconds)'}
+        '503': {description: 'storage_unavailable, storage_io_error, busy'}
+        '507': {description: insufficient_storage}
+  /api/v1/folders/{folder_id}/assets/{asset_id}/comments:
+    get:
+      tags: [Social]
+      summary: The photo's comment thread, oldest first (OWNER, CONTRIBUTOR, VIEWER)
+      description: >-
+        Pages of at most "limit" comments (default 50). Names and mentions
+        are rendered for the caller now (see Comment). Fetch the thread
+        when it is opened and again after a comment_* event of the asset.
+      parameters:
+        - $ref: '#/components/parameters/FolderID'
+        - $ref: '#/components/parameters/AssetID'
+        - $ref: '#/components/parameters/SocialCursor'
+        - $ref: '#/components/parameters/SocialLimit'
+      responses:
+        '200':
+          description: One page of the thread
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [folder_id, asset_id, comments, comment_count, next_cursor, has_more]
+                properties:
+                  folder_id: {type: string}
+                  asset_id: {type: string}
+                  comments:
+                    type: array
+                    items: {$ref: '#/components/schemas/Comment'}
+                  comment_count: {type: integer, minimum: 0, description: all comments of the asset in this folder}
+                  next_cursor: {type: string, description: '"" when has_more is false; else send it as cursor'}
+                  has_more: {type: boolean}
+        '400': {description: 'invalid_cursor, invalid_limit'}
+        '401': {description: unauthorized}
+        '403': {description: forbidden (UPLOADER)}
+        '404': {description: 'folder_not_found, asset_not_found'}
+    post:
+      tags: [Social]
+      summary: Write a comment (OWNER, CONTRIBUTOR, VIEWER)
+      description: >-
+        body is plain text, trimmed (CRLF becomes LF); at most 1,000
+        characters (Unicode code points) as shown, each mention counted as
+        "@" plus the display name; no control characters except newline
+        and tab. A mention is the token "<@user_id>" in body, and mentions
+        lists exactly the accounts of those tokens (order and repeats in
+        body do not matter, at most 20). Every mentioned account must be a
+        reader of the folder now (GET .../mentionable). One transaction
+        stores the comment, appends comment_added and records comment.create
+        (never the text). Rate limited per account (a burst of 20, then one
+        every 3 seconds, shared with PATCH and DELETE). An optional
+        Idempotency-Key (scoped to the account) makes a retry after a lost
+        response return the same comment with Idempotency-Replayed: true;
+        the same key on another asset is 422 idempotency_key_reused. Cookie
+        sessions need X-CSRF-Token.
+      parameters:
+        - $ref: '#/components/parameters/FolderID'
+        - $ref: '#/components/parameters/AssetID'
+        - $ref: '#/components/parameters/OptionalIdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CommentInput'}
+      responses:
+        '201':
+          description: The comment as the caller sees it
+          headers:
+            Idempotency-Replayed: {$ref: '#/components/headers/IdempotencyReplayed'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Comment'}
+        '400': {description: 'invalid_json, comment_empty, comment_too_long, invalid_comment (control characters), invalid_mentions (not 32 hex digits, or not the accounts of the tokens), too_many_mentions, invalid_idempotency_key'}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (UPLOADER) or csrf_failed'}
+        '404': {description: 'folder_not_found, asset_not_found'}
+        '415': {description: json_required}
+        '422': {description: 'mention_not_member (a mentioned account cannot read the folder), idempotency_key_reused'}
+        '429': {description: 'rate_limited (Retry-After: seconds)'}
+        '503': {description: 'storage_unavailable, storage_io_error, busy'}
+        '507': {description: insufficient_storage}
+  /api/v1/folders/{folder_id}/assets/{asset_id}/comments/{comment_id}:
+    patch:
+      tags: [Social]
+      summary: Edit one's own comment
+      description: >-
+        Replaces body and mentions under the same rules as POST; only the
+        author (who must still be a reader). The same text and mentions
+        change nothing; otherwise edited_at is set, comment_updated is
+        appended and comment.edit audited. Cookie sessions need
+        X-CSRF-Token.
+      parameters:
+        - $ref: '#/components/parameters/FolderID'
+        - $ref: '#/components/parameters/AssetID'
+        - $ref: '#/components/parameters/CommentID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CommentInput'}
+      responses:
+        '200':
+          description: The comment after the edit
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Comment'}
+        '400': {description: 'as POST'}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (UPLOADER, or not the author) or csrf_failed'}
+        '404': {description: 'folder_not_found, asset_not_found, comment_not_found'}
+        '415': {description: json_required}
+        '422': {description: mention_not_member}
+        '429': {description: 'rate_limited (Retry-After: seconds)'}
+        '503': {description: 'storage_unavailable, storage_io_error, busy'}
+        '507': {description: insufficient_storage}
+    delete:
+      tags: [Social]
+      summary: Delete a comment (its author, or the album owner)
+      description: >-
+        The comment and its mentions are deleted (no tombstone);
+        comment_removed is appended and comment.delete audited (with the
+        author's id, not the text). Cookie sessions need X-CSRF-Token.
+      parameters:
+        - $ref: '#/components/parameters/FolderID'
+        - $ref: '#/components/parameters/AssetID'
+        - $ref: '#/components/parameters/CommentID'
+      responses:
+        '204': {description: Deleted}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (UPLOADER, or neither the author nor the owner) or csrf_failed'}
+        '404': {description: 'folder_not_found, asset_not_found, comment_not_found'}
+        '429': {description: 'rate_limited (Retry-After: seconds)'}
+        '503': {description: 'storage_unavailable, storage_io_error, busy'}
+        '507': {description: insufficient_storage}
+  /api/v1/folders/{folder_id}/mentionable:
+    get:
+      tags: [Social]
+      summary: People a comment may mention (OWNER, CONTRIBUTOR, VIEWER)
+      description: >-
+        The folder's readers whose accounts can log in: the owner first,
+        then members by join time. Upload-only members are never listed.
+        For @ autocompletion; the server checks again when a comment is
+        written.
+      parameters:
+        - $ref: '#/components/parameters/FolderID'
+      responses:
+        '200':
+          description: The people
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [folder_id, people]
+                properties:
+                  folder_id: {type: string}
+                  people:
+                    type: array
+                    items:
+                      type: object
+                      required: [user_id, display_name, is_me]
+                      properties:
+                        user_id: {type: string}
+                        display_name: {type: string}
+                        is_me: {type: boolean}
+        '401': {description: unauthorized}
+        '403': {description: forbidden (UPLOADER)}
+        '404': {description: folder_not_found}
+  /api/v1/me/activity:
+    get:
+      tags: [Social]
+      summary: Activity for the caller, newest first
+      description: >-
+        Comments that mention the caller ("mention"), and other people's
+        comments ("comment") and likes ("like") on photos the caller
+        uploaded, in the albums the caller can read now (owner,
+        CONTRIBUTOR, VIEWER; not archived) and on photos still in them. The
+        caller's own comments and likes are not listed; a comment that both
+        mentions the caller and is on its photo is one "mention". Removed
+        items (unliked, deleted, the photo removed, access lost) disappear.
+        Nothing is pushed: an app polls this when it opens. Pages of at most
+        "limit" items (default 50); next_cursor continues with older items.
+      parameters:
+        - $ref: '#/components/parameters/SocialCursor'
+        - $ref: '#/components/parameters/SocialLimit'
+      responses:
+        '200':
+          description: One page of activity
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor, has_more]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/ActivityItem'}
+                  next_cursor: {type: string, description: '"" when has_more is false'}
+                  has_more: {type: boolean}
+        '400': {description: 'invalid_cursor, invalid_limit'}
+        '401': {description: unauthorized}
 components:
   parameters:
     FolderID:
@@ -2023,6 +2336,26 @@ components:
       name: device_id
       required: true
       schema: {type: string}
+    CommentID:
+      in: path
+      name: comment_id
+      required: true
+      schema: {type: string, pattern: '^[0-9a-f]{32}$'}
+    SocialCursor:
+      in: query
+      name: cursor
+      description: next_cursor of the previous page (opaque); omit for the first page
+      schema: {type: string}
+    SocialLimit:
+      in: query
+      name: limit
+      schema: {type: integer, minimum: 1, maximum: 100, default: 50}
+    OptionalIdempotencyKey:
+      in: header
+      name: Idempotency-Key
+      required: false
+      description: 'As IdempotencyKey, scoped to the account; optional here.'
+      schema: {type: string, pattern: '^[A-Za-z0-9._:-]{1,128}$'}
     Limit:
       in: query
       name: limit
@@ -2086,7 +2419,7 @@ components:
           description: 'Horizontal accuracy recorded by the device, in metres; null when the original gives none'
     Asset:
       type: object
-      required: [id, sha256, filename, mime_type, bytes, preview_ready, preview_status, uploaded_at, captured_at, duration_ms, location, uploaded_by_name, media_kind]
+      required: [id, sha256, filename, mime_type, bytes, preview_ready, preview_status, uploaded_at, captured_at, duration_ms, location, uploaded_by_name, media_kind, like_count, liked_by_me, comment_count]
       properties:
         id: {type: string, description: 'random; valid only under its folder'}
         sha256: {type: string, description: 'of the original, to verify a download'}
@@ -2165,6 +2498,15 @@ components:
           type: array
           description: Live photos only. The extra originals, each downloaded from .../components/{role}.
           items: {$ref: '#/components/schemas/Component'}
+        like_count:
+          type: integer
+          minimum: 0
+          description: >-
+            Likes of people who can read the folder now ("reactions_comments"
+            servers; older servers omit the key). Changes arrive as
+            likes_updated events with the asset in "assets".
+        liked_by_me: {type: boolean, description: the caller's own like}
+        comment_count: {type: integer, minimum: 0, description: 'comments on the asset in this folder (comment_* events)'}
     Component:
       type: object
       required: [role, sha256, bytes, mime_type, filename, duration_ms]
@@ -2231,11 +2573,25 @@ components:
       required: [seq, kind, asset_id, folder_id, uploader_device_id, occurred_at]
       properties:
         seq: {type: integer, minimum: 1}
-        kind: {type: string, enum: [asset_added, asset_removed, asset_updated], description: 'asset_updated: the asset (in "assets") changed: its preview_status, captured_at, duration_ms or location (its own or its paired video''s; location also when the owner changes hide_location), or a paired video was attached (media_kind became live_photo)'}
+        kind:
+          type: string
+          enum: [asset_added, asset_removed, asset_updated, likes_updated, comment_added, comment_updated, comment_removed]
+          description: >-
+            asset_updated: the asset (in "assets") changed: its
+            preview_status, captured_at, duration_ms or location (its own
+            or its paired video's; location also when the owner changes
+            hide_location), or a paired video was attached (media_kind
+            became live_photo). likes_updated: its likes changed (new
+            like_count and liked_by_me in "assets"; GET .../likes for the
+            names). comment_added, comment_updated, comment_removed: a
+            comment (comment_id) was written, edited or deleted (new
+            comment_count in "assets"; GET .../comments for the thread).
+            Clients must skip kinds they do not know.
         asset_id: {type: string}
         folder_id: {type: string}
-        uploader_device_id: {type: string, description: 'X-Device-ID label of the upload that added the asset to this folder: on asset_added, and on asset_updated the same label as that asset_added (the server made the change, no device did; "" when the upload sent none); always "" for asset_removed'}
+        uploader_device_id: {type: string, description: 'X-Device-ID label of the upload that added the asset to this folder: on asset_added, and on asset_updated the same label as that asset_added (the server made the change, no device did; "" when the upload sent none); always "" for asset_removed and the social kinds'}
         occurred_at: {type: string}
+        comment_id: {type: string, description: 'comment_added, comment_updated and comment_removed only'}
     UploadResult:
       type: object
       required: [result, asset_id, folder_id, sha256, preview_ready, preview_status]
@@ -2270,6 +2626,93 @@ components:
               role: {type: string}
               sha256: {type: string}
               bytes: {type: integer}
+    LikeState:
+      type: object
+      required: [folder_id, asset_id, like_count, liked_by_me, comment_count, changed]
+      properties:
+        folder_id: {type: string}
+        asset_id: {type: string}
+        like_count: {type: integer, minimum: 0}
+        liked_by_me: {type: boolean}
+        comment_count: {type: integer, minimum: 0}
+        changed: {type: boolean, description: 'false: the like was already in this state (nothing written)'}
+    CommentInput:
+      type: object
+      required: [body]
+      properties:
+        body:
+          type: string
+          example: '<@0123456789abcdef0123456789abcdef> 여기 어디야?'
+          description: Plain text; mentions are "<@user_id>" tokens
+        mentions:
+          type: array
+          maxItems: 20
+          description: The user_id of every token in body (none -> omit or [])
+          items: {type: string, pattern: '^[0-9a-f]{32}$'}
+    Comment:
+      type: object
+      required: [id, folder_id, asset_id, author, body, segments, created_at, edited_at, is_mine, can_edit, can_delete]
+      properties:
+        id: {type: string, pattern: '^[0-9a-f]{32}$'}
+        folder_id: {type: string}
+        asset_id: {type: string}
+        author:
+          oneOf:
+            - {$ref: '#/components/schemas/Person'}
+            - {type: 'null'}
+          description: null when the author can no longer read the folder or log in (show "former member")
+        body:
+          type: string
+          description: >-
+            The source to edit: "<@user_id>" tokens for the mentions shown
+            in segments; a former member's mention is already plain text
+            ("@" and the name it was written with). Send it back unchanged
+            with the mentions of its tokens to keep them.
+        segments:
+          type: array
+          description: >-
+            The comment to display, in order: "text" pieces and "mention"
+            pieces (text "@" and the current display name of an account
+            that can read the folder now; highlight them). A mentioned
+            account that cannot read the folder any more is plain text.
+          items:
+            type: object
+            required: [type, text]
+            properties:
+              type: {type: string, enum: [text, mention]}
+              text: {type: string}
+              user_id: {type: string, description: mention only}
+        created_at: {type: string}
+        edited_at: {type: [string, 'null']}
+        is_mine: {type: boolean}
+        can_edit: {type: boolean, description: 'the author'}
+        can_delete: {type: boolean, description: 'the author or the album owner'}
+    Person:
+      type: object
+      required: [user_id, display_name]
+      properties:
+        user_id: {type: string}
+        display_name: {type: string}
+    ActivityItem:
+      type: object
+      required: [id, type, folder_id, folder_name, asset_id, actor, created_at, comment]
+      properties:
+        id: {type: string, description: opaque and unique; use it to remember what was seen}
+        type: {type: string, enum: [mention, comment, like]}
+        folder_id: {type: string}
+        folder_name: {type: string}
+        asset_id: {type: string, description: 'open GET /folders/{folder_id} and the asset to show it'}
+        actor:
+          oneOf:
+            - {$ref: '#/components/schemas/Person'}
+            - {type: 'null'}
+          description: who commented or liked; null for a comment whose author can no longer read the folder
+        created_at: {type: string, description: 'when the comment was written or the like given'}
+        comment:
+          oneOf:
+            - {$ref: '#/components/schemas/Comment'}
+            - {type: 'null'}
+          description: mention and comment items (null for likes, or if it was deleted while the page was read)
     User:
       type: object
       required: [user_id, login_name, display_name, server_role, can_create_albums]

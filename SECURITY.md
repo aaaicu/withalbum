@@ -175,6 +175,48 @@ as sensitive personal data.
 - **Map tiles** are fetched by the app, not the server; see the app's
   privacy notice (tile requests reveal the viewed area, never photos).
 
+## Likes, comments and mentions (M49)
+
+- **Readers only.** Liking, commenting, reading likes and comments, the
+  mentionable list and the activity list follow the album read right
+  (OWNER, CONTRIBUTOR, VIEWER). An UPLOADER is refused (403) before
+  anything is read and never gets a social event (it cannot read the
+  feed), a like count or a comment; it is never listed as mentionable and
+  cannot be mentioned. A server administrator who is not a member gets
+  404 like for every album route: administrators cannot read other
+  albums' comments. Every write re-checks the caller inside its
+  transaction; edits are the author's only, deletes the author's or the
+  owner's (decided on the stored comment).
+- **Names are shown only to and of current readers.** Likers, comment
+  authors and mentioned people are resolved when read: an account that
+  is no longer a reader of the album (removed, changed to UPLOADER,
+  disabled, unable to log in) is not listed or counted as a liker, is
+  shown as no author, and a mention of it becomes plain text with the
+  name it had when the comment was written. The mentionable list exposes
+  the user_id and display name of the album's readers to its readers,
+  which is what mentions need (uploaders and the uploaded_by_name of
+  assets already expose display names within the album).
+- **Separate per album.** Likes and threads are keyed by folder and asset;
+  an asset linked to several folders (PoC imports) does not share them.
+- **Cleanup.** A member removed from the album, or changed to UPLOADER,
+  loses its likes in that album (with likes_updated events); its comments
+  stay, without author. A photo removed from the album loses its likes and
+  comments. A deleted comment is deleted with its mentions (no
+  tombstone); SQLite may keep the bytes in free pages until they are
+  reused (no secure_delete). An archived album keeps everything and is
+  unreachable like the rest of its data.
+- **Abuse limits.** Per account, in memory: likes a burst of 60 then one
+  per second, comment writes (create, edit, delete) a burst of 20 then one
+  every 3 seconds; 429 rate_limited with Retry-After. Comments are at
+  most 1,000 characters as shown (16 KiB stored), 20 mentions, no control
+  characters besides newline and tab. Request bodies are capped at 64 KiB.
+- **Audit without content.** asset.like, asset.unlike, comment.create,
+  comment.edit and comment.delete rows carry ids and counts only, never
+  the comment text. The text is stored in the album database like file
+  names, readable by whoever can read the disk.
+- **Rendering.** The server returns plain text segments; clients must
+  render them as text, never as markup.
+
 ## Setup screen (M24): threat model
 
 The browser setup screen lets the person at the Mac pick the storage disk and create the first administrator without typing console commands. It runs **before any account exists**, so it is the most exposed moment of the server's life. Design and threat model, written before the implementation:

@@ -40,6 +40,12 @@ const (
 	DeleteAlbum      Action = "delete_album"
 	// UpdateAlbumSettings: the owner's album settings (hide_location).
 	UpdateAlbumSettings Action = "update_album_settings"
+	// ReactToAsset: like an asset and write, edit or delete one's own
+	// comments. Every role that can read the album (OWNER, CONTRIBUTOR,
+	// VIEWER); never an UPLOADER, which cannot see the album's contents.
+	ReactToAsset Action = "react_to_asset"
+	// ModerateComments: delete anyone's comment in the album (OWNER).
+	ModerateComments Action = "moderate_comments"
 )
 
 // Principal is derived from the authenticated session and database, never request body fields.
@@ -77,7 +83,8 @@ func Allowed(user Principal, action Action, album *AlbumAccess) bool {
 		switch action {
 		case GetAlbumMetadata, ListAlbumAssets, DownloadAsset, UploadAsset,
 			DeleteAsset, InviteMember, RevokeMember, ChangeMemberRole,
-			ListMembers, TransferOwner, DeleteAlbum, UpdateAlbumSettings:
+			ListMembers, TransferOwner, DeleteAlbum, UpdateAlbumSettings,
+			ReactToAsset, ModerateComments:
 			return true
 		default:
 			return false
@@ -89,7 +96,7 @@ func Allowed(user Principal, action Action, album *AlbumAccess) bool {
 	switch action {
 	case GetAlbumMetadata:
 		return album.MemberRole == Contributor || album.MemberRole == Viewer || album.MemberRole == Uploader
-	case ListAlbumAssets, DownloadAsset:
+	case ListAlbumAssets, DownloadAsset, ReactToAsset:
 		return album.MemberRole == Contributor || album.MemberRole == Viewer
 	case UploadAsset:
 		return album.MemberRole == Contributor || album.MemberRole == Uploader

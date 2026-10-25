@@ -165,6 +165,8 @@ type Event struct {
 	FolderID         string `json:"folder_id"`
 	UploaderDeviceID string `json:"uploader_device_id"`
 	OccurredAt       string `json:"occurred_at"`
+	// CommentID is the comment of a comment_* event, "" otherwise.
+	CommentID string `json:"comment_id,omitempty"`
 }
 
 // Event kinds. EventAssetRemoved is a tombstone: the asset is no longer in
@@ -178,6 +180,14 @@ const (
 	// UploaderDeviceID is that of the asset's asset_added event in the same
 	// folder (the server made the change, no device did).
 	EventAssetUpdated = "asset_updated"
+	// Social events (meta.Social). They carry no uploader device ("").
+	// EventLikesUpdated: the like set of the asset in this folder changed.
+	EventLikesUpdated = "likes_updated"
+	// EventCommentAdded, EventCommentUpdated (edited) and
+	// EventCommentRemoved (deleted) name the comment in Event.CommentID.
+	EventCommentAdded   = "comment_added"
+	EventCommentUpdated = "comment_updated"
+	EventCommentRemoved = "comment_removed"
 )
 
 // FeedState locates a folder's change feed. Epoch identifies the feed of
@@ -560,9 +570,10 @@ type StorageUsageReporter interface {
 // EventPage is one page of a folder's change feed.
 type EventPage struct {
 	Events []Event // never nil
-	// Assets holds the assets of the asset_added and asset_updated events in
-	// Events that are still linked to the folder, by Asset.ID, as they are
-	// now; never nil. An asset that was removed since is left out (its
+	// Assets holds the assets of the events in Events other than
+	// asset_removed (asset_added, asset_updated and the social events) that
+	// are still linked to the folder, by Asset.ID, as they are now; never
+	// nil. An asset that was removed since is left out (its
 	// asset_removed event follows).
 	Assets     map[string]Asset
 	NextCursor int64     // last Seq in Events, or the input cursor if empty

@@ -88,6 +88,9 @@ type Config struct {
 	// Meta, which must then implement meta.Memberships (Handler panics
 	// otherwise).
 	Members meta.Memberships
+	// Social serves likes and comments. nil: Meta, which must then
+	// implement meta.Social (Handler panics otherwise).
+	Social meta.Social
 	// TLS is the server's TLS identity shown to administrators (nil: no
 	// TLS). It can also be set later with SetTLSInfo.
 	TLS *TLSInfo
@@ -108,6 +111,8 @@ type Server struct {
 	faults           FaultInjector
 	auth             *Auth
 	members          meta.Memberships
+	social           meta.Social
+	socialLimit      *socialLimiter
 	tls              *TLSInfo
 	relay            *RelayInfo
 	public           *PublicRoute
@@ -123,9 +128,12 @@ func New(cfg Config) *Server {
 	s := &Server{vol: cfg.Volume, meta: cfg.Meta, blobs: cfg.Blobs, version: cfg.Version,
 		minFree: max(cfg.MinFreeBytes, 0), freeBytes: cfg.FreeBytes, integrityWarning: cfg.IntegrityWarning, faults: cfg.Faults, auth: cfg.Auth,
 		members: cfg.Members, tls: cfg.TLS, startup: cfg.StartupCheck, previewKick: make(chan struct{}, 1),
-		captureKick: make(chan struct{}, 1)}
+		captureKick: make(chan struct{}, 1), social: cfg.Social, socialLimit: newSocialLimiter()}
 	if s.members == nil {
 		s.members, _ = cfg.Meta.(meta.Memberships)
+	}
+	if s.social == nil {
+		s.social, _ = cfg.Meta.(meta.Social)
 	}
 	if s.freeBytes == nil {
 		s.freeBytes = cfg.Volume.FreeBytes
@@ -162,6 +170,9 @@ func (s *Server) Handler() http.Handler {
 	if s.members == nil {
 		panic("httpapi: Config.Members is required")
 	}
+	if s.social == nil {
+		panic("httpapi: Config.Social is required")
+	}
 	rt := newRouter(s)
 	rt.handle("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		// A static page without data; everything it shows comes from API
@@ -195,6 +206,7 @@ func (s *Server) Handler() http.Handler {
 	rt.handleAlbum("GET /api/v1/folders/{folderID}/assets/{assetID}/original", s.download(false))
 	rt.handleAlbum("GET /api/v1/folders/{folderID}/assets/{assetID}/preview", s.download(true))
 	s.syncRoutes(rt)
+	s.socialRoutes(rt)
 	s.memberRoutes(rt)
 	s.adminRoutes(rt)
 	return securityHeaders(rt.finish())

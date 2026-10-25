@@ -120,8 +120,9 @@ func nextSeq(ctx context.Context, tx *sql.Tx, folderID string) (int64, error) {
 
 // RemoveAsset implements meta.MetadataStore: one transaction re-checks the
 // caller, sets folder_assets.removed_at, appends the asset_removed event and
-// writes the audit row. Nothing is deleted from disk: the asset row stays
-// (old events still reference it) and the original stays in the pool.
+// writes the audit row. The asset's likes and comments in this folder are
+// deleted with it. Nothing else is deleted: the asset row stays (old events
+// still reference it) and the original stays in the pool.
 func (s *Store) RemoveAsset(ctx context.Context, c meta.AlbumChange) error {
 	return s.changeTx(ctx, c, c.FolderID, func(tx *sql.Tx, fa meta.FolderAccess) error {
 		ts := now()
@@ -143,8 +144,13 @@ func (s *Store) RemoveAsset(ctx context.Context, c meta.AlbumChange) error {
 			VALUES (?, ?, ?, ?, ?, NULL)`, c.FolderID, seq, meta.EventAssetRemoved, c.TargetID, ts); err != nil {
 			return err
 		}
+		// Likes and comments leave with the asset (migration 0014).
+		likes, comments, err := dropAssetSocial(ctx, tx, c.FolderID, c.TargetID)
+		if err != nil {
+			return err
+		}
 		return recordAlbum(ctx, tx, c.ActorID, "asset.remove", "asset", c.TargetID,
-			map[string]any{"folder_id": c.FolderID, "seq": seq})
+			map[string]any{"folder_id": c.FolderID, "seq": seq, "likes_removed": likes, "comments_removed": comments})
 	})
 }
 

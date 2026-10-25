@@ -3,6 +3,7 @@ package httpapi_test
 import (
 	"bytes"
 	"math"
+	"strings"
 	"testing"
 
 	geo "github.com/aaaicu/withalbum/internal/capturetime/geotest"
@@ -230,5 +231,39 @@ func TestHideMyLocation(t *testing.T) {
 	wantJSON(t, "album hide", e.asJSON(t, "owner", "PATCH", f, `{"hide_location":true}`), 200)
 	if a := e.snapshotAssets(t, "contributor")[mine]; a["location"] != nil {
 		t.Fatalf("album hide applies to members' own photos too: %v", a)
+	}
+}
+
+// TestLocationWithSocial: the assets of the social events (likes_updated,
+// comment_added) follow the same location rules as the rest of the feed:
+// with hide_location set a member gets null next to its like and comment
+// counts, the owner the position.
+func TestLocationWithSocial(t *testing.T) {
+	e := newACLEnv(t)
+	f := "/api/v1/folders/" + e.family
+	lat, lon := geo.SampleLat, geo.SampleLon
+	picID := wantJSON(t, "upload", e.as(t, "owner", "POST", f+"/assets", geo.JPEG(lat, lon, 0, 31), map[string]string{"X-Filename": "geo.jpg"}), 201)["asset_id"].(string)
+	processCaptures(t, e)
+	wantJSON(t, "hide", e.asJSON(t, "owner", "PATCH", f, `{"hide_location":true}`), 200)
+	before := e.events(t, e.family)
+	wantJSON(t, "like", e.asJSON(t, "viewer", "PUT", f+"/assets/"+picID+"/likes/me", ""), 200)
+	wantJSON(t, "comment", e.asJSON(t, "viewer", "POST", f+"/assets/"+picID+"/comments", commentBody(t, "hi")), 201)
+	if got := e.events(t, e.family); got != before+2 {
+		t.Fatalf("events %d -> %d", before, got)
+	}
+	for _, login := range []string{"owner", "viewer"} {
+		events, assets := e.feed(t, login)
+		if got := kinds(events[len(events)-2:]); strings.Join(got, ",") != "likes_updated,comment_added" {
+			t.Fatalf("%s kinds %v", login, got)
+		}
+		a := assets[picID].(map[string]any)
+		if a["like_count"] != 1.0 || a["comment_count"] != 1.0 || a["liked_by_me"] != (login == "viewer") {
+			t.Fatalf("%s social fields %v", login, a)
+		}
+		if login == "owner" {
+			wantLocation(t, "owner", a, lat, lon, nil)
+		} else if a["location"] != nil {
+			t.Fatalf("viewer sees a hidden location next to the social fields: %v", a)
+		}
 	}
 }

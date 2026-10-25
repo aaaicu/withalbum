@@ -43,10 +43,12 @@ const bundleCompleteRoute = "POST /api/v1/folders/{folderID}/bundles/{bundleID}/
 // /me, so that a client can tell an older server from this one:
 // live_photo_bundles (POST .../bundles), folder_create_idempotency
 // (Idempotency-Key on POST /folders), asset_duration (duration_ms on
-// assets and components) and asset_location (location on assets,
+// assets and components), asset_location (location on assets,
 // hide_location on folders and PATCH /folders/{id}, and the account's own
-// hide_my_location in GET /me "settings" and PATCH /me/settings).
-var ServerFeatures = []string{"live_photo_bundles", "folder_create_idempotency", "asset_duration", "asset_location"}
+// hide_my_location in GET /me "settings" and PATCH /me/settings) and
+// reactions_comments (likes, comments, mentions and /me/activity,
+// social.go).
+var ServerFeatures = []string{"live_photo_bundles", "folder_create_idempotency", "asset_duration", "asset_location", "reactions_comments"}
 
 func (s *Server) bundleRoutes(rt *router) {
 	rt.handleAlbum("POST /api/v1/folders/{folderID}/bundles", s.createBundle)
