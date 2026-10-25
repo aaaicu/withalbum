@@ -38,6 +38,8 @@ const (
 	ListMembers      Action = "list_members" // members and pending invitations
 	TransferOwner    Action = "transfer_owner"
 	DeleteAlbum      Action = "delete_album"
+	// UpdateAlbumSettings: the owner's album settings (hide_location).
+	UpdateAlbumSettings Action = "update_album_settings"
 )
 
 // Principal is derived from the authenticated session and database, never request body fields.
@@ -75,7 +77,7 @@ func Allowed(user Principal, action Action, album *AlbumAccess) bool {
 		switch action {
 		case GetAlbumMetadata, ListAlbumAssets, DownloadAsset, UploadAsset,
 			DeleteAsset, InviteMember, RevokeMember, ChangeMemberRole,
-			ListMembers, TransferOwner, DeleteAlbum:
+			ListMembers, TransferOwner, DeleteAlbum, UpdateAlbumSettings:
 			return true
 		default:
 			return false

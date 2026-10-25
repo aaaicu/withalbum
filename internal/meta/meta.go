@@ -21,6 +21,18 @@ type Folder struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
 	CreatedAt string `json:"created_at"`
+	// HideLocation is the owner's album setting: members do not see where
+	// the folder's photos were taken (Asset.Location). Not part of the PoC
+	// format.
+	HideLocation bool `json:"-"`
+}
+
+// Location is where an original was taken, as read from its metadata by
+// the server (capturetime.ExtractLocation): WGS 84 degrees and the
+// recorded horizontal accuracy in metres (0: not recorded).
+type Location struct {
+	Lat, Lon  float64
+	AccuracyM float64
 }
 
 // Asset is one original in a folder. ID is a random, opaque identifier;
@@ -50,6 +62,17 @@ type Asset struct {
 	// read from its movie header (capturetime.Duration), or 0 when it is
 	// not a movie, unknown or not read yet.
 	DurationMS int64 `json:"-"`
+	// Location is where the asset's original was taken, nil when it is
+	// unknown or not read yet. For a Live Photo it is the still's, or its
+	// paired video's when the still records none (PairedVideo.Location).
+	// Personal data: the HTTP API shows it only to readers of the folder
+	// (and not to members when the folder hides it).
+	Location *Location `json:"-"`
+	// LocationHiddenBy is the user_id of the uploader when that account
+	// chose to hide the location of its photos from others
+	// (users.hide_my_location); "" otherwise. Readers other than that
+	// account must not be shown Location.
+	LocationHiddenBy string `json:"-"`
 	// UploaderName is the display name of the account that uploaded the
 	// asset, or "" when there is none or the account is disabled or cannot
 	// log in. Read only; never the login name, user_id or e-mail.
@@ -77,6 +100,8 @@ type Component struct {
 	Bytes    int64
 	// DurationMS: as Asset.DurationMS, for this original.
 	DurationMS int64
+	// Location: where this original was taken, nil when unknown.
+	Location *Location
 }
 
 // Media kinds (assets.media_kind).
@@ -111,6 +136,9 @@ type CaptureResult struct {
 	CapturedAt  string // capturetime.Time.String
 	CapturedUTC string // the UTC instant (RFC 3339, "Z"), or "" without one
 	DurationMS  int64  // capturetime.Duration
+	// Location (capturetime.ExtractLocation), nil when the original
+	// records none.
+	Location *Location
 }
 
 // Preview states of an asset (Asset.PreviewStatus).
@@ -202,6 +230,8 @@ const (
 var (
 	ErrFolderNotFound = errors.New("folder not found")
 	ErrAssetNotFound  = errors.New("asset not found")
+	// ErrUserNotFound: no account with this user_id.
+	ErrUserNotFound = errors.New("user not found")
 	// ErrIDGeneration means no random identifier could be generated.
 	ErrIDGeneration = errors.New("id generation failed")
 	ErrInvalidLimit = errors.New("limit must be positive")
@@ -676,6 +706,19 @@ type Memberships interface {
 	// ArchiveFolder hides the folder from everyone (data is kept) and revokes
 	// its pending invitations.
 	ArchiveFolder(ctx context.Context, c AlbumChange) error
+	// SetHideLocation sets the folder's HideLocation and returns the folder
+	// with the caller's relation as stored afterwards. When the value
+	// changes it appends one EventAssetUpdated for every asset of the
+	// folder that has a location, so that members' clients drop or get it
+	// again; an unchanged value writes nothing.
+	SetHideLocation(ctx context.Context, c AlbumChange, hide bool) (FolderAccess, error)
+	// HideMyLocation reports userID's users.hide_my_location.
+	HideMyLocation(ctx context.Context, userID string) (bool, error)
+	// SetHideMyLocation sets userID's own hide_my_location (audited
+	// user.set_hide_my_location). When the value changes it appends one
+	// EventAssetUpdated to every folder holding an asset that account
+	// uploaded and that has a location; an unchanged value writes nothing.
+	SetHideMyLocation(ctx context.Context, userID string, hide bool) error
 	// OwnedFolders reports the folders userID owns (for account
 	// administration: an account that owns folders cannot be disabled).
 	OwnedFolders(ctx context.Context, userID string) (OwnedFolders, error)
@@ -833,16 +876,17 @@ type MetadataStore interface {
 	// EventAssetUpdated to each folder that holds one of them, in one
 	// transaction. It returns the number of assets changed.
 	SetPreviewStatus(ctx context.Context, sha, status string) (int, error)
-	// PendingCaptures returns up to limit originals whose capture time or
-	// duration has not been read yet, by SHA-256.
+	// PendingCaptures returns up to limit originals whose capture time,
+	// duration or location has not been read yet, by SHA-256.
 	PendingCaptures(ctx context.Context, limit int) ([]string, error)
 	// SetCaptureTimes records what the capture-time worker read, in one
 	// transaction: the capture time of the originals whose capture time is
 	// still pending and the duration of those whose duration is still
-	// pending (other values are left as they are). For each original whose
-	// newly recorded capture time or duration is known it appends one
+	// pending, and the location of those whose location is still pending
+	// (other values are left as they are). For each original whose
+	// newly recorded capture time, duration or location is known it appends one
 	// EventAssetUpdated to every folder holding an asset of it as its
-	// original, and for a newly known duration also to every folder holding
+	// original, and for a newly known duration or location also to every folder holding
 	// an asset with it as a component (a Live Photo's paired video); an
 	// original with nothing known changes nothing a client sees, so it gets
 	// no event. It returns the number of events appended.

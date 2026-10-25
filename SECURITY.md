@@ -114,6 +114,43 @@ QuickTime video) through an upload bundle and committed as one asset.
   answers with the folder as the caller sees it now (404 once it is
   archived), so a stored key never grants access the caller lost.
 
+## Photo and video location (M46)
+
+A location says where someone was, often where they live. It is treated
+as sensitive personal data.
+
+- **Parsing untrusted files.** `internal/capturetime.ExtractLocation`
+  reads the EXIF GPS directory (JPEG, TIFF, HEIF/HEIC/AVIF) and the
+  QuickTime/MP4 ISO 6709 location (`com.apple.quicktime.location.ISO6709`,
+  `udta/©xyz`) with the limits of the capture time (1 MiB, counted reads,
+  boxes and entries, the movie data skipped). Pure Go, fuzz-tested
+  (`FuzzExtractLocation`, `FuzzISO6709`), run by the capture worker after
+  the commit, never on the upload path. Out-of-range values, zero
+  denominators, a void GPS status, other datums and 0°, 0° count as no
+  location. Altitude, heading and speed are not read or stored.
+- **Who sees it.** `location` is part of the asset only for readers of the
+  album (OWNER, CONTRIBUTOR, VIEWER). An UPLOADER gets only its 202
+  receipt, as before; an outsider and a server administrator who is not a
+  member get 404. The album owner can hide locations from members
+  (`PATCH /api/v1/folders/{id}` `{"hide_location": true}`, audited
+  `folder.set_hide_location`): members then get `null`, the owner still
+  sees them. Each account can also hide the location of the photos it
+  uploaded from everyone else, in every album (`PATCH /api/v1/me/settings`
+  `{"hide_my_location": true}`, audited `user.set_hide_my_location`); the
+  album owner does not override it. Both settings are re-read for every
+  request.
+- **What hiding does not do.** Originals are kept byte for byte (the
+  integrity rule), GPS tags included. Anyone allowed to download an
+  original can read its location from the file, whatever the setting. To
+  share photos without a location, remove it on the device before
+  uploading. Previews are re-encoded from decoded pixels by the server
+  (`writeJPEGPreview`, also after sips/ffmpeg) and carry no EXIF; this is
+  tested with geotagged sources and a converter that copies metadata.
+- **Server logs and the relay** never contain coordinates: the worker
+  logs only hashes and errors, and the relay only sees encrypted bytes.
+- **Map tiles** are fetched by the app, not the server; see the app's
+  privacy notice (tile requests reveal the viewed area, never photos).
+
 ## Setup screen (M24): threat model
 
 The browser setup screen lets the person at the Mac pick the storage disk and create the first administrator without typing console commands. It runs **before any account exists**, so it is the most exposed moment of the server's life. Design and threat model, written before the implementation:

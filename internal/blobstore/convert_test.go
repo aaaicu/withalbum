@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	geo "github.com/aaaicu/withalbum/internal/capturetime/geotest"
 )
 
 // TestFakeConverter is not a test: run as a child process with "--" and a
@@ -33,6 +35,9 @@ func TestFakeConverter(t *testing.T) {
 		f, _ := os.Create(out)
 		_ = jpeg.Encode(f, img, nil)
 		f.Close()
+	case "jpeg-gps":
+		// A tool that copies the original's metadata into its output.
+		_ = os.WriteFile(out, geo.JPEG(geo.SampleLat, geo.SampleLon, 5, 1), 0600)
 	case "garbage":
 		_ = os.WriteFile(out, []byte("this is not a jpeg"), 0600)
 	case "nothing":
@@ -243,6 +248,20 @@ func TestRealConverters(t *testing.T) {
 			t.Fatalf("%v %s", err, out)
 		}
 		checkRealPreview(t, NewSips(sips), bigHEIC, 1600, 1000)
+		// A geotagged HEIC (sips keeps the JPEG's EXIF GPS when it
+		// converts): the preview made from it carries none.
+		geoJPEG := filepath.Join(work, "geo.jpg")
+		if err := os.WriteFile(geoJPEG, geo.JPEG(geo.SampleLat, geo.SampleLon, 5, 7), 0600); err != nil {
+			t.Fatal(err)
+		}
+		geoHEIC := filepath.Join(work, "geo.heic")
+		if out, err := exec.Command(sips, "-s", "format", "heic", geoJPEG, "--out", geoHEIC).CombinedOutput(); err != nil {
+			t.Fatalf("%v %s", err, out)
+		}
+		if b, _ := os.ReadFile(geoHEIC); !bytes.Contains(b, []byte("Exif")) {
+			t.Log("sips dropped the EXIF of the geotagged source; the HEIC has no GPS to leak")
+		}
+		checkRealPreview(t, NewSips(sips), geoHEIC, 8, 8)
 	})
 	t.Run("ffmpeg", func(t *testing.T) {
 		ffmpeg := realTool(t, "ffmpeg")
@@ -297,6 +316,7 @@ func checkRealPreview(t *testing.T, c Converter, path string, w, h int) {
 	if err != nil || cfg.Width != w || cfg.Height != h {
 		t.Fatalf("%s preview %+v %v, want %dx%d", c.Name, cfg, err, w, h)
 	}
+	noMetadata(t, s.PreviewPath(sha))
 	after, err := os.ReadFile(s.PoolPath(sha))
 	if err != nil || !bytes.Equal(after, body) {
 		t.Fatalf("%s: original changed (%v)", c.Name, err)
@@ -304,4 +324,42 @@ func checkRealPreview(t *testing.T, c Converter, path string, w, h int) {
 	if fi, err := os.Stat(s.PoolPath(sha)); err != nil || fi.Mode().Perm() != 0400 {
 		t.Fatalf("%s: original mode %v %v", c.Name, fi, err)
 	}
+}
+
+// noMetadata fails if the JPEG at path has any APP1 (EXIF/XMP) segment or
+// any readable location.
+func noMetadata(t *testing.T, path string) {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(b, []byte("Exif\x00")) || bytes.Contains(b, []byte{0xFF, 0xE1}) || bytes.Contains(b, []byte("GPS")) {
+		t.Fatalf("preview %s carries metadata", path)
+	}
+}
+
+// TestPreviewsCarryNoLocation: previews are re-encoded from decoded
+// pixels, so neither a built-in preview of a geotagged JPEG nor the
+// preview made from a converter that copies the GPS tags into its output
+// keeps any EXIF; the original is unchanged.
+func TestPreviewsCarryNoLocation(t *testing.T) {
+	s, _ := newTestStore(t)
+	pic := geo.JPEG(geo.SampleLat, geo.SampleLon, 5, 3)
+	sha := pooled(t, s, pic)
+	if err := s.MakePreview(sha); err != nil {
+		t.Fatal(err)
+	}
+	noMetadata(t, s.PreviewPath(sha))
+	if ok, err := fileMatches(s.PoolPath(sha), sha, int64(len(pic))); !ok || err != nil {
+		t.Fatalf("original changed: %v %v", ok, err)
+	}
+
+	heicLike := append([]byte{0, 0, 0, 24, 'f', 't', 'y', 'p', 'h', 'e', 'i', 'c', 0, 0, 0, 0, 'm', 'i', 'f', '1', 'h', 'e', 'i', 'c'}, "gps"...)
+	sha = pooled(t, s, heicLike)
+	s.SetConverters([]Converter{fakeConverter("jpeg-gps")})
+	if err := s.MakeConvertedPreview(t.Context(), sha, "image/heic"); err != nil {
+		t.Fatal(err)
+	}
+	noMetadata(t, s.PreviewPath(sha))
 }

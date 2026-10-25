@@ -127,6 +127,13 @@ type assetJSON struct {
 	// it is found). Always null for a live_photo: its own original is the
 	// still; the video's length is on its component.
 	DurationMS *int64 `json:"duration_ms"`
+	// Location: where it was taken, read by the server from the original's
+	// metadata (EXIF GPS, QuickTime ISO 6709), or null when unknown, not
+	// read yet (an asset_updated event follows), or hidden: the folder's
+	// owner set hide_location and the caller is a member, not the owner, or
+	// the uploader set hide_my_location and the caller is someone else.
+	// For a live_photo the still's, else its video's.
+	Location *locationJSON `json:"location"`
 	// UploadedByName: the uploader's display name, null when there is no
 	// uploader or the account is disabled or cannot log in.
 	UploadedByName *string `json:"uploaded_by_name"`
@@ -154,13 +161,58 @@ type componentJSON struct {
 	DurationMS *int64 `json:"duration_ms"`
 }
 
-func assetView(as meta.Asset) assetJSON {
+// locationJSON is a position in WGS 84 degrees with the recorded
+// horizontal accuracy in metres (null when the original gave none).
+type locationJSON struct {
+	Lat       float64  `json:"lat"`
+	Lon       float64  `json:"lon"`
+	AccuracyM *float64 `json:"accuracy_m"`
+}
+
+// showLocation reports whether the caller of an album request may see the
+// folder's asset locations at all: a reader (the route policy already
+// requires ListAlbumAssets) and, when the owner hides them, only the owner.
+// The uploader's own choice is applied per asset (assetView).
+func (a albumRequest) showLocation() bool {
+	if !a.allowed(authz.ListAlbumAssets) {
+		return false
+	}
+	return !a.Folder.Folder.HideLocation || a.Folder.Access.OwnerID == a.P.UserID
+}
+
+// locationViewer is who looks at an asset: whether the album lets them see
+// locations (albumRequest.showLocation) and their user_id, against the
+// uploader's own hide_my_location.
+type locationViewer struct {
+	album  bool
+	userID string
+}
+
+func (a albumRequest) locationViewer() locationViewer {
+	return locationViewer{album: a.showLocation(), userID: a.P.UserID}
+}
+
+// sees reports whether v may see as.Location.
+func (v locationViewer) sees(as meta.Asset) bool {
+	return v.album && (as.LocationHiddenBy == "" || as.LocationHiddenBy == v.userID)
+}
+
+// assetView is an asset as a reader sees it.
+func assetView(as meta.Asset, viewer locationViewer) assetJSON {
+	showLocation := viewer.sees(as)
 	v := assetJSON{ID: as.ID, SHA256: as.SHA256, Filename: as.Filename, MimeType: as.MimeType, Bytes: as.Bytes,
 		PreviewReady: as.PreviewReady, PreviewStatus: as.PreviewStatus, UploadedAt: as.UploadedAt,
 		CapturedAt: nonEmpty(as.CapturedAt), UploadedByName: nonEmpty(as.UploaderName), MediaKind: as.MediaKind,
 		Pairing: nonEmpty(as.Pairing), Components: componentsView(as)}
 	if as.MediaKind != meta.MediaLivePhoto {
 		v.DurationMS = positive(as.DurationMS)
+	}
+	if l := as.Location; showLocation && l != nil {
+		v.Location = &locationJSON{Lat: l.Lat, Lon: l.Lon}
+		if l.AccuracyM > 0 {
+			acc := l.AccuracyM
+			v.Location.AccuracyM = &acc
+		}
 	}
 	return v
 }
@@ -219,7 +271,7 @@ func (s *Server) syncEvents(w http.ResponseWriter, r *http.Request, a albumReque
 	}
 	assets := make(map[string]assetJSON, len(page.Assets))
 	for id, as := range page.Assets {
-		assets[id] = assetView(as)
+		assets[id] = assetView(as, a.locationViewer())
 	}
 	jsonReply(w, 200, map[string]any{"folder_id": folderID, "events": page.Events, "assets": assets,
 		"next_cursor": encodeCursor(page.State.Epoch, page.NextCursor), "has_more": page.HasMore})
@@ -254,7 +306,7 @@ func (s *Server) listAssets(w http.ResponseWriter, r *http.Request, a albumReque
 	list := make([]assetJSON, 0, len(page.Assets))
 	next := ""
 	for _, as := range page.Assets {
-		list = append(list, assetView(as))
+		list = append(list, assetView(as, a.locationViewer()))
 		next = as.ID
 	}
 	if !page.HasMore {

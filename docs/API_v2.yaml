@@ -85,7 +85,8 @@ info:
     folder has a change feed of events numbered 1, 2, ... (seq):
     asset_added, asset_removed (a tombstone) and asset_updated (an asset
     still in the folder changed: its preview_status, captured_at,
-    duration_ms (or a component's), or a paired video was attached; the
+    duration_ms (or a component's), location (found by the server, or
+    shown/hidden by the owner's hide_location), or a paired video was attached; the
     event's "assets" entry carries the new state). A client keeps a cursor per
     folder, an opaque string returned as next_cursor, and asks for the
     events after it (GET .../sync). It advances its stored cursor only after
@@ -177,6 +178,31 @@ info:
     "asset_duration" in GET /me server_features. An UPLOADER sees none of
     these fields: it only gets the 202 receipt and the folder's name and
     role.
+
+
+    Location (personal data). The same worker reads where an original was
+    taken: the EXIF GPS directory of JPEG, TIFF and HEIF/HEIC/AVIF
+    (GPSLatitude/GPSLongitude with their references, GPSHPositioningError
+    as the accuracy) and, in QuickTime/MP4,
+    com.apple.quicktime.location.ISO6709 (with
+    com.apple.quicktime.location.accuracy.horizontal) or the udta ©xyz
+    item. Readers of the folder see it as "location": {lat, lon,
+    accuracy_m} (WGS 84 degrees, accuracy in metres or null), null until
+    read (an asset_updated event follows) and when the original records
+    none; a live_photo shows the still's location, else its video's.
+    Altitude, heading and speed are not read. The album's owner may hide
+    locations from members with PATCH /api/v1/folders/{folder_id}
+    {"hide_location": true}: CONTRIBUTOR and VIEWER then get "location":
+    null for every asset of the folder, the owner still sees them, and
+    each change of the setting sends asset_updated for the affected
+    assets. Each account may also hide the location of the photos it
+    uploaded from everyone else, in every album (PATCH /api/v1/me/settings
+    {"hide_my_location": true}; GET /me "settings"). An UPLOADER never sees a location. The setting hides the API
+    field only: originals are stored and served byte for byte, GPS tags
+    included, so a member who may download an original can read them
+    from the file; previews are re-encoded by the server and carry no
+    metadata. Servers that report it list "asset_location" in GET /me
+    server_features.
 
 
     Live Photos. A Live Photo (an iPhone still and its short video) is
@@ -347,19 +373,50 @@ paths:
                   user: {$ref: '#/components/schemas/User'}
                   device_id: {type: string}
                   platform: {type: string, enum: [ios, android, macos, web]}
+                  settings: {$ref: '#/components/schemas/MySettings'}
                   server_features:
                     type: array
                     items: {type: string}
-                    examples: [[live_photo_bundles, folder_create_idempotency, asset_duration]]
+                    examples: [[live_photo_bundles, folder_create_idempotency, asset_duration, asset_location]]
                     description: >-
                       Optional abilities of this server. "live_photo_bundles":
                       POST .../bundles stores Live Photos (still and video as
                       one asset). "folder_create_idempotency": POST
                       /api/v1/folders honors an Idempotency-Key.
                       "asset_duration": assets and components carry
-                      duration_ms. Absent on older servers; clients must
-                      ignore unknown values.
+                      duration_ms. "asset_location": assets carry location,
+                      folders hide_location, and PATCH
+                      /api/v1/folders/{folder_id} sets it. Absent on older
+                      servers; clients must ignore unknown values.
         '401': {description: unauthorized}
+  /api/v1/me/settings:
+    patch:
+      tags: [Me]
+      summary: Own preferences (any signed-in account)
+      description: >-
+        {"hide_my_location": true|false}. While true, every other reader
+        gets "location": null for the assets this account uploaded, in
+        every album (the album owner too); the account itself still sees
+        them (unless the album's owner hides locations). A change is
+        audited (user.set_hide_my_location) and sends one asset_updated per
+        affected asset. It does not change originals (their GPS tags stay
+        in the files). Cookie sessions need X-CSRF-Token.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MySettings'}
+      responses:
+        '200':
+          description: The settings now
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MySettings'}
+        '400': {description: 'invalid_json, invalid_settings'}
+        '401': {description: unauthorized}
+        '403': {description: csrf_failed}
+        '415': {description: json_required}
+        '503': {description: 'storage_unavailable, storage_io_error, busy'}
   /api/v1/me/password:
     post:
       tags: [Me]
@@ -786,6 +843,38 @@ paths:
               schema: {$ref: '#/components/schemas/Folder'}
         '401': {description: unauthorized}
         '404': {description: 'folder_not_found (unknown, or not owner/member)'}
+    patch:
+      tags: [Albums]
+      summary: Album settings (OWNER only)
+      description: >-
+        {"hide_location": true|false}. While true, members (CONTRIBUTOR,
+        VIEWER) get "location": null on every asset of the album; the owner
+        keeps seeing locations. A change is audited and sends one
+        asset_updated per asset with a location so that clients refresh
+        them; setting the current value changes nothing. It does not change
+        originals (their GPS tags stay in the files). Cookie sessions need
+        X-CSRF-Token.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [hide_location]
+              properties:
+                hide_location: {type: boolean}
+      responses:
+        '200':
+          description: The folder as the owner sees it now
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Folder'}
+        '400': {description: 'invalid_json, invalid_settings (hide_location missing or not a boolean)'}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (member, not owner) or csrf_failed'}
+        '404': {description: folder_not_found}
+        '415': {description: json_required}
+        '503': {description: 'storage_unavailable, storage_io_error, busy'}
     delete:
       tags: [Albums]
       summary: Archive the album (OWNER only)
@@ -1861,9 +1950,34 @@ components:
             The owner plus the members of every role whose accounts are
             active and can log in; pending invitations are not counted (the
             member list and the invitations stay owner-only).
+        hide_location:
+          type: boolean
+          description: >-
+            Present exactly when can_read is true. The owner hides the
+            location of the album's assets from members (PATCH
+            /api/v1/folders/{folder_id}). Servers before "asset_location"
+            omit it.
+    MySettings:
+      type: object
+      required: [hide_my_location]
+      properties:
+        hide_my_location:
+          type: boolean
+          description: 'Others get location null for the photos this account uploaded. Servers before "asset_location" omit "settings".'
+    Location:
+      type: object
+      required: [lat, lon, accuracy_m]
+      properties:
+        lat: {type: number, minimum: -90, maximum: 90, description: 'WGS 84 latitude in degrees (7 decimals at most)'}
+        lon: {type: number, minimum: -180, maximum: 180, description: 'WGS 84 longitude in degrees (7 decimals at most)'}
+        accuracy_m:
+          type: [number, 'null']
+          exclusiveMinimum: 0
+          maximum: 100000
+          description: 'Horizontal accuracy recorded by the device, in metres; null when the original gives none'
     Asset:
       type: object
-      required: [id, sha256, filename, mime_type, bytes, preview_ready, preview_status, uploaded_at, captured_at, duration_ms, uploaded_by_name, media_kind]
+      required: [id, sha256, filename, mime_type, bytes, preview_ready, preview_status, uploaded_at, captured_at, duration_ms, location, uploaded_by_name, media_kind]
       properties:
         id: {type: string, description: 'random; valid only under its folder'}
         sha256: {type: string, description: 'of the original, to verify a download'}
@@ -1902,6 +2016,20 @@ components:
             still is the asset's original; its video's length is on the
             paired_video component. Servers before "asset_duration" omit
             the key.
+        location:
+          oneOf:
+            - $ref: '#/components/schemas/Location'
+            - type: 'null'
+          description: >-
+            Where it was taken, as recorded in the original (EXIF GPS,
+            QuickTime ISO 6709), or null when the original records none,
+            it has not been read yet (an asset_updated event follows), or
+            the album hides locations and the caller is not its owner
+            (Folder.hide_location), or the uploader hides the location of
+            its photos and the caller is another account
+            (MySettings.hide_my_location). For a live_photo the still's location,
+            else its video's. Positions of 0, 0 and out of range values are
+            treated as none. Servers before "asset_location" omit the key.
         uploaded_by_name:
           type: [string, 'null']
           description: >-
@@ -1994,7 +2122,7 @@ components:
       required: [seq, kind, asset_id, folder_id, uploader_device_id, occurred_at]
       properties:
         seq: {type: integer, minimum: 1}
-        kind: {type: string, enum: [asset_added, asset_removed, asset_updated], description: 'asset_updated: the asset (in "assets") changed: its preview_status, captured_at or duration_ms (its own or its paired video''s), or a paired video was attached (media_kind became live_photo)'}
+        kind: {type: string, enum: [asset_added, asset_removed, asset_updated], description: 'asset_updated: the asset (in "assets") changed: its preview_status, captured_at, duration_ms or location (its own or its paired video''s; location also when the owner changes hide_location), or a paired video was attached (media_kind became live_photo)'}
         asset_id: {type: string}
         folder_id: {type: string}
         uploader_device_id: {type: string, description: 'X-Device-ID label of the upload that added the asset to this folder: on asset_added, and on asset_updated the same label as that asset_added (the server made the change, no device did; "" when the upload sent none); always "" for asset_removed'}

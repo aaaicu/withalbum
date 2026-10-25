@@ -4,6 +4,16 @@
 
 아래 [0.1.0-alpha.1] 초안 이후의 변경을 여기에 적습니다.
 
+### Added (photo and video location, M46)
+- 촬영 위치: 자산 JSON `location`(`{"lat", "lon", "accuracy_m"}` WGS 84 도·미터, 정확도 없으면 null) 또는 null(없음·아직 안 읽음·숨김). 라이브 포토는 사진의 위치, 없으면 영상의 위치. 읽기 권한자(OWNER·CONTRIBUTOR·VIEWER)만, UPLOADER는 영수증만(변경 없음).
+- `internal/capturetime.ExtractLocation`: JPEG/TIFF/HEIF EXIF GPS IFD(위도·경도 유리수 + N/S·E/W, `GPSHPositioningError` = 정확도, `GPSStatus` V는 무시), QuickTime/MP4 `com.apple.quicktime.location.ISO6709`(+ `…accuracy.horizontal`)·`udta/©xyz`(ISO 6709 도·도분·도분초, WGS 84 외 CRS 거부). 범위 밖·분모 0·분/초 60 이상·0°,0°는 없음. 고도·방향·속도는 읽지 않음. 1e-7도로 반올림. 같은 읽기 제한, 퍼즈 `FuzzExtractLocation`·`FuzzISO6709`, 테스트 픽스처 `internal/capturetime/geotest`(합성 좌표만).
+- 촬영 시각 워커가 위치도 읽음(커밋 후). 새로 알게 되면 `asset_updated`(원본 자산 + 그 영상을 구성으로 가진 라이브 포토). 마이그레이션 0013이 기존 원본을 `location_state = pending`으로 두어 백필.
+- 앨범 설정 `PATCH /api/v1/folders/{id}` `{"hide_location": bool}`(OWNER만, 감사 `folder.set_hide_location`, 새 권한 동작 `update_album_settings`): 켜면 멤버에게 `location: null`, 오너는 계속 봄. 값이 바뀌면 위치가 있는 자산마다 `asset_updated`, 같은 값이면 아무것도 쓰지 않음. 폴더 JSON `hide_location`(읽기 권한자만, `member_count`와 같음). 원본의 GPS 태그는 그대로(내려받으면 파일에서 읽을 수 있음 — SECURITY.md).
+- 계정별 설정 `PATCH /api/v1/me/settings` `{"hide_my_location": bool}`(감사 `user.set_hide_my_location`), `GET /me`에 `settings.hide_my_location`: 켜면 그 계정이 올린 사진의 위치가 모든 앨범에서 다른 사람(앨범 오너 포함)에게 null, 본인은 봄(앨범 오너가 숨긴 앨범은 예외 없이 멤버에게 null). 값이 바뀌면 영향받는 자산마다 `asset_updated`.
+- 미리보기 JPEG에 EXIF·위치 없음을 테스트로 확인(내장 미리보기, sips 변환, 메타데이터를 복사하는 변환기 흉내).
+- `GET /me` `server_features`에 `asset_location`.
+- 마이그레이션 0013: `blobs.location_state`·`location_lat`·`location_lon`·`location_accuracy_m`(CHECK: 둘 다 있거나 둘 다 없음, 범위, 정확도 > 0), 부분 인덱스 `idx_blobs_location_pending`, `folders.hide_location`, `users.hide_my_location`.
+
 ### Added (macOS menu bar app + DMG, M32)
 - `macos/`: 메뉴 막대 앱 "WithAlbum Server"(Swift Package, SwiftUI `MenuBarExtra`, macOS 13+, arm64+x86_64, `LSUIElement`). 번들 `Contents/Helpers/withalbum-server`에 유니버설 서버. 서버는 `scripts/install-macos.sh`와 같은 사용자 LaunchAgent(`org.withalbum.server`, `RunAtLoad`·`KeepAlive`·`ThrottleInterval` 30, `~/Library/Logs/WithAlbum` 0700, `WITHALBUM_CONFIG`·`WITHALBUM_ROOT` 그대로)로 실행하고 `launchctl bootstrap|bootout|kickstart`로 관리. 로그인 시 시작을 끄면 plist를 `~/Library/Application Support/WithAlbum/ServerApp/`로 옮김.
 - 상태: 기존 `GET /api/v1/health`(설치 모드는 `/setup` 200)와 `launchctl print`만 사용(새 API 없음). 정상 실행 중·무결성 경고·저장 중단·설치 필요·시작하는 중·시작하지 못함(error.log 마지막 오류)·멈춤·관리하지 않는 서버. 프록시를 쓰지 않음.

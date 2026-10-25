@@ -303,7 +303,7 @@ func principalTx(ctx context.Context, q queryer, userID, sessionID string) (auth
 
 // folderAccessQuery selects one non-archived folder and the relation of the
 // user given as the first argument. It is completed by a WHERE clause.
-const folderAccessQuery = `SELECT f.folder_id, f.folder_name, f.created_at, f.owner_user_id, m.role,
+const folderAccessQuery = `SELECT f.folder_id, f.folder_name, f.created_at, f.hide_location, f.owner_user_id, m.role,
 		(SELECT count(*) FROM users u WHERE u.user_id = f.owner_user_id AND ` + activeUser + `) +
 		(SELECT count(*) FROM folder_members mm JOIN users u ON u.user_id = mm.user_id WHERE mm.folder_id = f.folder_id AND ` + activeUser + `)
 	FROM folders f LEFT JOIN folder_members m ON m.folder_id = f.folder_id AND m.user_id = ?
@@ -318,7 +318,7 @@ type scanner interface{ Scan(dest ...any) error }
 func scanFolderAccess(row scanner) (meta.FolderAccess, error) {
 	var fa meta.FolderAccess
 	var role sql.NullString
-	if err := row.Scan(&fa.Folder.ID, &fa.Folder.Name, &fa.Folder.CreatedAt, &fa.Access.OwnerID, &role, &fa.MemberCount); err != nil {
+	if err := row.Scan(&fa.Folder.ID, &fa.Folder.Name, &fa.Folder.CreatedAt, &fa.Folder.HideLocation, &fa.Access.OwnerID, &role, &fa.MemberCount); err != nil {
 		return meta.FolderAccess{}, err
 	}
 	fa.Access.HasMembership = role.Valid
@@ -359,7 +359,7 @@ func (s *Store) ListFoldersFor(ctx context.Context, userID string) ([]meta.Folde
 
 // ListFolders implements meta.MetadataStore.
 func (s *Store) ListFolders(ctx context.Context) ([]meta.Folder, error) {
-	rows, err := s.db.QueryContext(ctx, "SELECT folder_id, folder_name, created_at FROM folders ORDER BY created_at, folder_id")
+	rows, err := s.db.QueryContext(ctx, "SELECT folder_id, folder_name, created_at, hide_location FROM folders ORDER BY created_at, folder_id")
 	if err != nil {
 		return nil, err
 	}
@@ -367,7 +367,7 @@ func (s *Store) ListFolders(ctx context.Context) ([]meta.Folder, error) {
 	folders := []meta.Folder{}
 	for rows.Next() {
 		var f meta.Folder
-		if err := rows.Scan(&f.ID, &f.Name, &f.CreatedAt); err != nil {
+		if err := rows.Scan(&f.ID, &f.Name, &f.CreatedAt, &f.HideLocation); err != nil {
 			return nil, err
 		}
 		folders = append(folders, f)
@@ -378,8 +378,8 @@ func (s *Store) ListFolders(ctx context.Context) ([]meta.Folder, error) {
 // GetFolder implements meta.MetadataStore.
 func (s *Store) GetFolder(ctx context.Context, id string) (meta.Folder, error) {
 	var f meta.Folder
-	err := s.db.QueryRowContext(ctx, "SELECT folder_id, folder_name, created_at FROM folders WHERE folder_id = ?", id).
-		Scan(&f.ID, &f.Name, &f.CreatedAt)
+	err := s.db.QueryRowContext(ctx, "SELECT folder_id, folder_name, created_at, hide_location FROM folders WHERE folder_id = ?", id).
+		Scan(&f.ID, &f.Name, &f.CreatedAt, &f.HideLocation)
 	if errors.Is(err, sql.ErrNoRows) {
 		return meta.Folder{}, meta.ErrFolderNotFound
 	}
@@ -388,11 +388,27 @@ func (s *Store) GetFolder(ctx context.Context, id string) (meta.Folder, error) {
 
 // assetColumns selects a meta.Asset (scanAsset) from assets a JOIN blobs b.
 const assetColumns = "a.asset_id, a.original_sha256, a.original_filename, b.mime_type, b.bytes, a.preview_ready, a.preview_state, a.created_at, b.captured_at, b.duration_ms, " +
-	uploaderName + ", a.media_kind, a.pairing_state, " + pairedVideo
+	uploaderName + ", a.media_kind, a.pairing_state, " + pairedVideo + ", " + blobLocation + ", " + locationHiddenBy
+
+// locationHiddenBy selects the uploader of assets a when that account hides
+// the location of its photos (users.hide_my_location), NULL otherwise.
+const locationHiddenBy = "(SELECT u.user_id FROM users u WHERE u.user_id = a.uploaded_by_user_id AND u.hide_my_location = 1)"
+
+// blobLocation selects the location of blobs b as a JSON object (lat,
+// lon, acc), NULL when it has none (setLocation).
+const blobLocation = locationOf + "b" + locationEnd
+
+// locationOf + alias + locationEnd is the location of the blob with that
+// alias as a JSON object, NULL when it has none.
+const (
+	locationOf  = "(SELECT CASE WHEN l.location_lat IS NULL THEN NULL ELSE json_object('lat', l.location_lat, 'lon', l.location_lon, 'acc', l.location_accuracy_m) END FROM blobs l WHERE l.sha256 = "
+	locationEnd = ".sha256)"
+)
 
 // pairedVideo selects the paired video of assets a as a JSON object
 // (sha256, filename, mime_type, bytes, duration_ms), NULL when it has none.
-const pairedVideo = `(SELECT json_object('sha256', c.sha256, 'filename', c.filename, 'mime_type', cb.mime_type, 'bytes', cb.bytes, 'duration_ms', cb.duration_ms)
+const pairedVideo = `(SELECT json_object('sha256', c.sha256, 'filename', c.filename, 'mime_type', cb.mime_type, 'bytes', cb.bytes, 'duration_ms', cb.duration_ms,
+		'location', json(` + locationOf + "cb" + locationEnd + `))
 	FROM asset_components c JOIN blobs cb ON cb.sha256 = c.sha256 WHERE c.asset_id = a.asset_id AND c.role = 'paired_video')`
 
 // setLivePhoto fills the media kind, pairing and paired video of a from
@@ -403,18 +419,56 @@ func setLivePhoto(a *meta.Asset, kind, pairing, paired sql.NullString) error {
 		return nil
 	}
 	var c struct {
-		SHA256   string `json:"sha256"`
-		Filename string `json:"filename"`
-		MimeType string `json:"mime_type"`
-		Bytes    int64  `json:"bytes"`
-		Duration *int64 `json:"duration_ms"`
+		SHA256   string        `json:"sha256"`
+		Filename string        `json:"filename"`
+		MimeType string        `json:"mime_type"`
+		Bytes    int64         `json:"bytes"`
+		Duration *int64        `json:"duration_ms"`
+		Location *locationJSON `json:"location"`
 	}
 	if err := json.Unmarshal([]byte(paired.String), &c); err != nil {
 		return fmt.Errorf("asset %s: paired video: %w", a.ID, err)
 	}
-	a.PairedVideo = meta.Component{Role: meta.RolePairedVideo, SHA256: c.SHA256, Filename: c.Filename, MimeType: c.MimeType, Bytes: c.Bytes}
+	a.PairedVideo = meta.Component{Role: meta.RolePairedVideo, SHA256: c.SHA256, Filename: c.Filename, MimeType: c.MimeType, Bytes: c.Bytes,
+		Location: c.Location.meta()}
 	if c.Duration != nil {
 		a.PairedVideo.DurationMS = *c.Duration
+	}
+	return nil
+}
+
+// locationJSON is a stored location as blobLocation selects it.
+type locationJSON struct {
+	Lat float64  `json:"lat"`
+	Lon float64  `json:"lon"`
+	Acc *float64 `json:"acc"`
+}
+
+func (l *locationJSON) meta() *meta.Location {
+	if l == nil {
+		return nil
+	}
+	m := &meta.Location{Lat: l.Lat, Lon: l.Lon}
+	if l.Acc != nil {
+		m.AccuracyM = *l.Acc
+	}
+	return m
+}
+
+// setLocation fills a.Location from the blobLocation column, after
+// setLivePhoto: a Live Photo whose still records no location takes its
+// paired video's.
+func setLocation(a *meta.Asset, loc sql.NullString) error {
+	if loc.Valid {
+		var l locationJSON
+		if err := json.Unmarshal([]byte(loc.String), &l); err != nil {
+			return fmt.Errorf("asset %s: location: %w", a.ID, err)
+		}
+		a.Location = l.meta()
+	}
+	if a.Location == nil && a.PairedVideo.Location != nil {
+		v := *a.PairedVideo.Location
+		a.Location = &v
 	}
 	return nil
 }
@@ -426,10 +480,10 @@ const uploaderName = "(SELECT u.display_name FROM users u WHERE u.user_id = a.up
 
 func scanAsset(row scanner) (meta.Asset, error) {
 	var a meta.Asset
-	var state, captured, uploader, kind, pairing, paired sql.NullString
+	var state, captured, uploader, kind, pairing, paired, loc, hiddenBy sql.NullString
 	var dur sql.NullInt64
 	err := row.Scan(&a.ID, &a.SHA256, &a.Filename, &a.MimeType, &a.Bytes, &a.PreviewReady, &state, &a.UploadedAt, &captured, &dur, &uploader,
-		&kind, &pairing, &paired)
+		&kind, &pairing, &paired, &loc, &hiddenBy)
 	if errors.Is(err, sql.ErrNoRows) {
 		return meta.Asset{}, meta.ErrAssetNotFound
 	}
@@ -437,8 +491,11 @@ func scanAsset(row scanner) (meta.Asset, error) {
 		return meta.Asset{}, err
 	}
 	a.PreviewStatus = previewStatus(a.PreviewReady, state)
-	a.CapturedAt, a.DurationMS, a.UploaderName = captured.String, dur.Int64, uploader.String
-	return a, setLivePhoto(&a, kind, pairing, paired)
+	a.CapturedAt, a.DurationMS, a.UploaderName, a.LocationHiddenBy = captured.String, dur.Int64, uploader.String, hiddenBy.String
+	if err := setLivePhoto(&a, kind, pairing, paired); err != nil {
+		return meta.Asset{}, err
+	}
+	return a, setLocation(&a, loc)
 }
 
 // previewStatus derives meta.Asset.PreviewStatus from assets.preview_ready
@@ -716,7 +773,8 @@ func (s *Store) ListEvents(ctx context.Context, folderID string, cursor int64, l
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT c.seq, c.event_type, c.asset_id, COALESCE(c.uploader_device_label, ''), c.occurred_at,
 			a.original_sha256, a.original_filename, b.mime_type, b.bytes, a.preview_ready, a.preview_state, a.created_at,
-			b.captured_at, b.duration_ms, `+uploaderName+`, fa.asset_id IS NOT NULL AND fa.removed_at IS NULL, a.media_kind, a.pairing_state, `+pairedVideo+`
+			b.captured_at, b.duration_ms, `+uploaderName+`, fa.asset_id IS NOT NULL AND fa.removed_at IS NULL, a.media_kind, a.pairing_state, `+pairedVideo+`,
+			`+blobLocation+`, `+locationHiddenBy+`
 		FROM folder_changes c
 		LEFT JOIN assets a ON a.asset_id = c.asset_id
 		LEFT JOIN blobs b ON b.sha256 = a.original_sha256
@@ -729,12 +787,12 @@ func (s *Store) ListEvents(ctx context.Context, folderID string, cursor int64, l
 	page := meta.EventPage{Events: []meta.Event{}, Assets: map[string]meta.Asset{}, NextCursor: cursor, State: state}
 	for rows.Next() {
 		e := meta.Event{FolderID: folderID}
-		var sha, filename, mime, uploadedAt, state, captured, uploader, kind, pairing, paired sql.NullString
+		var sha, filename, mime, uploadedAt, state, captured, uploader, kind, pairing, paired, loc, hiddenBy sql.NullString
 		var size, dur sql.NullInt64
 		var preview sql.NullBool
 		var linked bool
 		if err := rows.Scan(&e.Seq, &e.Kind, &e.AssetID, &e.UploaderDeviceID, &e.OccurredAt,
-			&sha, &filename, &mime, &size, &preview, &state, &uploadedAt, &captured, &dur, &uploader, &linked, &kind, &pairing, &paired); err != nil {
+			&sha, &filename, &mime, &size, &preview, &state, &uploadedAt, &captured, &dur, &uploader, &linked, &kind, &pairing, &paired, &loc, &hiddenBy); err != nil {
 			return meta.EventPage{}, err
 		}
 		if !sha.Valid || !mime.Valid {
@@ -746,8 +804,11 @@ func (s *Store) ListEvents(ctx context.Context, folderID string, cursor int64, l
 		if (e.Kind == meta.EventAssetAdded || e.Kind == meta.EventAssetUpdated) && linked {
 			a := meta.Asset{ID: e.AssetID, SHA256: sha.String, Filename: filename.String, MimeType: mime.String,
 				Bytes: size.Int64, PreviewReady: preview.Bool, PreviewStatus: previewStatus(preview.Bool, state), UploadedAt: uploadedAt.String,
-				CapturedAt: captured.String, DurationMS: dur.Int64, UploaderName: uploader.String}
+				CapturedAt: captured.String, DurationMS: dur.Int64, UploaderName: uploader.String, LocationHiddenBy: hiddenBy.String}
 			if err := setLivePhoto(&a, kind, pairing, paired); err != nil {
+				return meta.EventPage{}, err
+			}
+			if err := setLocation(&a, loc); err != nil {
 				return meta.EventPage{}, err
 			}
 			page.Assets[e.AssetID] = a

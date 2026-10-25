@@ -186,6 +186,7 @@ func (s *Server) Handler() http.Handler {
 	rt.handle("GET /api/v1/folders", s.getFolders)
 	rt.handle("POST /api/v1/folders", s.createFolder)
 	rt.handleAlbum("GET /api/v1/folders/{folderID}", s.getFolder)
+	rt.handleAlbum("PATCH /api/v1/folders/{folderID}", s.updateFolder)
 	rt.handleAlbum(uploadRoute, s.upload)
 	s.uploadSessionRoutes(rt)
 	s.bundleRoutes(rt)
@@ -216,6 +217,9 @@ type folderJSON struct {
 	// pending invitations) only for callers who may read the folder: an
 	// upload-only member learns nothing about the album beyond its name.
 	MemberCount *int `json:"member_count,omitempty"`
+	// HideLocation (readers only, like MemberCount): the owner hides the
+	// location of the folder's assets from members (PATCH /folders/{id}).
+	HideLocation *bool `json:"hide_location,omitempty"`
 }
 
 func folderView(p authz.Principal, fa meta.FolderAccess) folderJSON {
@@ -223,10 +227,36 @@ func folderView(p authz.Principal, fa meta.FolderAccess) folderJSON {
 		CanRead:   authz.Allowed(p, authz.ListAlbumAssets, &fa.Access),
 		CanUpload: authz.Allowed(p, authz.UploadAsset, &fa.Access)}
 	if v.CanRead {
-		n := fa.MemberCount
-		v.MemberCount = &n
+		n, hide := fa.MemberCount, fa.Folder.HideLocation
+		v.MemberCount, v.HideLocation = &n, &hide
 	}
 	return v
+}
+
+// updateFolder: PATCH /folders/{id} {"hide_location": bool}, the owner's
+// album settings. The owner keeps seeing locations either way; members
+// see "location": null while it is true. A change appends asset_updated
+// for every asset with a location so that members' clients refresh them.
+func (s *Server) updateFolder(w http.ResponseWriter, r *http.Request, a albumRequest) {
+	var req struct {
+		HideLocation *bool `json:"hide_location"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.HideLocation == nil {
+		errorReply(w, 400, "invalid_settings")
+		return
+	}
+	if !s.storageReady(w) {
+		return
+	}
+	fa, err := s.members.SetHideLocation(r.Context(), s.change(a, authz.UpdateAlbumSettings, ""), *req.HideLocation)
+	if err != nil {
+		membershipError(w, "update folder", err)
+		return
+	}
+	jsonReply(w, 200, folderView(a.P, fa))
 }
 
 // getFolders lists only the folders the caller owns or is a member of.
