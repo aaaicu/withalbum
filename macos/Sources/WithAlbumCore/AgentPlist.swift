@@ -28,7 +28,29 @@ public struct AgentConfig: Equatable, Sendable {
         self.logDirectory = logDirectory
     }
 
-    public var arguments: [String] { lan ? [program, "-tls", "-allow-lan"] : [program] }
+    /// WITHALBUM_FUNNEL_URL: the server also serves apps through Tailscale
+    /// Funnel on a loopback listener (docs/FUNNEL.md); needs -tls.
+    public var funnelURL: String? { environment["WITHALBUM_FUNNEL_URL"].flatMap { $0.isEmpty ? nil : $0 } }
+
+    /// HTTPS with the pinned identity: on the LAN, or for the funnel route.
+    public var tls: Bool { lan || funnelURL != nil }
+
+    public var arguments: [String] {
+        if lan { return [program, "-tls", "-allow-lan"] }
+        return funnelURL != nil ? [program, "-tls"] : [program]
+    }
+
+    /// Turns the funnel route on (a canonical https://<name>.ts.net URL) or
+    /// off (nil), with the server's loopback funnel listener.
+    public mutating func setFunnel(_ url: String?) {
+        if let url {
+            environment["WITHALBUM_FUNNEL_URL"] = url
+            environment["WITHALBUM_FUNNEL_LISTEN"] = Funnel.listen
+        } else {
+            environment.removeValue(forKey: "WITHALBUM_FUNNEL_URL")
+            environment.removeValue(forKey: "WITHALBUM_FUNNEL_LISTEN")
+        }
+    }
 
     /// The full environment of the agent (WITHALBUM_LISTEN always set).
     public var fullEnvironment: [String: String] {
@@ -47,6 +69,8 @@ public struct AgentConfig: Equatable, Sendable {
         case relativePath(String)
         case listen(ListenAddressError)
         case loopbackOnlyWithoutLAN   // plain HTTP is loopback only
+        case funnelURL(String)        // not https://<name>.ts.net[:8443|:10000]
+        case funnelListen(String)     // the funnel listener must be a loopback IP
     }
 
     /// Checks the rules the install script and the server apply.
@@ -57,6 +81,11 @@ public struct AgentConfig: Equatable, Sendable {
         }
         for p in [program, logDirectory] where !p.hasPrefix("/") { throw Invalid.relativePath(p) }
         if let root = storageRoot, !root.hasPrefix("/") { throw Invalid.relativePath(root) }
+        if let f = funnelURL, !Funnel.isValidURL(f) { throw Invalid.funnelURL(f) }
+        if let fl = environment["WITHALBUM_FUNNEL_LISTEN"], !fl.isEmpty {
+            guard let (h, _) = ListenAddress.splitHostPort(fl), IPAddress(h)?.isLoopback == true,
+                  case .success(.loopback) = ListenAddress.scope(fl), fl != listen else { throw Invalid.funnelListen(fl) }
+        }
         if lan {
             if case .failure(let e) = ListenAddress.validateLAN(listen) { throw Invalid.listen(e) }
         } else {
@@ -103,6 +132,9 @@ public struct ExistingAgent: Equatable, Sendable {
     /// The install script's --lan: both flags.
     public var lan: Bool { arguments.contains("-tls") && arguments.contains("-allow-lan") }
     public var listen: String { environment["WITHALBUM_LISTEN"] ?? ListenAddress.loopbackDefault }
+    /// -tls (LAN or funnel route): the server answers HTTPS with its pin.
+    public var tls: Bool { arguments.contains("-tls") }
+    public var funnelURL: String? { environment["WITHALBUM_FUNNEL_URL"].flatMap { $0.isEmpty ? nil : $0 } }
 
     public static func parse(_ data: Data) -> ExistingAgent? {
         guard let obj = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
@@ -134,6 +166,10 @@ public struct ExistingAgent: Equatable, Sendable {
     public func takeOver(helperPath: String, logDirectory: String) -> (config: AgentConfig, droppedLAN: Bool) {
         var env = environment
         env.removeValue(forKey: "WITHALBUM_LISTEN")
+        if let f = funnelURL, !Funnel.isValidURL(f) {
+            env.removeValue(forKey: "WITHALBUM_FUNNEL_URL")
+            env.removeValue(forKey: "WITHALBUM_FUNNEL_LISTEN")
+        }
         var c = AgentConfig(program: helperPath, lan: false, listen: ListenAddress.loopbackDefault,
                             environment: env, logDirectory: logDirectory)
         if lan {

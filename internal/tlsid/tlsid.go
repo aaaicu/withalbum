@@ -118,10 +118,34 @@ func PairingPayload(serverURL, spkiHex string) string {
 // stays 1: the fields are optional, and apps that do not know them ignore
 // them (they still pin the same key).
 func PairingPayloadRelay(serverURL, spkiHex, relayAddr, rid string) string {
+	return PairingPayloadWith(serverURL, spkiHex, PairingExtras{RelayAddr: relayAddr, RID: rid})
+}
+
+// PairingExtras are the optional routes of a pairing payload besides the
+// direct url.
+type PairingExtras struct {
+	RelayAddr string // relay=<host:port> (with RID), docs/RELAY_DESIGN.md
+	RID       string
+	// PublicURL is public_url=<https origin>: a public address that
+	// forwards the pinned TLS connection unchanged to this server, such as
+	// a Tailscale Funnel TCP forwarder (docs/FUNNEL.md). PublicRoute
+	// (public_route=) names how it is reached, e.g. "funnel".
+	PublicURL   string
+	PublicRoute string
+}
+
+// PairingPayloadWith is PairingPayload with the extra routes of x. The
+// version stays 1: every extra field is optional and apps that do not know
+// it ignore it (they still pin the same key).
+func PairingPayloadWith(serverURL, spkiHex string, x PairingExtras) string {
 	q := url.Values{"v": {"1"}, "url": {serverURL}, "spki_sha256": {spkiHex}}
-	if relayAddr != "" {
-		q.Set("relay", relayAddr)
-		q.Set("rid", rid)
+	if x.RelayAddr != "" {
+		q.Set("relay", x.RelayAddr)
+		q.Set("rid", x.RID)
+	}
+	if x.PublicURL != "" {
+		q.Set("public_url", x.PublicURL)
+		q.Set("public_route", x.PublicRoute)
 	}
 	return "withalbum://pair?" + q.Encode()
 }

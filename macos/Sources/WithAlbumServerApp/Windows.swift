@@ -173,6 +173,9 @@ struct PairingView: View {
                 } else {
                     Text("불러오는 중…")
                 }
+                if let f = model.funnelURL {
+                    Note(text: "이 QR에는 집 밖 주소(\(f), Tailscale Funnel)도 들어 있어요. 새 앱은 집 Wi-Fi → 집 밖 주소 → 중계 순서로 연결하고, 어느 길이든 같은 공개키 지문으로만 서버를 믿어요. 이미 연결한 기기는 다시 스캔하지 않아도 로그인 뒤 서버에서 이 주소를 배워요.")
+                }
                 Note(text: "QR에는 서버 주소와 공개키 지문만 들어 있어요(비밀번호·토큰 없음). 지문은 서버를 처음 -tls로 시작할 때 저장소의 .system/tls에 만들어져요.")
             }
             .padding(24)

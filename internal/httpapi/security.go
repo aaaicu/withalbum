@@ -156,5 +156,8 @@ func (s *Server) serverTLS(w http.ResponseWriter, r *http.Request) {
 	if s.relay != nil {
 		body["relay"] = s.relayJSON(true)
 	}
+	if s.public != nil {
+		body["public"] = s.publicJSON()
+	}
 	jsonReply(w, 200, body)
 }

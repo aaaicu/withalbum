@@ -1,6 +1,6 @@
 # Security Policy (prototype)
 
-WithAlbum Server is **experimental**. Accounts, device sessions, album access control, backups and a TLS-gated LAN mode exist and are tested, but the code has not had an external review or real-device testing. Do not store unique, irreplaceable or private photos only on this server, and **never expose it to the internet** (no port forwarding, no public reverse proxy).
+WithAlbum Server is **experimental**. Accounts, device sessions, album access control, backups and a TLS-gated LAN mode exist and are tested, but the code has not had an external review or real-device testing. Do not store unique, irreplaceable or private photos only on this server, and **never expose it to the internet** (no port forwarding, no public reverse proxy). The only supported routes from outside the home are the end-to-end encrypted relay and the Tailscale Funnel TCP route below, both of which keep the pinned TLS session end to end and serve app routes only.
 
 - This repository does not yet offer a formal security disclosure channel. Configure GitHub private vulnerability reporting before relying on it.
 
@@ -39,6 +39,18 @@ Off by default. With `-relay host:port` (or `WITHALBUM_RELAY`) the server **dial
 - The relay operator can see: rendezvous IDs, IP addresses, connection times and durations, byte counts per connection, the inner TLS ClientHello. Never content. The relay logs no IPs unless started with `-log-ips`, and keeps nothing on disk.
 - Relay abuse limits: connections and new connections per IP, tunnels per IP and in total, streams and new streams per server, bandwidth per server, handshake and idle timeouts; strict framing (fuzzed) that closes a tunnel on any violation.
 - The connection to the relay itself is TLS 1.3 verified against the system roots (or `WITHALBUM_RELAY_CA_FILE`).
+
+### Public route through Tailscale Funnel (M47)
+
+Off by default. With `-tls -funnel-url https://<machine>.<tailnet>.ts.net` (or `WITHALBUM_FUNNEL_URL`) the server opens a **second listener on loopback only** (`-funnel-listen`, default `127.0.0.1:8788`; a non-loopback address is refused, also after binding) for a Tailscale Funnel **raw TCP forwarder** (`tailscale funnel --bg --tcp=443 --proxy-protocol=2 tcp://127.0.0.1:8788`). Details, sources and the app contract: [`docs/FUNNEL.md`](docs/FUNNEL.md).
+
+- **TLS passes through end to end.** Funnel's relays route by SNI without decrypting, and tailscaled forwards the bytes; the app runs the same pinned TLS 1.3 session with the server's own key as on the LAN. Neither Tailscale's servers nor tailscaled on the Mac can read or change it, and a wrong key fails the pin. A TLS-terminating Funnel (`tailscale funnel 8788`, `--https`, `--tls-terminated-tcp`) is **not supported**: tailscaled on the same Mac would then decrypt and apps would have to trust a CA-issued ts.net certificate instead of the pin; such a setup fails closed because the pin does not match.
+- **The login endpoint becomes reachable from the internet** for anyone who knows the URL (it is in the pairing QR; not a secret). Only app routes are served (same table as the relay); the dashboard, the setup screen and `/api/v1/admin/*` answer `403 not_available_via_relay` with `"route":"funnel"`, also for administrators.
+- Login limits: per client IP from the optional PROXY v1/v2 header, else one shared key `funnel-unknown` for the whole route; per-account limits always. The header is accepted only on the loopback listener and only used as a rate-limit/audit key. Forwarding headers are never read.
+- Exposure limits on the funnel listener: 128 connections at once, 10 s for the PROXY header and the TLS handshake, JSON bodies 8 KiB within 30 s (all listeners), 64 KiB headers. Audit entries of logins, refreshes, logouts and device revocations carry `"route":"funnel"` or `"relay"`.
+- Lost device: `POST /api/v1/me/devices/revoke-others` signs out every other device of the account (served on every route).
+- Tailscale sees client IPs, the ts.net name, times and byte counts. Funnel is a beta service with unpublished bandwidth limits.
+- Funnel does not protect the rest of the home network: isolate the Mac from cameras and home automation ([`docs/HOME_NETWORK_ISOLATION.md`](docs/HOME_NETWORK_ISOLATION.md)); the menu bar app has a connection check for typed addresses.
 
 ### Response hardening
 

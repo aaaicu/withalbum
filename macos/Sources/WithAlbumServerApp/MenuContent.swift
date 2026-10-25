@@ -25,7 +25,7 @@ struct MenuContent: View {
             if model.state == .setupNeeded {
                 Button("설치 코드 보기…") { model.show("setup") }
             }
-            if model.lan {
+            if model.lan || model.funnelURL != nil {
                 Button("기기 연결 정보(페어링 QR)…") { model.show("pairing") }
             }
             Divider()
@@ -35,6 +35,9 @@ struct MenuContent: View {
 
             Button("LAN에서 접속 허용…") { model.show("lan") }
                 .disabled(!model.ownedByThisApp)
+            Button("집 밖에서 접속 (Tailscale Funnel)…") { model.show("funnel") }
+                .disabled(!model.ownedByThisApp)
+            Button("내부망 격리 점검…") { model.show("isolation") }
             Toggle("로그인 시 서버 시작", isOn: Binding(get: { model.loginStart }, set: { model.setLoginStart($0) }))
                 .disabled(!model.ownedByThisApp || model.busy)
             Toggle("로그인 시 이 앱 열기", isOn: Binding(get: { model.menuAppAtLogin }, set: { model.setMenuAppAtLogin($0) }))

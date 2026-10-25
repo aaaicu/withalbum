@@ -140,8 +140,14 @@ func relayAllowed(p string) bool {
 
 // relayOnly wraps the API handler for connections that came through the
 // relay.
-func relayOnly(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func relayOnly(next http.Handler) http.Handler { return remoteOnly(httpapi.RouteRelay, next) }
+
+// remoteOnly wraps the API handler of a listener for connections from
+// outside the home network (relay, funnel): it marks the requests with
+// route and serves only the app routes of relayAllowed. The error code is
+// not_available_via_relay for both routes, so apps handle one code.
+func remoteOnly(route httpapi.Route, next http.Handler) http.Handler {
+	return httpapi.WithRoute(route, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !relayAllowed(r.URL.Path) {
 			h := w.Header()
 			h.Set("Content-Type", "application/json; charset=utf-8")
@@ -149,11 +155,11 @@ func relayOnly(next http.Handler) http.Handler {
 			h.Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
 			h.Set("Cache-Control", "no-store")
 			w.WriteHeader(http.StatusForbidden)
-			io.WriteString(w, `{"error":"not_available_via_relay"}`+"\n")
+			io.WriteString(w, `{"error":"not_available_via_relay","route":"`+string(route)+`"}`+"\n")
 			return
 		}
 		next.ServeHTTP(w, r)
-	})
+	}))
 }
 
 // setupRelay checks the administrator condition, builds the tunnel client

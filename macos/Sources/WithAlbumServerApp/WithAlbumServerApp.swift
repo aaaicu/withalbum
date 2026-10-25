@@ -34,7 +34,7 @@ enum StatusCLI {
         let rt = agents.runtime()
         let agent = inst?.agent
         let listen = env["WITHALBUM_APP_PROBE_LISTEN"] ?? agent?.listen ?? ListenAddress.loopbackDefault
-        let lan = env["WITHALBUM_APP_PROBE_LAN"].map { $0 == "1" } ?? agent?.lan ?? false
+        let lan = env["WITHALBUM_APP_PROBE_LAN"].map { $0 == "1" } ?? agent?.tls ?? false
         let log = env["WITHALBUM_APP_PROBE_LOG"] ?? agent?.standardErrorPath ?? agents.location.logDirectory + "/error.log"
         var pin: String?
         if lan {
@@ -92,6 +92,14 @@ struct WithAlbumServerApp: App {
             LANView(model: model).frame(minWidth: 480)
         }
         .windowResizability(.contentSize)
+
+        Window("집 밖에서 접속 (Tailscale Funnel)", id: "funnel") {
+            FunnelView(model: model).frame(minWidth: 520, minHeight: 480)
+        }
+
+        Window("내부망 격리 점검", id: "isolation") {
+            IsolationView().frame(minWidth: 520, minHeight: 480)
+        }
 
         Window("기기 연결 정보", id: "pairing") {
             PairingView(model: model).frame(minWidth: 480, minHeight: 420)

@@ -20,6 +20,14 @@ final class AppModel: ObservableObject {
     @Published var message: String?
     @Published private(set) var busy = false
     @Published private(set) var menuAppAtLogin = false
+    // Tailscale Funnel (docs/FUNNEL.md). Filled only when the user asks.
+    @Published private(set) var tailscale: TailscaleCLI?
+    @Published private(set) var tailscaleStatus: TailscaleStatus?
+    @Published private(set) var funnelState: FunnelServeStatus.State?
+    @Published private(set) var funnelProblem: TailscaleProblem?
+    @Published private(set) var funnelLink: URL?
+    @Published private(set) var funnelChecked = false
+    @Published private(set) var funnelMessage: String?
 
     let dryRun: Bool
     let bundlePath: String
@@ -56,15 +64,20 @@ final class AppModel: ObservableObject {
     var owner: ExistingAgent.Owner? { agent?.owner(helperPath: helperPath) }
     var ownedByThisApp: Bool { owner == .thisApp }
     var lan: Bool { agent?.lan ?? false }
+    /// -tls: the LAN, or the funnel route (loopback HTTPS with the pin).
+    var tls: Bool { agent?.tls ?? false }
+    var funnelURL: String? { agent?.funnelURL }
     var listen: String { agent?.listen ?? ListenAddress.loopbackDefault }
     var loginStart: Bool { installed?.loginStart ?? false }
     var canRegisterHere: Bool { AppBundle.canRegister(bundlePath: bundlePath) && !helperVersion.isEmpty }
 
-    /// Base URL of the server: plain HTTP on loopback, HTTPS on the LAN.
-    var baseURL: URL? { URL(string: (lan ? "https://" : "http://") + listen) }
+    /// Base URL of the server: plain HTTP on loopback, HTTPS with -tls.
+    var baseURL: URL? { URL(string: (tls ? "https://" : "http://") + listen) }
 
     var exposureText: String {
-        lan ? "LAN 접속 허용 · https://\(listen) (TLS)" : "이 Mac에서만 접속 · \(listen)"
+        let base = lan ? "LAN 접속 허용 · https://\(listen) (TLS)" : "이 Mac에서만 접속 · \(listen)"
+        guard let f = funnelURL else { return base }
+        return base + " · 집 밖: \(f) (Tailscale Funnel)"
     }
 
     var config: AgentConfig? {
@@ -84,12 +97,12 @@ final class AppModel: ObservableObject {
         installed = inst
         storageRoot = readStorageRoot(inst?.agent)
         var pin: String?
-        if inst?.agent?.lan == true {
+        if inst?.agent?.tls == true {
             if pairing == nil { await loadPairing() }
             pin = pairing?.spkiSHA256
         }
         var probe = Probe.Result()
-        if let base = baseURL, inst?.agent?.lan != true || pin != nil {
+        if let base = baseURL, inst?.agent?.tls != true || pin != nil {
             probe = await Probe.run(base: base, pin: pin)
         }
         let newState = ServerState.combine(agentPlistExists: inst != nil, runtime: rt, health: probe.health,
@@ -247,7 +260,7 @@ final class AppModel: ObservableObject {
     }
 
     func openDashboard() {
-        if lan {
+        if tls {
             show("dashboard")
             return
         }
@@ -271,6 +284,139 @@ final class AppModel: ObservableObject {
         NSApp.activate(ignoringOtherApps: true)
         openWindow?(id)
     }
+
+    // MARK: - Tailscale Funnel
+
+    /// Runs one tailscale command off the main thread.
+    private func tailscaleRun(_ cli: TailscaleCLI, _ args: [String], timeout: TimeInterval) async -> CommandResult {
+        await Task.detached { Command.run(cli.path, args, timeout: timeout) }.value
+    }
+
+    private func detectTailscale() -> TailscaleCLI? {
+        let fm = FileManager.default
+        return TailscaleCLI.detect(isExecutable: { fm.isExecutableFile(atPath: $0) }, fileExists: { fm.fileExists(atPath: $0) },
+                                   resolve: { (try? fm.destinationOfSymbolicLink(atPath: $0)).map { URL(fileURLWithPath: $0).path } ?? $0 })
+    }
+
+    /// "상태 확인": finds the CLI and reads `status --json` and
+    /// `funnel status --json` (read-only). Only on the user's click.
+    func checkFunnel() async {
+        funnelChecked = true
+        funnelProblem = nil
+        funnelLink = nil
+        tailscale = detectTailscale()
+        guard let cli = tailscale else {
+            tailscaleStatus = nil
+            funnelState = nil
+            funnelProblem = .notInstalled
+            return
+        }
+        let st = await tailscaleRun(cli, Funnel.statusArguments, timeout: 8)
+        tailscaleStatus = TailscaleStatus.parse(Data(st.stdout.utf8))
+        guard let s = tailscaleStatus else {
+            funnelProblem = TailscaleProblem.classify(st.stderr + st.stdout)
+            funnelState = nil
+            return
+        }
+        guard s.running else {
+            funnelProblem = .loggedOut
+            funnelState = nil
+            return
+        }
+        if s.funnelAllowed == false { funnelProblem = .funnelNotAllowed }
+        else if s.httpsAllowed == false || s.magicDNS == false { funnelProblem = .httpsDisabled }
+        let fs = await tailscaleRun(cli, Funnel.funnelStatusArguments, timeout: 8)
+        if let parsed = FunnelServeStatus.parse(Data(fs.stdout.utf8)), let host = s.dnsName {
+            funnelState = parsed.state(host: host)
+        } else {
+            funnelState = nil
+            if fs.status != 0, funnelProblem == nil { funnelProblem = TailscaleProblem.classify(fs.stderr + fs.stdout) }
+        }
+    }
+
+    /// "Funnel 켜기": restarts the server with the funnel listener
+    /// (loopback, -tls), then asks tailscale to forward the public port to
+    /// it as raw TCP. Each step reports what failed.
+    func enableFunnel() {
+        guard ownedByThisApp, var c = config else { return }
+        guard case .running = state, storageRoot != nil else {
+            funnelMessage = "집 밖 접속은 설치를 마치고(저장소 등록 + 관리자) 서버가 정상 실행 중일 때만 켤 수 있어요."
+            return
+        }
+        busy = true
+        funnelMessage = nil
+        Task {
+            defer { busy = false }
+            await checkFunnel()
+            guard let cli = tailscale, let s = tailscaleStatus, s.running else { return }
+            guard let host = s.dnsName, let pub = Funnel.publicURL(dnsName: host) else {
+                funnelMessage = "이 Mac의 Tailscale 이름(MagicDNS)을 읽지 못했어요. 관리 콘솔에서 MagicDNS를 켜세요."
+                return
+            }
+            if funnelProblem == .funnelNotAllowed {
+                funnelLink = Funnel.policyPage
+                return
+            }
+            if c.funnelURL != pub {
+                c.setFunnel(pub)
+                let login = loginStart, helper = helperPath, agents = self.agents
+                let err: String? = await Task.detached {
+                    do { try agents.install(c, loginStart: login, helperPath: helper, takeOver: false); return nil }
+                    catch { return error.localizedDescription }
+                }.value
+                if let err {
+                    funnelMessage = "서버 설정 변경 실패: \(err)"
+                    return
+                }
+            }
+            let r = await tailscaleRun(cli, Funnel.enableArguments(), timeout: 30)
+            if r.status != 0 {
+                let out = r.stderr + "\n" + r.stdout
+                funnelProblem = TailscaleProblem.classify(out)
+                funnelLink = TailscaleProblem.adminLink(in: out)
+                funnelMessage = "서버는 Funnel용으로 다시 시작했지만 tailscale이 거부했어요. 아래 안내를 따른 뒤 다시 켜세요."
+            } else {
+                funnelMessage = "켰어요. 휴대폰 Wi-Fi를 끄고 LTE로 \(pub) 연결을 확인하세요."
+            }
+            pairing = nil
+            await refresh()
+            await checkFunnel()
+            if r.status == 0 { funnelProblem = nil }
+        }
+    }
+
+    /// "Funnel 끄기": stops the forwarder, then restarts the server without
+    /// the funnel listener (plain loopback HTTP again unless the LAN is on).
+    func disableFunnel() {
+        guard ownedByThisApp, var c = config else { return }
+        busy = true
+        funnelMessage = nil
+        Task {
+            defer { busy = false }
+            var note = "껐어요. 집 밖에서는 더 이상 연결되지 않아요."
+            if let cli = tailscale ?? detectTailscale() {
+                let r = await tailscaleRun(cli, Funnel.disableArguments(), timeout: 20)
+                if r.status != 0 {
+                    note = "서버 쪽은 껐지만 tailscale 끄기가 실패했어요(\(TailscaleProblem.classify(r.stderr + r.stdout).message)). 터미널에서 tailscale funnel status로 확인하세요."
+                }
+            }
+            if c.funnelURL != nil {
+                c.setFunnel(nil)
+                let login = loginStart, helper = helperPath, agents = self.agents
+                let err: String? = await Task.detached {
+                    do { try agents.install(c, loginStart: login, helperPath: helper, takeOver: false); return nil }
+                    catch { return error.localizedDescription }
+                }.value
+                if let err { note = "서버 설정 변경 실패: \(err)" }
+            }
+            funnelMessage = note
+            pairing = nil
+            await refresh()
+            await checkFunnel()
+        }
+    }
+
+    func openURL(_ u: URL) { NSWorkspace.shared.open(u) }
 
     func quit(stoppingServer: Bool) {
         if stoppingServer, ownedByThisApp { try? agents.stop() }

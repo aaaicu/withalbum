@@ -28,6 +28,7 @@
 - **아직 없음:** 서명·공증된 DMG 배포본(스크립트만 있음), 검증된 Google Drive OAuth 연결, 배포된 모바일 앱, 프로덕션 안정성 보장.
 - **부분 구현(테스트·LAN 바이너리 스모크 검증, 실기기 앱 미검증):** TLS·LAN 게이트(M15). 기본은 `127.0.0.1` 평문 HTTP. LAN 주소(사설 IP 또는 와일드카드)는 `-allow-lan` + `-tls` + 로그인 가능한 활성 SERVER_ADMIN이 모두 있을 때만 listen하고, 하나라도 없으면 기동을 거부합니다. 공인 IP·호스트 이름은 항상 거부. `-tls`는 자체 서명 인증서(`.system/tls/server.pem`, 0600, ECDSA P-256, TLS 1.3 전용)를 만들고, 앱은 공개키 지문(SPKI SHA-256)을 핀닝합니다(`withalbum-server tls`, 대시보드 관리자 화면에 페어링 페이로드). 보안 헤더·원본 다운로드 sandbox·IPv6 /64 속도 제한 키·루프백 Host 검사. 자세한 내용과 보안 점검 결과: [`SECURITY.md`](SECURITY.md).
 - **부분 구현(Go 통합 테스트 검증, 공인 서버·실기기·앱 미검증):** 집 밖 접속 E2EE 중계(M35, 기본 꺼짐). 서버는 `-tls -relay host:port`로 중계에 바깥쪽 연결만 맺고(수신 포트 없음), 앱은 중계 위에서 LAN과 같은 핀 TLS를 쓰므로 중계는 암호문만 전달합니다. 관리 화면·관리 API는 중계로 제공하지 않음. 중계 프로그램 `withalbum-relay`(`./relay`). 설계·위협 모델: [`docs/RELAY_DESIGN.md`](docs/RELAY_DESIGN.md), 운영: [`docs/RELAY_OPERATIONS.md`](docs/RELAY_OPERATIONS.md).
+- **부분 구현(가짜 Funnel 통합 테스트·로컬 바이너리 검증, 실제 Tailscale·실기기·앱 미검증):** 집 밖 접속 Tailscale Funnel 경로(M47, 기본 꺼짐). `-tls -funnel-url https://<machine>.<tailnet>.ts.net`이면 루프백 전용 리스너를 열고 Funnel TCP 전달로 앱의 핀 TLS가 서버까지 그대로 옵니다(포트포워딩·가족 VPN 불필요, 관리 화면은 403). 메뉴 막대 앱에서 켜기·끄기, 내부망 격리 점검. 안내: [`docs/FUNNEL.md`](docs/FUNNEL.md), [`docs/HOME_NETWORK_ISOLATION.md`](docs/HOME_NETWORK_ISOLATION.md).
 - **보안 경고:** **인터넷에 공개(포트포워딩·공개 리버스 프록시)하거나 대체할 수 없는 원본 사진의 단일 보관소로 사용하지 마세요.**
 
 <!-- 구현 범위 확인:

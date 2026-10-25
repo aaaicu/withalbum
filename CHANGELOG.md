@@ -4,6 +4,15 @@
 
 아래 [0.1.0-alpha.1] 초안 이후의 변경을 여기에 적습니다.
 
+### Added (access from outside the home through Tailscale Funnel, M47)
+- 서버 `-funnel-url https://<machine>.<tailnet>.ts.net` / `WITHALBUM_FUNNEL_URL`(기본 꺼짐, `-tls`·로그인 가능한 관리자 필요): 루프백 전용 두 번째 리스너(`-funnel-listen` / `WITHALBUM_FUNNEL_LISTEN`, 기본 `127.0.0.1:8788`, 루프백 IP만·바인드 후 재확인·`WITHALBUM_LISTEN`과 달라야 함). Tailscale Funnel **TCP 전달**(`tailscale funnel --bg --tcp=443 --proxy-protocol=2 tcp://127.0.0.1:8788`)로 앱의 핀 TLS가 서버까지 그대로 옴(TLS 종료 방식은 미지원). 중계와 같은 경로 분류(앱 경로만, 관리·대시보드·설치 403 `not_available_via_relay` + `"route":"funnel"`), 동시 연결 128.
+- `internal/proxyproto`: 선택 PROXY v1/v2 헤더(퍼즈 `FuzzRead`) → 로그인 속도 제한·감사의 클라이언트 IP, 없으면 경로 공용 키 `funnel-unknown`.
+- 페어링 페이로드 선택 `public_url`·`public_route=funnel`(`v=1` 유지), 루프백 전용 서버는 `url`도 공개 주소. `withalbum-server tls -funnel-url`, `GET /api/v1/me`의 `public`·`connection_route`, 관리자 TLS 화면의 `public`.
+- `POST /api/v1/me/devices/revoke-others`("내 다른 기기 로그아웃", 1 트랜잭션, 감사 `device.revoke_others`).
+- 감사 로그 세부에 `route`(relay/funnel). JSON 요청 본문은 30초 안에 받아야 함(모든 리스너).
+- 메뉴 막대 앱: "집 밖에서 접속 (Tailscale Funnel)…"(tailscale CLI·설치 방식 감지, 상태 확인·켜기·끄기는 누를 때만, 정책 꺼짐 시 관리 콘솔 링크, 공개 주소 포함 QR), "내부망 격리 점검…"(입력한 사설 주소만 TCP 1회·2초, 막힘/길 열림/열림, 저장·전송 없음). Funnel이 켜지면 에이전트가 `-tls`로 실행되고 관리 화면은 핀 고정 창으로 열림.
+- 문서: `docs/FUNNEL.md`(Tailscale 문서 조사 결과·설계·신뢰 모델·앱 계약·한국어 설치 안내), `docs/HOME_NETWORK_ISOLATION.md`(망 분리·게스트망 유선 주의·UPnP/원격 관리/IPv6 점검·pf와 되돌리기·격리 완료 판정 5단계), `SECURITY.md`, `docs/API_v2.yaml`.
+
 ### Added (end-to-end encrypted relay for access from outside the home, M35)
 - 새 바이너리 `withalbum-relay`(`./relay`, 표준 라이브러리만): 집 서버 터널(키 증명으로 인증)과 앱 연결(랑데부 ID)을 받아 바이트만 이어 줌. TLS 1.3 전용 바깥 TLS(`-cert`/`-key` PEM, 파일이 바뀌면 다시 읽음), 연결·IP·터널·스트림·속도·대역폭·유휴 제한, 내용·IP 없는 JSON 로그(`-log-ips`로만 IP), 사설 주소의 `GET /healthz`(개수만), SIGTERM 시 드레인. 운영: `docs/RELAY_OPERATIONS.md`.
 - `internal/relay`: 프로토콜(`WITHALBUM-RELAY/1 CONNECT|SERVE`, CHALLENGE/PROVE), 랑데부 ID = SPKI 핀에서 유도(base32 32자), 바깥 TLS exporter에 묶인 ECDSA P-256 키 증명, 9바이트 헤더 프레임 다중화(스트림당 256 KiB 신용 기반 흐름 제어, FIN/RST, PING), 재연결 지수 백오프+지터 클라이언트, 퍼즈 `FuzzReadFrame`·`FuzzHandshake`.

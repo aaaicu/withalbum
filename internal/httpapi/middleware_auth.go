@@ -115,7 +115,15 @@ func clientIP(r *http.Request) string {
 	return host
 }
 
-func client(r *http.Request) session.Client { return session.Client{IP: clientIP(r)} }
+// client is where a request comes from, for the audit log: the peer IP and,
+// for a remote route (relay, funnel), that route.
+func client(r *http.Request) session.Client {
+	c := session.Client{IP: clientIP(r)}
+	if rt := RouteFrom(r.Context()); rt.Remote() {
+		c.Route = string(rt)
+	}
+	return c
+}
 
 func safeMethod(m string) bool {
 	return m == http.MethodGet || m == http.MethodHead || m == http.MethodOptions

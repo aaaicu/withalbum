@@ -253,6 +253,18 @@ func (id Identity) CheckCSRF(token string) bool {
 // Client describes where a request comes from, for the audit log.
 type Client struct {
 	IP string
+	// Route is "relay" or "funnel" for a request from outside the home
+	// network, empty otherwise.
+	Route string
+}
+
+// details adds where the request came from to audit details d.
+func (c Client) details(d map[string]any) map[string]any {
+	d["ip"], d["via"] = c.IP, "http"
+	if c.Route != "" {
+		d["route"] = c.Route
+	}
+	return d
 }
 
 // LoginRequest is a login attempt.
@@ -380,7 +392,7 @@ func (s *Service) AuditPasswordChangeFailure(ctx context.Context, userID string,
 	}
 	defer tx.Rollback()
 	if err := audit.Record(ctx, tx, audit.Entry{ActorUserID: userID, Action: "account.password_change", TargetType: "user", TargetID: userID,
-		Result: audit.Denied, Details: map[string]any{"reason": string(FailWrongPassword), "ip": c.IP, "via": "http"}}); err != nil {
+		Result: audit.Denied, Details: c.details(map[string]any{"reason": string(FailWrongPassword)})}); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -393,8 +405,8 @@ func (s *Service) auditFailure(ctx context.Context, userID string, req LoginRequ
 	}
 	defer tx.Rollback()
 	if err := audit.Record(ctx, tx, audit.Entry{ActorUserID: userID, Action: "auth.login", TargetType: "user", TargetID: userID,
-		Result: audit.Denied, Details: map[string]any{"login": truncate(req.LoginName, auditLoginLen), "reason": string(reason),
-			"platform": req.Platform, "ip": req.Client.IP, "via": "http"}}); err != nil {
+		Result: audit.Denied, Details: req.Client.details(map[string]any{"login": truncate(req.LoginName, auditLoginLen), "reason": string(reason),
+			"platform": req.Platform})}); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -409,7 +421,7 @@ func (s *Service) AuditThrottled(ctx context.Context, login string, c Client) er
 	}
 	defer tx.Rollback()
 	if err := audit.Record(ctx, tx, audit.Entry{Action: "auth.login_throttled", TargetType: "login", Result: audit.Denied,
-		Details: map[string]any{"login": truncate(login, auditLoginLen), "ip": c.IP, "via": "http"}}); err != nil {
+		Details: c.details(map[string]any{"login": truncate(login, auditLoginLen)})}); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -486,7 +498,7 @@ func (s *Service) create(ctx context.Context, userID string, req LoginRequest) (
 		return Tokens{}, err
 	}
 	if err := audit.Record(ctx, tx, audit.Entry{ActorUserID: userID, Action: "auth.login", TargetType: "device", TargetID: t.DeviceID,
-		Result: audit.Allowed, Details: map[string]any{"platform": req.Platform, "ip": req.Client.IP, "via": "http"}}); err != nil {
+		Result: audit.Allowed, Details: req.Client.details(map[string]any{"platform": req.Platform})}); err != nil {
 		return Tokens{}, err
 	}
 	return t, tx.Commit()
@@ -685,7 +697,7 @@ func (s *Service) refreshUsed(ctx context.Context, tx *sql.Tx, h string, now tim
 			return Tokens{}, Identity{}, err
 		}
 		if err := audit.Record(ctx, tx, audit.Entry{ActorUserID: row.id.UserID, Action: "auth.refresh_grace", TargetType: "device",
-			TargetID: row.id.DeviceID, Result: audit.Allowed, Details: map[string]any{"session": sessionID, "ip": req.Client.IP, "via": "http"}}); err != nil {
+			TargetID: row.id.DeviceID, Result: audit.Allowed, Details: req.Client.details(map[string]any{"session": sessionID})}); err != nil {
 			return Tokens{}, Identity{}, err
 		}
 		// The current token (issued by the first exchange) is dropped
@@ -696,7 +708,7 @@ func (s *Service) refreshUsed(ctx context.Context, tx *sql.Tx, h string, now tim
 		return Tokens{}, Identity{}, err
 	}
 	if err := audit.Record(ctx, tx, audit.Entry{ActorUserID: row.id.UserID, Action: "auth.refresh_reuse", TargetType: "device", TargetID: row.id.DeviceID,
-		Result: audit.Denied, Details: map[string]any{"session": sessionID, "ip": req.Client.IP, "via": "http"}}); err != nil {
+		Result: audit.Denied, Details: req.Client.details(map[string]any{"session": sessionID})}); err != nil {
 		return Tokens{}, Identity{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -733,6 +745,47 @@ func (s *Service) RevokeDevice(ctx context.Context, userID, deviceID string, c C
 	return s.revokeDevice(ctx, userID, userID, deviceID, ReasonDeviceRevoked, "device.revoke", c)
 }
 
+// RevokeOtherDevices signs out every device of id's account except the
+// one of id's session ("log out my other devices", e.g. after losing a
+// phone), in one transaction with one audit entry. It returns how many
+// devices were revoked (0 is not an error).
+func (s *Service) RevokeOtherDevices(ctx context.Context, id Identity, c Client) (int, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, "SELECT device_id FROM devices WHERE user_id = ? AND device_id != ? AND revoked_at IS NULL ORDER BY device_id",
+		id.UserID, id.DeviceID)
+	if err != nil {
+		return 0, err
+	}
+	var devices []string
+	for rows.Next() {
+		var d string
+		if err := rows.Scan(&d); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		devices = append(devices, d)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	now := s.now()
+	for _, d := range devices {
+		if err := revokeDeviceTx(ctx, tx, d, ReasonDeviceRevoked, now); err != nil {
+			return 0, err
+		}
+	}
+	if err := audit.Record(ctx, tx, audit.Entry{ActorUserID: id.UserID, Action: "device.revoke_others", TargetType: "user", TargetID: id.UserID,
+		Result: audit.Allowed, Details: c.details(map[string]any{"kept_device": id.DeviceID, "revoked": len(devices)})}); err != nil {
+		return 0, err
+	}
+	return len(devices), tx.Commit()
+}
+
 // RevokeDeviceAsAdmin revokes a device of userID on behalf of the server
 // administrator actorID (the route checks the role). ErrDeviceNotFound as
 // for RevokeDevice.
@@ -758,7 +811,7 @@ func (s *Service) revokeDevice(ctx context.Context, actorID, userID, deviceID, r
 		return err
 	}
 	if err := audit.Record(ctx, tx, audit.Entry{ActorUserID: actorID, Action: action, TargetType: "device", TargetID: deviceID,
-		Result: audit.Allowed, Details: map[string]any{"user_id": userID, "ip": c.IP, "via": "http"}}); err != nil {
+		Result: audit.Allowed, Details: c.details(map[string]any{"user_id": userID})}); err != nil {
 		return err
 	}
 	return tx.Commit()
