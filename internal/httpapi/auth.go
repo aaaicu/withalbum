@@ -19,6 +19,9 @@ import (
 
 const maxAuthBody = 8 << 10
 
+// jsonBodyTimeout bounds the time to receive a JSON request body.
+const jsonBodyTimeout = 30 * time.Second
+
 func (s *Server) authRoutes(rt *router) {
 	rt.handle("POST /api/v1/auth/login", s.login)
 	rt.handle("POST /api/v1/auth/refresh", s.refresh)
@@ -27,6 +30,7 @@ func (s *Server) authRoutes(rt *router) {
 	rt.handle("POST /api/v1/me/password", s.changePassword)
 	rt.handle("GET /api/v1/me/devices", s.listDevices)
 	rt.handle("DELETE /api/v1/me/devices/{deviceID}", s.revokeDevice)
+	rt.handle("POST /api/v1/me/devices/revoke-others", s.revokeOtherDevices)
 	rt.handle("GET /api/v1/admin/users", s.adminListUsers)
 	rt.handle("POST /api/v1/admin/users", s.adminCreateUser)
 	rt.handle("GET /api/v1/admin/users/{userID}", s.adminGetUser)
@@ -38,12 +42,19 @@ func (s *Server) authRoutes(rt *router) {
 
 // decodeJSON reads a JSON object body. It requires Content-Type
 // application/json, which a cross-site HTML form cannot send without a CORS
-// preflight (the server answers none), and bounds the body size.
+// preflight (the server answers none), and bounds the body size and the
+// time to send it: a login body arrives from anyone who can reach the
+// server (also over the relay or the funnel), and must not hold a
+// connection open by trickling bytes.
 func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 	mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || mt != "application/json" {
 		errorReply(w, 415, "json_required")
 		return false
+	}
+	rc := http.NewResponseController(w)
+	if rc.SetReadDeadline(time.Now().Add(jsonBodyTimeout)) == nil {
+		defer rc.SetReadDeadline(time.Time{})
 	}
 	dec := json.NewDecoder(io.LimitReader(r.Body, maxAuthBody))
 	if err := dec.Decode(v); err != nil {
@@ -218,6 +229,12 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 		// its pinned connection (docs/RELAY_DESIGN.md).
 		body["relay"] = s.relayJSON(false)
 	}
+	if s.public != nil {
+		// The same for a public address (Tailscale Funnel, docs/FUNNEL.md).
+		body["public"] = s.publicJSON()
+	}
+	// How this request arrived: "direct", "relay" or "funnel".
+	body["connection_route"] = string(RouteFrom(r.Context()))
 	jsonReply(w, 200, body)
 }
 
@@ -314,6 +331,20 @@ func (s *Server) revokeDevice(w http.ResponseWriter, r *http.Request) {
 		clearCookies(w, r)
 	}
 	w.WriteHeader(204)
+}
+
+// revokeOtherDevices signs out every other device of the caller's account
+// (a lost phone): their refresh and access tokens stop working at once.
+// The caller's own session stays. Served through the relay and the funnel
+// too, so a family member can do it from a phone away from home.
+func (s *Server) revokeOtherDevices(w http.ResponseWriter, r *http.Request) {
+	id, _ := IdentityFrom(r.Context())
+	n, err := s.auth.Sessions.RevokeOtherDevices(r.Context(), id, client(r))
+	if err != nil {
+		internalError(w, "revoke other devices", err)
+		return
+	}
+	jsonReply(w, 200, map[string]any{"revoked": n})
 }
 
 // adminListDevices: another account's devices with a live session (names,

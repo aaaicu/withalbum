@@ -20,6 +20,6 @@
     <!-- Plain HTTP only to the loopback server; LAN is HTTPS with a pinned key. -->
     <key>NSAllowsLocalNetworking</key><true/>
   </dict>
-  <key>NSLocalNetworkUsageDescription</key><string>LAN 접속을 켠 경우 이 Mac의 사설 주소에서 실행 중인 WithAlbum 서버 상태를 확인해요.</string>
+  <key>NSLocalNetworkUsageDescription</key><string>LAN 접속을 켠 경우 이 Mac의 사설 주소에서 실행 중인 WithAlbum 서버 상태를 확인해요. ‘내부망 격리 점검’을 누르면 직접 적은 집 안 기기 주소로만 접속을 시도해 막혀 있는지 확인해요.</string>
 </dict>
 </plist>

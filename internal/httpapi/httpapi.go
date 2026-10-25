@@ -110,6 +110,7 @@ type Server struct {
 	members          meta.Memberships
 	tls              *TLSInfo
 	relay            *RelayInfo
+	public           *PublicRoute
 	startup          *StartupCheck
 	denials          *denialLog
 	uploads          uploadLocks

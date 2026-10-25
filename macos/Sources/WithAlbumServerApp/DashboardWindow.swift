@@ -3,7 +3,7 @@ import SwiftUI
 import WebKit
 import WithAlbumCore
 
-/// The built-in dashboard while the server serves only the LAN (TLS): the
+/// The built-in dashboard while the server serves HTTPS (LAN or funnel): the
 /// self-signed certificate is accepted only when its key matches the pin
 /// read from this Mac's storage, and the view never leaves that origin.
 /// On loopback the app opens the dashboard in the default browser instead.
@@ -11,9 +11,9 @@ struct DashboardWindow: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
-        if model.lan, let base = model.baseURL, let pin = model.pairing?.spkiSHA256 {
+        if model.tls, let base = model.baseURL, let pin = model.pairing?.spkiSHA256 {
             PinnedWebView(url: base, pin: pin)
-        } else if model.lan {
+        } else if model.tls {
             Text("서버의 공개키 지문을 읽는 중이에요…").padding(24)
                 .task { await model.loadPairing() }
         } else {

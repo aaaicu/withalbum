@@ -225,7 +225,7 @@ func newRelayFixture(t *testing.T) *relayFixture {
 		t.Fatal(err)
 	}
 	rt := relayTargetFor(id, f.relayAddr)
-	a.api.SetTLSInfo(tlsInfo(id, []string{"https://192.0.2.10:8787"}, rt))
+	a.api.SetTLSInfo(tlsInfo(id, []string{"https://192.0.2.10:8787"}, remoteRoutes{Relay: rt}))
 	handler := a.api.Handler()
 	f.direct = handler
 	// serveRelay, with a recorder under the server's TLS.

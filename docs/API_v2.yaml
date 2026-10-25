@@ -42,6 +42,21 @@ info:
     the relay second, and never fall back on a pin mismatch.
 
 
+    Public route through Tailscale Funnel (docs/FUNNEL.md). A server
+    started with -tls -funnel-url https://<machine>.<tailnet>.ts.net also
+    listens on a loopback-only port (-funnel-listen, default
+    127.0.0.1:8788) that "tailscale funnel --tcp=443 --proxy-protocol=2"
+    forwards to without terminating TLS: the app connects to the ts.net
+    host on the public port, sends that host as SNI (Funnel routes on it),
+    and runs the same pinned TLS 1.3 session as on the LAN. The pairing
+    payload then also carries public_url=<https origin>&public_route=funnel
+    (still v=1; a loopback-only server also puts the public URL in url),
+    and GET /api/v1/me returns "public". The funnel route serves the same
+    paths as the relay and answers the same 403
+    {"error":"not_available_via_relay","route":"funnel"} elsewhere.
+    Candidate order for apps: LAN url, then public_url, then the relay.
+
+
     Access. Only the dashboard page (GET /), GET /api/v1/health,
     /api/v1/auth/login and /api/v1/auth/refresh work without a session;
     every other path under /api/v1/, including unknown ones, answers 401
@@ -385,6 +400,24 @@ paths:
                     properties:
                       endpoint: {type: string, example: 'relay.example.org:443'}
                       rendezvous_id: {type: string, pattern: '^[a-z2-7]{32}$'}
+                  public:
+                    type: object
+                    description: >-
+                      Only when the server has a public route (-funnel-url).
+                      Lets an app paired without public_url learn it over
+                      its pinned connection. The app keeps pinning the same
+                      key on this route and sends the host of url as SNI.
+                    required: [url, route]
+                    properties:
+                      url: {type: string, example: 'https://home.example-tailnet.ts.net'}
+                      route: {type: string, enum: [funnel]}
+                  connection_route:
+                    type: string
+                    enum: [direct, relay, funnel]
+                    description: >-
+                      How this request reached the server: the main listener
+                      (loopback or LAN), the relay, or the funnel listener.
+                      Absent on older servers.
         '401': {description: unauthorized}
   /api/v1/me/password:
     post:
@@ -439,6 +472,27 @@ paths:
         '401': {description: unauthorized}
         '403': {description: csrf_failed}
         '404': {description: 'device_not_found (not own, or already revoked)'}
+  /api/v1/me/devices/revoke-others:
+    post:
+      tags: [Me]
+      summary: Sign out every other device of the own account (lost phone)
+      description: >-
+        Revokes every device of the caller's account except the one of this
+        session, in one transaction (audit "device.revoke_others"). Their
+        access and refresh tokens are refused from then on. Served through
+        the relay and the funnel too. No body.
+      responses:
+        '200':
+          description: Number of devices signed out (0 when there were none)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revoked]
+                properties:
+                  revoked: {type: integer, minimum: 0}
+        '401': {description: unauthorized}
+        '403': {description: csrf_failed}
   /api/v1/admin/users:
     post:
       tags: [Server Admin]
@@ -747,7 +801,7 @@ paths:
                       required: [url, payload]
                       properties:
                         url: {type: string, example: 'https://192.0.2.10:8787'}
-                        payload: {type: string, example: 'withalbum://pair?relay=relay.example.org%3A443&rid=...&spki_sha256=...&url=https%3A%2F%2F192.0.2.10%3A8787&v=1', description: 'relay and rid only when the server uses a relay'}
+                        payload: {type: string, example: 'withalbum://pair?relay=relay.example.org%3A443&rid=...&spki_sha256=...&url=https%3A%2F%2F192.0.2.10%3A8787&v=1', description: 'relay and rid only when the server uses a relay; public_url and public_route only with -funnel-url'}
                   relay:
                     type: object
                     description: Only with -relay. Not available through the relay itself (403 not_available_via_relay).
@@ -756,6 +810,13 @@ paths:
                       endpoint: {type: string}
                       rendezvous_id: {type: string, pattern: '^[a-z2-7]{32}$'}
                       connected: {type: boolean, description: whether the tunnel is up now}
+                  public:
+                    type: object
+                    description: Only with -funnel-url (the server cannot see whether Tailscale forwards it now).
+                    required: [url, route]
+                    properties:
+                      url: {type: string}
+                      route: {type: string, enum: [funnel]}
         '401': {description: unauthorized}
         '403': {description: forbidden (not a SERVER_ADMIN)}
   /api/v1/folders:

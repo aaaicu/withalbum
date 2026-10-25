@@ -395,6 +395,8 @@ func main() {
 	adoptDisk := flag.Bool("adopt-disk", false, "Record the disk now holding WITHALBUM_ROOT as the library disk (after a deliberate copy or clone to a new disk) and exit; the server must be stopped")
 	useTLS := flag.Bool("tls", false, "Serve HTTPS with the server's self-signed certificate (created in .system/tls on first use); clients pin its key fingerprint")
 	allowLAN := flag.Bool("allow-lan", false, "Allow a non-loopback WITHALBUM_LISTEN address (private LAN address or wildcard). Requires -tls and an active server administrator")
+	funnelFlag := flag.String("funnel-url", "", "Also serve apps through Tailscale Funnel at this public https://<machine>.<tailnet>.ts.net address (default: WITHALBUM_FUNNEL_URL; see docs/FUNNEL.md). Opens a second listener on loopback only; requires -tls and an active server administrator")
+	funnelListenFlag := flag.String("funnel-listen", "", "Loopback address of the listener the Funnel TCP forwarder connects to (default: WITHALBUM_FUNNEL_LISTEN, else 127.0.0.1:8788)")
 	relayFlag := flag.String("relay", "", "Also serve apps through the relay at host:port over an outbound connection (default: WITHALBUM_RELAY; see docs/RELAY_DESIGN.md). Requires -tls and an active server administrator")
 	flag.Parse()
 	if *showVersion {
@@ -439,6 +441,11 @@ func main() {
 	}
 	relayAddr := relayAddrSetting(*relayFlag)
 	if err := checkRelay(lc, relayAddr); err != nil {
+		log.Fatalf("SECURITY: %v", err)
+	}
+	funnelListen := funnelListenSetting(*funnelListenFlag)
+	public, err := checkFunnel(lc, funnelURLSetting(*funnelFlag), funnelListen)
+	if err != nil {
 		log.Fatalf("SECURITY: %v", err)
 	}
 	minFree, err := minFreeBytes(os.Getenv("WITHALBUM_MIN_FREE_BYTES"))
@@ -534,17 +541,24 @@ func main() {
 			case id.Renewed:
 				log.Printf("TLS: re-issued the certificate with the same key; the pin did not change.")
 			}
-			urls := serverURLs(lc.Addr, net.InterfaceAddrs)
-			var rt relayTarget
+			urls := pairingURLs(lc.Addr, public, net.InterfaceAddrs)
+			var rr remoteRoutes
 			if relayAddr != "" {
 				if relayc, err = a.setupRelay(ctx, relayAddr, id); err != nil {
 					a.Close()
 					log.Fatalf("SECURITY: %v", err)
 				}
-				rt = relayTargetFor(id, relayAddr)
+				rr.Relay = relayTargetFor(id, relayAddr)
 			}
-			writeFingerprints(log.Writer(), id, urls, rt)
-			a.api.SetTLSInfo(tlsInfo(id, urls, rt))
+			if public != "" {
+				if err := a.setupFunnel(ctx, public); err != nil {
+					a.Close()
+					log.Fatalf("SECURITY: %v", err)
+				}
+				rr.Public = public
+			}
+			writeFingerprints(log.Writer(), id, urls, rr)
+			a.api.SetTLSInfo(tlsInfo(id, urls, rr))
 			tlsConfig = tlsid.ServerConfig(id)
 		}
 		handler = a.api.Handler()
@@ -575,8 +589,22 @@ func main() {
 		closeApp()
 		log.Fatalf("SECURITY: %v", err)
 	}
+	var funnelLn net.Listener
+	if public != "" && !setupMode {
+		if funnelLn, err = listenFunnel(funnelListen); err != nil {
+			ln.Close()
+			closeApp()
+			log.Fatalf("SECURITY: funnel listener: %v", err)
+		}
+	}
 	if !setupMode {
 		normal(a)
+	}
+	var funnelServer *http.Server
+	if funnelLn != nil {
+		funnelServer = serveFunnel(funnelLn, handler, tlsConfig)
+		log.Printf("funnel: serving apps for %s on %s (loopback only; app routes only). Forward it without terminating TLS: %s", public, funnelLn.Addr(), funnelCommand(public, funnelLn.Addr().String()))
+		log.Printf("funnel: this route is reachable by anyone on the internet who knows the address; logins are rate-limited, administration is refused. Tailscale sees when and how much data flows, never its content.")
 	}
 	var relayServer *http.Server
 	if relayc != nil {
@@ -589,6 +617,11 @@ func main() {
 		if relayServer != nil {
 			if err := relayServer.Shutdown(shutCtx); err != nil {
 				log.Printf("shutdown (relay): %v", err)
+			}
+		}
+		if funnelServer != nil {
+			if err := funnelServer.Shutdown(shutCtx); err != nil {
+				log.Printf("shutdown (funnel): %v", err)
 			}
 		}
 		if err := server.Shutdown(shutCtx); err != nil {

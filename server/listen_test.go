@@ -156,7 +156,7 @@ func TestLANOverPinnedTLS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a.api.SetTLSInfo(tlsInfo(id, []string{"https://192.0.2.10:8787"}, relayTarget{}))
+	a.api.SetTLSInfo(tlsInfo(id, []string{"https://192.0.2.10:8787"}, remoteRoutes{}))
 	srv := httptest.NewUnstartedServer(nil)
 	srv.Config = newHTTPServer(a.api.Handler(), tlsid.ServerConfig(id))
 	srv.TLS = srv.Config.TLSConfig

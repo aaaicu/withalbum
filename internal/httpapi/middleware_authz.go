@@ -63,6 +63,7 @@ var routePolicies = []RoutePolicy{
 	{"POST /api/v1/me/password", AccessSession, ""},
 	{"GET /api/v1/me/devices", AccessSession, ""},
 	{"DELETE /api/v1/me/devices/{deviceID}", AccessSession, ""},
+	{"POST /api/v1/me/devices/revoke-others", AccessSession, ""},
 	{"GET /api/v1/admin/users", AccessServer, authz.ManageAccounts},
 	{"POST /api/v1/admin/users", AccessServer, authz.ManageAccounts},
 	{"GET /api/v1/admin/users/{userID}", AccessServer, authz.ManageAccounts},
