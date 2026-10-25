@@ -492,7 +492,7 @@ func contractSync(t *testing.T, env contractEnv) {
 		t.Fatalf("assets %v", assets)
 	}
 	a := assets[picID].(map[string]any)
-	wantKeys(t, "asset", a, "id", "sha256", "filename", "mime_type", "bytes", "preview_ready", "preview_status", "uploaded_at", "captured_at", "duration_ms", "location", "uploaded_by_name", "media_kind", "like_count", "liked_by_me", "comment_count")
+	wantKeys(t, "asset", a, "id", "sha256", "filename", "mime_type", "bytes", "preview_ready", "preview_status", "uploaded_at", "captured_at", "duration_ms", "location", "camera", "width", "height", "uploaded_by_name", "media_kind", "like_count", "liked_by_me", "comment_count")
 	if a["id"] != picID || a["sha256"] != shaHex(pic) || a["filename"] != "p.jpg" || a["mime_type"] != "image/jpeg" || a["bytes"] != float64(len(pic)) || a["preview_ready"] != true {
 		t.Fatalf("asset %v", a)
 	}

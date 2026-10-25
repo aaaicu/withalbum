@@ -91,7 +91,7 @@ func (e *aclEnv) snapshot(t *testing.T, login, folder string, limit int) (feed, 
 		}
 		for _, a := range m["assets"].([]any) {
 			a := a.(map[string]any)
-			wantKeys(t, "snapshot asset", a, "id", "sha256", "filename", "mime_type", "bytes", "preview_ready", "preview_status", "uploaded_at", "captured_at", "duration_ms", "location", "uploaded_by_name", "media_kind", "like_count", "liked_by_me", "comment_count")
+			wantKeys(t, "snapshot asset", a, "id", "sha256", "filename", "mime_type", "bytes", "preview_ready", "preview_status", "uploaded_at", "captured_at", "duration_ms", "location", "camera", "width", "height", "uploaded_by_name", "media_kind", "like_count", "liked_by_me", "comment_count")
 			local[a["id"].(string)] = a["sha256"].(string)
 		}
 		if m["has_more"] != true {

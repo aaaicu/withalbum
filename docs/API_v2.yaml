@@ -235,6 +235,15 @@ info:
     metadata. Servers that report it list "asset_location" in GET /me
     server_features.
 
+    Camera and pixel size. The same worker reads the camera (EXIF Make,
+    Model, LensModel, FocalLengthIn35mmFilm; QuickTime make/model) and the
+    pixel size (JPEG frame header, HEIF ispe/irot of the primary item, EXIF
+    PixelX/YDimension, a movie's track header and its rotation) of each
+    original; assets carry them as camera, width and height (null until
+    read, then an asset_updated event). Readers only; an UPLOADER's receipt
+    is unchanged. Servers that report it list "asset_camera" in GET /me
+    server_features.
+
 
     Live Photos. A Live Photo (an iPhone still and its short video) is
     one asset with media_kind "live_photo": its own original (sha256,
@@ -427,7 +436,7 @@ paths:
                   server_features:
                     type: array
                     items: {type: string}
-                    examples: [[live_photo_bundles, folder_create_idempotency, asset_duration, asset_location, reactions_comments]]
+                    examples: [[live_photo_bundles, folder_create_idempotency, asset_duration, asset_location, reactions_comments, asset_camera]]
                     description: >-
                       Optional abilities of this server. "live_photo_bundles":
                       POST .../bundles stores Live Photos (still and video as
@@ -440,6 +449,7 @@ paths:
                       "reactions_comments": likes, comments, mentions, GET
                       /me/activity, the social event kinds and
                       like_count/liked_by_me/comment_count on assets.
+                      "asset_camera": assets carry camera, width and height.
                       Absent on older servers; clients must ignore unknown
                       values.
                   relay:
@@ -2417,9 +2427,18 @@ components:
           exclusiveMinimum: 0
           maximum: 100000
           description: 'Horizontal accuracy recorded by the device, in metres; null when the original gives none'
+    Camera:
+      type: object
+      required: [make, model, lens, focal_35mm]
+      description: 'As the original records it; each field null when not recorded. Texts are printable UTF-8 of at most 64 bytes.'
+      properties:
+        make: {type: [string, 'null'], example: 'Apple'}
+        model: {type: [string, 'null'], example: 'iPhone 15 Pro'}
+        lens: {type: [string, 'null'], description: 'EXIF LensModel (photos only)'}
+        focal_35mm: {type: [integer, 'null'], minimum: 1, maximum: 10000, example: 24, description: 'focal length in 35 mm film terms, whole millimetres (EXIF FocalLengthIn35mmFilm)'}
     Asset:
       type: object
-      required: [id, sha256, filename, mime_type, bytes, preview_ready, preview_status, uploaded_at, captured_at, duration_ms, location, uploaded_by_name, media_kind, like_count, liked_by_me, comment_count]
+      required: [id, sha256, filename, mime_type, bytes, preview_ready, preview_status, uploaded_at, captured_at, duration_ms, location, camera, width, height, uploaded_by_name, media_kind, like_count, liked_by_me, comment_count]
       properties:
         id: {type: string, description: 'random; valid only under its folder'}
         sha256: {type: string, description: 'of the original, to verify a download'}
@@ -2472,6 +2491,32 @@ components:
             (MySettings.hide_my_location). For a live_photo the still's location,
             else its video's. Positions of 0, 0 and out of range values are
             treated as none. Servers before "asset_location" omit the key.
+        camera:
+          oneOf:
+            - $ref: '#/components/schemas/Camera'
+            - type: 'null'
+          description: >-
+            The device it was taken with, read by the server from the
+            original's metadata, or null when none is recorded or it has not
+            been read yet (an asset_updated event follows). For a live_photo
+            the still's. Servers before "asset_camera" omit the key.
+        width:
+          type: [integer, 'null']
+          minimum: 1
+          maximum: 131072
+          example: 4032
+          description: >-
+            Pixel width of the original as displayed (after its recorded
+            orientation: EXIF Orientation, HEIF irot, a track matrix turning
+            by 90 degrees). width and height are both null when unknown or
+            not read yet. For a live_photo the still's. Servers before
+            "asset_camera" omit the key.
+        height:
+          type: [integer, 'null']
+          minimum: 1
+          maximum: 131072
+          example: 3024
+          description: 'Pixel height, as width.'
         uploaded_by_name:
           type: [string, 'null']
           description: >-

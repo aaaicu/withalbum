@@ -10,6 +10,11 @@
 - 정리: 멤버 추방·UPLOADER로 변경 시 그 앨범의 좋아요 삭제(+이벤트), 사진 제거 시 좋아요·댓글 삭제, 보관은 유지. 쓰기 속도 제한(좋아요 60회 후 초당 1, 댓글 20회 후 3초당 1, 429), 감사 로그(본문 없음), 댓글 표시 1,000자·멘션 20명.
 - 마이그레이션 **0014**(`asset_likes`, `asset_comments`, `comment_mentions`, `idx_assets_uploader`, `folder_changes` 재구성), 0013 위치 열 위에 적용 — 기존 이벤트·위치 값 보존 테스트).
 
+### Added (camera and pixel size of each original, M48)
+- 자산 JSON `camera`(`{"make", "model", "lens", "focal_35mm"}`, 각 값은 기록이 없으면 null) 또는 null, `width`·`height`(보이는 방향 기준 픽셀 크기) 또는 null. 읽기 권한자만, UPLOADER 영수증은 그대로. 라이브 포토는 사진 쪽 값. `GET /me` `server_features`에 `asset_camera`.
+- `internal/capturetime.ExtractMediaInfo`: EXIF Make/Model/LensModel/FocalLengthIn35mmFilm·Orientation, JPEG SOF 프레임 크기(없으면 EXIF PixelX/YDimension), HEIF 주 항목(pitm·ipma)의 ispe·irot, TIFF ImageWidth/Length, QuickTime `com.apple.quicktime.make/model`·첫 영상 트랙 tkhd 크기와 90° 회전 행렬. 같은 읽기 제한, 출력 가능한 UTF-8 64바이트까지, 크기 1..131072, 퍼즈 `FuzzExtractMediaInfo`. 일련번호·소유자 이름 등 다른 태그는 읽지 않음.
+- 촬영 시각 워커가 함께 읽고 새로 알게 되면 `asset_updated`. 마이그레이션 **0015**가 기존 원본을 `media_state = pending`으로 두어 백필. 0013(위치)·0014(좋아요·댓글) 위에 적용.
+
 ### Added (access from outside the home through Tailscale Funnel, M47)
 - 서버 `-funnel-url https://<machine>.<tailnet>.ts.net` / `WITHALBUM_FUNNEL_URL`(기본 꺼짐, `-tls`·로그인 가능한 관리자 필요): 루프백 전용 두 번째 리스너(`-funnel-listen` / `WITHALBUM_FUNNEL_LISTEN`, 기본 `127.0.0.1:8788`, 루프백 IP만·바인드 후 재확인·`WITHALBUM_LISTEN`과 달라야 함). Tailscale Funnel **TCP 전달**(`tailscale funnel --bg --tcp=443 --proxy-protocol=2 tcp://127.0.0.1:8788`)로 앱의 핀 TLS가 서버까지 그대로 옴(TLS 종료 방식은 미지원). 중계와 같은 경로 분류(앱 경로만, 관리·대시보드·설치 403 `not_available_via_relay` + `"route":"funnel"`), 동시 연결 128.
 - `internal/proxyproto`: 선택 PROXY v1/v2 헤더(퍼즈 `FuzzRead`) → 로그인 속도 제한·감사의 클라이언트 IP, 없으면 경로 공용 키 `funnel-unknown`.

@@ -198,3 +198,52 @@ func TestLocations(t *testing.T) {
 		}
 	}
 }
+
+// TestMediaInfo: the camera and pixel size are stored once per original
+// and read back on its assets; invalid values are refused before anything
+// is written; an original with none records nothing a client sees (no
+// event).
+func TestMediaInfo(t *testing.T) {
+	ctx := t.Context()
+	s := open(t, newVolume(t))
+	defer s.Close()
+	owner := addUser(t, s, "owner", "USER")
+	f, err := s.CreateFolder(ctx, meta.NewFolder{Name: "cam", OwnerID: owner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit := func(n int) string {
+		res, err := s.CommitUpload(ctx, meta.CommitRequest{FolderID: f.ID, UserID: owner, DeviceID: "phone",
+			Asset: meta.Asset{SHA256: sha(n), Filename: "p.jpg", MimeType: "image/jpeg", Bytes: 10}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.Asset.ID
+	}
+	id, plain := commit(8), commit(9)
+	for _, bad := range []meta.MediaInfo{{Width: 10}, {Width: -1, Height: -1}, {Width: 1 << 18, Height: 1}, {Camera: &meta.Camera{Focal35mm: -3}}} {
+		if _, err := s.SetCaptureTimes(ctx, []meta.CaptureResult{{SHA256: sha(8), Media: bad}}); err == nil {
+			t.Fatalf("invalid media %+v accepted", bad)
+		}
+	}
+	cam := meta.Camera{Make: "Testmaker", Model: "TM-1", Focal35mm: 24}
+	n, err := s.SetCaptureTimes(ctx, []meta.CaptureResult{{SHA256: sha(8), Media: meta.MediaInfo{Camera: &cam, Width: 4032, Height: 3024}}, {SHA256: sha(9)}})
+	if err != nil || n != 1 {
+		t.Fatalf("SetCaptureTimes = %d, %v", n, err)
+	}
+	a, err := s.GetFolderAsset(ctx, f.ID, id)
+	if err != nil || a.Camera == nil || *a.Camera != cam || a.Width != 4032 || a.Height != 3024 {
+		t.Fatalf("asset %+v %d×%d %v", a.Camera, a.Width, a.Height, err)
+	}
+	b, err := s.GetFolderAsset(ctx, f.ID, plain)
+	if err != nil || b.Camera != nil || b.Width != 0 {
+		t.Fatalf("plain asset %+v %d %v", b.Camera, b.Width, err)
+	}
+	// Settled: a second result for the same bytes changes nothing.
+	if n, err := s.SetCaptureTimes(ctx, []meta.CaptureResult{{SHA256: sha(8), Media: meta.MediaInfo{Width: 1, Height: 1}}}); err != nil || n != 0 {
+		t.Fatalf("second SetCaptureTimes = %d, %v", n, err)
+	}
+	if got, _ := s.PendingCaptures(ctx, 10); len(got) != 0 {
+		t.Fatalf("pending %v", got)
+	}
+}

@@ -47,8 +47,8 @@ const bundleCompleteRoute = "POST /api/v1/folders/{folderID}/bundles/{bundleID}/
 // hide_location on folders and PATCH /folders/{id}, and the account's own
 // hide_my_location in GET /me "settings" and PATCH /me/settings) and
 // reactions_comments (likes, comments, mentions and /me/activity,
-// social.go).
-var ServerFeatures = []string{"live_photo_bundles", "folder_create_idempotency", "asset_duration", "asset_location", "reactions_comments"}
+// social.go) and asset_camera (camera, width and height on assets).
+var ServerFeatures = []string{"live_photo_bundles", "folder_create_idempotency", "asset_duration", "asset_location", "reactions_comments", "asset_camera"}
 
 func (s *Server) bundleRoutes(rt *router) {
 	rt.handleAlbum("POST /api/v1/folders/{folderID}/bundles", s.createBundle)

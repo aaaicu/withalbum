@@ -35,6 +35,21 @@ type Location struct {
 	AccuracyM float64
 }
 
+// Camera is the device an original was taken with (EXIF Make, Model,
+// LensModel, FocalLengthIn35mmFilm; QuickTime make/model). Empty fields
+// were not recorded.
+type Camera struct {
+	Make, Model, Lens string
+	Focal35mm         int
+}
+
+// MediaInfo is what the capture-time worker read about the camera and the
+// pixel size of an original (0×0: unknown).
+type MediaInfo struct {
+	Camera        *Camera
+	Width, Height int
+}
+
 // Asset is one original in a folder. ID is a random, opaque identifier;
 // SHA256 identifies the bytes (the blob) and is internal to the server. Two
 // folders holding the same bytes share the blob but not the asset (assets
@@ -68,6 +83,14 @@ type Asset struct {
 	// Personal data: the HTTP API shows it only to readers of the folder
 	// (and not to members when the folder hides it).
 	Location *Location `json:"-"`
+	// Camera is the device the original was taken with, as its metadata
+	// records it (capturetime.ExtractMediaInfo), nil when unknown or not
+	// read yet. For a Live Photo the still's.
+	Camera *Camera `json:"-"`
+	// Width and Height are the original's pixel size as displayed, 0 when
+	// unknown or not read yet.
+	Width  int `json:"-"`
+	Height int `json:"-"`
 	// LocationHiddenBy is the user_id of the uploader when that account
 	// chose to hide the location of its photos from others
 	// (users.hide_my_location); "" otherwise. Readers other than that
@@ -139,6 +162,9 @@ type CaptureResult struct {
 	// Location (capturetime.ExtractLocation), nil when the original
 	// records none.
 	Location *Location
+	// Media (capturetime.ExtractMediaInfo): camera and pixel size, the
+	// zero value when the original records neither.
+	Media MediaInfo
 }
 
 // Preview states of an asset (Asset.PreviewStatus).
