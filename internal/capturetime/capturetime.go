@@ -12,7 +12,9 @@
 // knows: meta, moov, iinf, ilst). Anything it cannot read with certainty gives "unknown"
 // (the zero Time); it never guesses, and in particular never substitutes
 // the upload time or a file system time. It only reads; the original is
-// never changed. Nothing else (GPS position, camera) is extracted.
+// never changed. Location (location.go) reads where it was taken (the EXIF
+// GPS directory, QuickTime ISO 6709 location) with the same limits.
+// Nothing else (camera, altitude) is extracted.
 package capturetime
 
 import (
@@ -317,9 +319,17 @@ func fromTIFF(b []byte) Time {
 	return Time{Kind: Floating, Wall: wall}
 }
 
-// ifd reads the directory at off. Only the entries are kept; later
-// directories (IFD1, thumbnails) are not followed.
+// ifd reads the capture-time entries of the directory at off.
 func (t tiff) ifd(off uint32) (map[uint16]ifdEntry, bool) {
+	return t.ifdTags(off, func(tag uint16) bool {
+		return tag == tagExifIFD || tag == tagDateTimeOriginal || tag == tagOffsetTimeOriginal
+	})
+}
+
+// ifdTags reads the directory at off, keeping the entries whose tag want
+// accepts. A wanted tag that appears twice makes the directory unusable.
+// Later directories (IFD1, thumbnails) are not followed.
+func (t tiff) ifdTags(off uint32, want func(tag uint16) bool) (map[uint16]ifdEntry, bool) {
 	o := int64(off)
 	if o < 8 || o+2 > int64(len(t.b)) {
 		return nil, false
@@ -332,7 +342,7 @@ func (t tiff) ifd(off uint32) (map[uint16]ifdEntry, bool) {
 	for i := range n {
 		p := t.b[o+2+i*12:]
 		tag := t.bo.Uint16(p)
-		if tag != tagExifIFD && tag != tagDateTimeOriginal && tag != tagOffsetTimeOriginal {
+		if !want(tag) {
 			continue
 		}
 		if _, dup := m[tag]; dup {

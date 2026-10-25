@@ -60,6 +60,7 @@ var routePolicies = []RoutePolicy{
 	{"/api/v1/", AccessSession, ""},
 	{"POST /api/v1/auth/logout", AccessSession, ""},
 	{"GET /api/v1/me", AccessSession, ""},
+	{"PATCH /api/v1/me/settings", AccessSession, ""},
 	{"POST /api/v1/me/password", AccessSession, ""},
 	{"GET /api/v1/me/devices", AccessSession, ""},
 	{"DELETE /api/v1/me/devices/{deviceID}", AccessSession, ""},
@@ -80,6 +81,7 @@ var routePolicies = []RoutePolicy{
 	{"GET /api/v1/folders", AccessSession, ""},
 	{"POST /api/v1/folders", AccessServer, authz.CreateAlbum},
 	{"GET /api/v1/folders/{folderID}", AccessAlbum, authz.GetAlbumMetadata},
+	{"PATCH /api/v1/folders/{folderID}", AccessAlbum, authz.UpdateAlbumSettings},
 	{"POST /api/v1/folders/{folderID}/assets", AccessAlbum, authz.UploadAsset},
 	// Resumable upload sessions (uploads.go): only the account, device and
 	// folder that created a session can see it; any other ID is 404.

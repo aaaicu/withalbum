@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 
+	"github.com/aaaicu/withalbum/internal/capturetime"
 	"github.com/aaaicu/withalbum/internal/meta"
 )
 
@@ -13,9 +14,10 @@ func (s *Store) PendingCaptures(ctx context.Context, limit int) ([]string, error
 	if limit <= 0 {
 		return nil, meta.ErrInvalidLimit
 	}
-	// Two partial indexes, one per state; UNION removes the duplicates.
+	// Partial indexes, one per state; UNION removes the duplicates.
 	rows, err := s.db.QueryContext(ctx, `SELECT sha256 FROM blobs WHERE capture_state = 'pending'
-		UNION SELECT sha256 FROM blobs WHERE duration_state = 'pending' ORDER BY sha256 LIMIT ?`, limit)
+		UNION SELECT sha256 FROM blobs WHERE duration_state = 'pending'
+		UNION SELECT sha256 FROM blobs WHERE location_state = 'pending' ORDER BY sha256 LIMIT ?`, limit)
 	if err != nil {
 		return nil, classify(err)
 	}
@@ -48,6 +50,9 @@ func (s *Store) setCaptureTimes(ctx context.Context, results []meta.CaptureResul
 		if r.DurationMS < 0 {
 			return 0, errors.New("sqlitestore: a negative duration")
 		}
+		if l := r.Location; l != nil && (!capturetime.ValidPosition(l.Lat, l.Lon) || l.AccuracyM < 0 || l.AccuracyM > capturetime.MaxAccuracyM) {
+			return 0, errors.New("sqlitestore: an invalid location")
+		}
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -78,17 +83,34 @@ func (s *Store) setCaptureTimes(ctx context.Context, results []meta.CaptureResul
 		if err != nil {
 			return 0, err
 		}
-		newTime, newDuration := captured > 0 && r.CapturedAt != "", timed > 0 && r.DurationMS > 0
-		if !newTime && !newDuration {
+		var lat, lon, acc any
+		if l := r.Location; l != nil {
+			lat, lon = l.Lat, l.Lon
+			if l.AccuracyM > 0 {
+				acc = l.AccuracyM
+			}
+		}
+		res, err = tx.ExecContext(ctx, `UPDATE blobs SET location_state = 'done', location_lat = ?, location_lon = ?, location_accuracy_m = ?
+			WHERE sha256 = ? AND location_state = 'pending'`, lat, lon, acc, r.SHA256)
+		if err != nil {
+			return 0, err
+		}
+		located, err := res.RowsAffected()
+		if err != nil {
+			return 0, err
+		}
+		newTime, newDuration, newLocation := captured > 0 && r.CapturedAt != "", timed > 0 && r.DurationMS > 0, located > 0 && r.Location != nil
+		if !newTime && !newDuration && !newLocation {
 			continue // settled already, or nothing a client sees changed
 		}
 		// Every folder link of an asset of these bytes. The event carries
 		// the uploader label of the link, like its asset_added event.
-		// A duration is also shown on the component it belongs to (the
-		// paired video of a Live Photo), so its assets change too.
+		// A duration or a location is also shown on the component it
+		// belongs to (the paired video of a Live Photo; its location is
+		// the asset's when the still has none), so its assets change too.
 		rows, err := tx.QueryContext(ctx, `SELECT fa.folder_id, fa.asset_id, fa.uploader_device_label FROM assets a JOIN folder_assets fa ON fa.asset_id = a.asset_id
 			WHERE fa.removed_at IS NULL AND (a.original_sha256 = ? OR (? AND a.asset_id IN (SELECT asset_id FROM asset_components WHERE sha256 = ?)))
-			ORDER BY fa.folder_id, fa.asset_id`, r.SHA256, newDuration, r.SHA256)
+			ORDER BY fa.folder_id, fa.asset_id`, r.SHA256, newDuration || newLocation, r.SHA256)
 		if err != nil {
 			return 0, err
 		}

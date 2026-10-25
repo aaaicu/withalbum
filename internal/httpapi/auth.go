@@ -27,6 +27,7 @@ func (s *Server) authRoutes(rt *router) {
 	rt.handle("POST /api/v1/auth/refresh", s.refresh)
 	rt.handle("POST /api/v1/auth/logout", s.logout)
 	rt.handle("GET /api/v1/me", s.me)
+	rt.handle("PATCH /api/v1/me/settings", s.updateMySettings)
 	rt.handle("POST /api/v1/me/password", s.changePassword)
 	rt.handle("GET /api/v1/me/devices", s.listDevices)
 	rt.handle("DELETE /api/v1/me/devices/{deviceID}", s.revokeDevice)
@@ -222,8 +223,12 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	id, _ := IdentityFrom(r.Context())
+	settings, ok := s.mySettings(w, r, id.UserID)
+	if !ok {
+		return
+	}
 	body := map[string]any{"user": identityUser(id), "device_id": id.DeviceID, "platform": id.Platform,
-		"server_features": ServerFeatures}
+		"server_features": ServerFeatures, "settings": settings}
 	if s.relay != nil {
 		// Lets an app paired before the relay was enabled learn it over
 		// its pinned connection (docs/RELAY_DESIGN.md).
@@ -236,6 +241,51 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	// How this request arrived: "direct", "relay" or "funnel".
 	body["connection_route"] = string(RouteFrom(r.Context()))
 	jsonReply(w, 200, body)
+}
+
+// mySettingsJSON is the caller's own preferences (GET /me "settings").
+type mySettingsJSON struct {
+	// HideMyLocation: other readers get "location": null for the photos
+	// this account uploaded, in every album; the account still sees them.
+	HideMyLocation bool `json:"hide_my_location"`
+}
+
+func (s *Server) mySettings(w http.ResponseWriter, r *http.Request, userID string) (mySettingsJSON, bool) {
+	hide, err := s.members.HideMyLocation(r.Context(), userID)
+	if err != nil {
+		metaReadFailed(w, err)
+		return mySettingsJSON{}, false
+	}
+	return mySettingsJSON{HideMyLocation: hide}, true
+}
+
+// updateMySettings: PATCH /me/settings {"hide_my_location": bool}, the
+// caller's own preferences. A change sends asset_updated for every asset
+// the account uploaded that has a location, in every album.
+func (s *Server) updateMySettings(w http.ResponseWriter, r *http.Request) {
+	id, _ := IdentityFrom(r.Context())
+	var req struct {
+		HideMyLocation *bool `json:"hide_my_location"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.HideMyLocation == nil {
+		errorReply(w, 400, "invalid_settings")
+		return
+	}
+	if !s.storageReady(w) {
+		return
+	}
+	if err := s.members.SetHideMyLocation(r.Context(), id.UserID, *req.HideMyLocation); err != nil {
+		writeFailed(w, "update settings", err, "metadata_write_failed")
+		return
+	}
+	settings, ok := s.mySettings(w, r, id.UserID)
+	if !ok {
+		return
+	}
+	jsonReply(w, 200, settings)
 }
 
 // changePassword verifies the current password (rate-limited like a login)

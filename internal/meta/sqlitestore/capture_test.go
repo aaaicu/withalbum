@@ -153,3 +153,48 @@ func TestUploaderNameAndMemberCount(t *testing.T) {
 		t.Fatalf("ListFoldersFor %+v, %v", list, err)
 	}
 }
+
+// TestLocations: a location is stored once per original, rounded values
+// read back on every asset of it; invalid ones are refused before
+// anything is written; the schema refuses half or out-of-range values.
+func TestLocations(t *testing.T) {
+	ctx := t.Context()
+	s := open(t, newVolume(t))
+	defer s.Close()
+	owner := addUser(t, s, "owner", "USER")
+	f, err := s.CreateFolder(ctx, meta.NewFolder{Name: "geo", OwnerID: owner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.CommitUpload(ctx, meta.CommitRequest{FolderID: f.ID, UserID: owner, DeviceID: "phone",
+		Asset: meta.Asset{SHA256: sha(7), Filename: "p.jpg", MimeType: "image/jpeg", Bytes: 10}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []meta.Location{{Lat: 91, Lon: 1}, {Lat: 1, Lon: -181}, {Lat: 0, Lon: 0}, {Lat: 1, Lon: 1, AccuracyM: -1}} {
+		if _, err := s.SetCaptureTimes(ctx, []meta.CaptureResult{{SHA256: sha(7), Location: &bad}}); err == nil {
+			t.Fatalf("invalid location %+v accepted", bad)
+		}
+	}
+	if got, _ := s.PendingCaptures(ctx, 10); len(got) != 1 {
+		t.Fatalf("pending after refusals: %v", got)
+	}
+	n, err := s.SetCaptureTimes(ctx, []meta.CaptureResult{{SHA256: sha(7), Location: &meta.Location{Lat: -12.3456789, Lon: 123.4567891, AccuracyM: 4.5}}})
+	if err != nil || n != 1 {
+		t.Fatalf("SetCaptureTimes = %d, %v", n, err)
+	}
+	a, err := s.GetFolderAsset(ctx, f.ID, res.Asset.ID)
+	if err != nil || a.Location == nil || *a.Location != (meta.Location{Lat: -12.3456789, Lon: 123.4567891, AccuracyM: 4.5}) {
+		t.Fatalf("asset %+v %v", a.Location, err)
+	}
+	for _, q := range []string{
+		"UPDATE blobs SET location_lon = NULL WHERE sha256 = ?",                                            // lon missing
+		"UPDATE blobs SET location_lat = 95, location_lon = 1 WHERE sha256 = ?",                            // out of range
+		"UPDATE blobs SET location_accuracy_m = 0 WHERE sha256 = ?",                                        // not positive
+		"UPDATE blobs SET location_state = 'pending', location_lat = 1, location_lon = 1 WHERE sha256 = ?", // pending with a value
+	} {
+		if _, err := s.DB().Exec(q, sha(7)); err == nil {
+			t.Fatalf("schema accepted %q", q)
+		}
+	}
+}
