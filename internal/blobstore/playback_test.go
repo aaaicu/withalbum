@@ -27,7 +27,7 @@ func TestCheckPlaybackMP4(t *testing.T) {
 		}
 		return CheckPlaybackMP4(p)
 	}
-	if w, h, err := check("ok.mp4", pbt.MP4(1080, 1920, 100, 1, true)); err != nil || w != 1080 || h != 1920 {
+	if w, h, err := check("ok.mp4", pbt.MP4(720, 1280, 100, 1, true)); err != nil || w != 720 || h != 1280 {
 		t.Fatalf("fast start: %d %d %v", w, h, err)
 	}
 	ftyp := pbt.Box("ftyp", []byte("isom"), make([]byte, 4))
@@ -40,7 +40,7 @@ func TestCheckPlaybackMP4(t *testing.T) {
 		t.Fatalf("64-bit box: %v", err)
 	}
 	for name, body := range map[string][]byte{
-		"moov-last":  pbt.MP4(1080, 1920, 100, 1, false),
+		"moov-last":  pbt.MP4(720, 1280, 100, 1, false),
 		"no-ftyp":    bytes.Join([][]byte{pbt.Moov(640, 360, "avc1"), mdat}, nil),
 		"hevc":       bytes.Join([][]byte{ftyp, pbt.Moov(640, 360, "hvc1"), mdat}, nil),
 		"too-large":  bytes.Join([][]byte{ftyp, pbt.Moov(3840, 2160, "avc1"), mdat}, nil),
@@ -81,7 +81,7 @@ func TestMakePlaybackContract(t *testing.T) {
 	fake := &pbt.Fake{}
 	s.SetTranscoder(fake)
 	f, err := s.MakePlayback(ctx, sha, time.Minute)
-	if err != nil || f.Width != 1080 || f.Height != 1920 || f.Bytes != int64(len(pbt.MP4(1080, 1920, 1000, 1, true))) {
+	if err != nil || f.Width != 720 || f.Height != 1280 || f.Bytes != int64(len(pbt.MP4(720, 1280, 1000, 1, true))) {
 		t.Fatalf("made %+v, %v", f, err)
 	}
 	fi, err := os.Lstat(s.PlaybackPath(sha))
@@ -103,10 +103,10 @@ func TestMakePlaybackContract(t *testing.T) {
 		want error
 	}{
 		"not smaller": {func(_ context.Context, _, out string) error {
-			return os.WriteFile(out, pbt.MP4(1080, 1920, 45_000, 1, true), 0600)
+			return os.WriteFile(out, pbt.MP4(720, 1280, 45_000, 1, true), 0600)
 		}, ErrPlaybackNotSmaller},
 		"moov last": {func(_ context.Context, _, out string) error {
-			return os.WriteFile(out, pbt.MP4(1080, 1920, 100, 1, false), 0600)
+			return os.WriteFile(out, pbt.MP4(720, 1280, 100, 1, false), 0600)
 		}, ErrPlaybackOutput},
 		"no file":   {func(context.Context, string, string) error { return nil }, ErrPlaybackOutput},
 		"tool fail": {func(context.Context, string, string) error { return errors.New("exit status 1") }, ErrTranscode},
@@ -121,7 +121,7 @@ func TestMakePlaybackContract(t *testing.T) {
 		}, ErrPlaybackOutput},
 		"tamper": {func(_ context.Context, src, out string) error {
 			_ = os.Chtimes(src, time.Now(), time.Now().Add(time.Hour))
-			return os.WriteFile(out, pbt.MP4(1080, 1920, 100, 1, true), 0600)
+			return os.WriteFile(out, pbt.MP4(720, 1280, 100, 1, true), 0600)
 		}, ErrOriginalChanged},
 	}
 	defer func(d time.Duration) { playbackWatchInterval = d }(playbackWatchInterval)
@@ -261,7 +261,7 @@ func realSource(t *testing.T, dir string) string {
 
 // TestRealTranscoders makes playback copies with the tools installed here
 // (avconvert on macOS; ffmpeg with its H.264 encoder): H.264 + AAC, fast
-// start, the portrait orientation kept within 1080x1920, smaller than the
+// start, the portrait orientation kept within 720x1280, smaller than the
 // original, the original unchanged.
 func TestRealTranscoders(t *testing.T) {
 	if testing.Short() {
@@ -301,8 +301,8 @@ func TestRealTranscoders(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Logf("%s: %d -> %d bytes (%.0f%%) in %s, %dx%d", name, len(body), f.Bytes, 100*float64(f.Bytes)/float64(len(body)), time.Since(start).Round(time.Millisecond), f.Width, f.Height)
-			if f.Width != 1080 || f.Height != 1920 {
-				t.Fatalf("size %dx%d, want 1080x1920 (portrait kept)", f.Width, f.Height)
+			if f.Width != 720 || f.Height != 1280 {
+				t.Fatalf("size %dx%d, want 720x1280 (portrait kept)", f.Width, f.Height)
 			}
 			copyBody, err := os.ReadFile(s.PlaybackPath(sha))
 			if err != nil {

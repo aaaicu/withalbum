@@ -108,9 +108,9 @@ func TestPlaybackLifecycle(t *testing.T) {
 	if got := e.events(t, e.family); got != events+1 {
 		t.Fatalf("events %d -> %d, want one asset_updated", events, got)
 	}
-	want := pbt.MP4(1080, 1920, 1000, 1, true)
+	want := pbt.MP4(720, 1280, 1000, 1, true)
 	p := e.playbackOf(t, "viewer", clip)
-	if p["status"] != "ready" || p["bytes"] != float64(len(want)) || p["width"] != float64(1080) || p["height"] != float64(1920) || p["mime_type"] != "video/mp4" {
+	if p["status"] != "ready" || p["bytes"] != float64(len(want)) || p["width"] != float64(720) || p["height"] != float64(1280) || p["mime_type"] != "video/mp4" {
 		t.Fatalf("after the worker %v", p)
 	}
 	page := syncPage(t, asUser(e.Raw, e.tokens["viewer"]), e.family, "")
@@ -266,7 +266,7 @@ func TestPlaybackUnsupported(t *testing.T) {
 		t.Fatalf("requeued %v", p)
 	}
 	fake.Set(func(_ context.Context, _, out string) error {
-		return os.WriteFile(out, pbt.MP4(1080, 1920, 39_000, 1, true), 0600)
+		return os.WriteFile(out, pbt.MP4(720, 1280, 39_000, 1, true), 0600)
 	})
 	processPlayback(t, e)
 	if st, reason, _ := e.playbackStatus(t, sha); st != "unsupported" || reason != "original_small" {

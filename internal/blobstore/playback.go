@@ -19,7 +19,7 @@ import (
 )
 
 // Playback copies of videos (M50): a smaller MP4 (H.264 video, AAC audio,
-// at most 1920×1080 in the video's own orientation, moov before mdat so
+// at most 1280×720 in the video's own orientation, moov before mdat so
 // that a player can start before the whole file is there) made by an
 // external tool after the commit, by the playback worker
 // (internal/httpapi playback.go). The original is never changed or moved;
@@ -35,7 +35,7 @@ import (
 // MP4 of the expected kind; it is fsynced and renamed into place.
 //
 //   - macOS: /usr/bin/avconvert (AVFoundation, the hardware encoder) with
-//     Preset1920x1080: H.264 + AAC, fast start, the rotation applied, HDR
+//     Preset1280x720: H.264 + AAC, fast start, the rotation applied, HDR
 //     converted to SDR (BT.709), location and other private metadata
 //     removed. Its bit rate is chosen by the preset (about 9-11 Mbit/s
 //     for 1080p); it cannot be set.
@@ -80,7 +80,7 @@ const (
 	// PlaybackRelDir holds the copies: <sha[:2]>/<sha>.mp4.
 	PlaybackRelDir = ".system/playback"
 	// PlaybackMaxSide bounds each side of a copy.
-	PlaybackMaxSide = 1920
+	PlaybackMaxSide = 1280
 	// playbackWorkPrefix names the scratch directories in .system/work.
 	playbackWorkPrefix = "playback-"
 	// maxPlaybackMoov bounds the movie header of a copy that is read to
@@ -437,7 +437,7 @@ func (t *toolTranscoder) Transcode(ctx context.Context, src, out, dir string) er
 }
 
 // AvconvertPreset is the avconvert preset of playback copies.
-const AvconvertPreset = "Preset1920x1080"
+const AvconvertPreset = "Preset1280x720"
 
 // NewAvconvert returns the avconvert transcoder (macOS) for the executable
 // at path.
@@ -463,9 +463,9 @@ const (
 	EncoderX264         = "libx264"
 )
 
-// ffmpegScale fits the frame (after autorotate) into 1920×1080 in its own
+// ffmpegScale fits the frame (after autorotate) into 1280×720 in its own
 // orientation, never enlarging it, with even sides.
-const ffmpegScale = "scale=w='min(iw,if(gte(iw,ih),1920,1080))':h='min(ih,if(gte(iw,ih),1080,1920))':force_original_aspect_ratio=decrease:force_divisible_by=2"
+const ffmpegScale = "scale=w='min(iw,if(gte(iw,ih),1280,720))':h='min(ih,if(gte(iw,ih),720,1280))':force_original_aspect_ratio=decrease:force_divisible_by=2"
 
 // ffmpegToneMap converts HDR (PQ, HLG) to SDR BT.709 (needs zscale).
 const ffmpegToneMap = "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv"
@@ -500,9 +500,9 @@ func NewFFmpegPlayback(path, encoder string, toneMap bool) Transcoder {
 			"-filter_threads", "2", "-vf", vf, "-fpsmax", "60", "-threads", "2")
 		switch encoder {
 		case EncoderVideoToolbox:
-			args = append(args, "-c:v", EncoderVideoToolbox, "-b:v", "4500k", "-maxrate", "6000k", "-bufsize", "9000k", "-profile:v", "high")
+			args = append(args, "-c:v", EncoderVideoToolbox, "-b:v", "2500k", "-maxrate", "3500k", "-bufsize", "5000k", "-profile:v", "high")
 		default:
-			args = append(args, "-c:v", EncoderX264, "-preset", "veryfast", "-crf", "23", "-maxrate", "4500k", "-bufsize", "9000k", "-profile:v", "high")
+			args = append(args, "-c:v", EncoderX264, "-preset", "veryfast", "-crf", "23", "-maxrate", "2500k", "-bufsize", "5000k", "-profile:v", "high")
 		}
 		if hdr {
 			args = append(args, "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709")
