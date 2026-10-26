@@ -403,6 +403,9 @@ func main() {
 		fmt.Println("withalbum-server " + version)
 		return
 	}
+	if err := refuseRoot(euid(), os.Getenv); err != nil {
+		log.Fatal(err)
+	}
 	target, err := resolveStorage()
 	if err != nil {
 		log.Fatal(err)
@@ -525,9 +528,9 @@ func main() {
 		if free, err := a.vol.FreeBytes(); err != nil {
 			log.Printf("free space: unknown (%v); uploads are not pre-checked, a full disk still answers 507", err)
 		} else if free <= uint64(minFree) {
-			log.Printf("WARNING: only %d bytes free, at or below the reserve WITHALBUM_MIN_FREE_BYTES=%d: uploads are refused with 507", free, minFree)
+			log.Printf("WARNING: only %d bytes free, at or below the reserve WITHALBUM_MIN_FREE_BYTES=%d: uploads are refused with 507", free, minFree) // #nosec G706 -- integers only
 		} else {
-			log.Printf("free space: %d bytes, reserve %d", free, minFree)
+			log.Printf("free space: %d bytes, reserve %d", free, minFree) // #nosec G706 -- integers only
 		}
 		if lc.TLS {
 			id, err := tlsid.LoadOrCreate(a.vol.Root(), certHosts(lc.Addr), time.Now())

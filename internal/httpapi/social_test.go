@@ -237,7 +237,6 @@ func TestLikeConcurrency(t *testing.T) {
 		t.Fatalf("like_count %v, rows %d", l["like_count"], rows)
 	}
 	// Twenty identical likes at once: one row, one event.
-	before = e.events(t, e.family)
 	wantJSON(t, "reset", e.asJSON(t, "viewer", "DELETE", a+"/likes/me", ""), 200)
 	before = e.events(t, e.family)
 	for range 20 {

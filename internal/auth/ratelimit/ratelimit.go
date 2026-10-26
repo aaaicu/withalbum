@@ -6,7 +6,12 @@
 //     which also bounds how often one client makes the server hash;
 //   - per account and IP: consecutive failures within a window;
 //   - per account from any IP: a higher failure count within the window, so
-//     guessing one account from many addresses is slowed down as well.
+//     guessing one account from many addresses is slowed down as well. It
+//     is counted per Scope: failures that arrive from outside the home
+//     (relay, Tailscale Funnel: ScopeRemote) never block the same account
+//     on this Mac or the home network (ScopeLocal), so an internet attacker
+//     who knows a login name cannot lock its owner out of logging in (or
+//     pairing a new phone) at home.
 //
 // The account key is the login name as typed (case-folded), whether or not
 // such an account exists, so a throttled answer reveals nothing about which
@@ -105,6 +110,18 @@ func accountKey(login string) string {
 
 func pairKey(ip, login string) string { return ip + "\x00" + accountKey(login) }
 
+// Scope is where a login attempt comes from, for the account-wide limit.
+type Scope string
+
+const (
+	// ScopeLocal: this Mac or the home network (the main listener).
+	ScopeLocal Scope = ""
+	// ScopeRemote: from outside the home (relay, Tailscale Funnel).
+	ScopeRemote Scope = "remote"
+)
+
+func scopedAccountKey(sc Scope, login string) string { return string(sc) + "\x00" + accountKey(login) }
+
 // blockedFor returns how long f still blocks at limit, or 0.
 func (l *Limiter) blockedFor(f *failures, limit int, now time.Time) time.Duration {
 	if f == nil || f.count < limit {
@@ -116,14 +133,20 @@ func (l *Limiter) blockedFor(f *failures, limit int, now time.Time) time.Duratio
 	return 0
 }
 
-// Allow records an attempt for login from ip and reports whether it may
-// proceed. When it may not, retryAfter is how long to wait (at least 1 s).
+// Allow is AllowIn(ScopeLocal, ip, login).
 func (l *Limiter) Allow(ip, login string) (ok bool, retryAfter time.Duration) {
+	return l.AllowIn(ScopeLocal, ip, login)
+}
+
+// AllowIn records an attempt for login from ip in scope sc and reports
+// whether it may proceed. When it may not, retryAfter is how long to wait
+// (at least 1 s).
+func (l *Limiter) AllowIn(sc Scope, ip, login string) (ok bool, retryAfter time.Duration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.cfg.Now()
 	wait := max(l.blockedFor(l.pairs[pairKey(ip, login)], l.cfg.PairFailures, now),
-		l.blockedFor(l.account[accountKey(login)], l.cfg.AccountFailures, now))
+		l.blockedFor(l.account[scopedAccountKey(sc, login)], l.cfg.AccountFailures, now))
 	if wait > 0 {
 		return false, max(wait, time.Second)
 	}
@@ -168,14 +191,20 @@ func (l *Limiter) addFailure(m map[string]*failures, key string, limit int, now 
 	return f.count == limit
 }
 
-// Failure records a failed attempt. It reports whether this failure started
-// a block (for an audit entry written once per block, not per attempt).
+// Failure is FailureIn(ScopeLocal, ip, login).
 func (l *Limiter) Failure(ip, login string) (nowBlocked bool) {
+	return l.FailureIn(ScopeLocal, ip, login)
+}
+
+// FailureIn records a failed attempt in scope sc. It reports whether this
+// failure started a block (for an audit entry written once per block, not
+// per attempt).
+func (l *Limiter) FailureIn(sc Scope, ip, login string) (nowBlocked bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.cfg.Now()
 	a := l.addFailure(l.pairs, pairKey(ip, login), l.cfg.PairFailures, now)
-	b := l.addFailure(l.account, accountKey(login), l.cfg.AccountFailures, now)
+	b := l.addFailure(l.account, scopedAccountKey(sc, login), l.cfg.AccountFailures, now)
 	return a || b
 }
 

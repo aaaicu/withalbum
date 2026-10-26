@@ -2,7 +2,10 @@ package httpapi
 
 import (
 	"context"
+	"io"
 	"net/http"
+	"path"
+	"strings"
 )
 
 // Route is how a request reached the server. The listener that accepted
@@ -56,4 +59,37 @@ func (s *Server) SetPublicRoute(p *PublicRoute) { s.public = p }
 // publicJSON is the "public" object of GET /me and the admin TLS view.
 func (s *Server) publicJSON() map[string]any {
 	return map[string]any{"url": s.public.URL, "route": string(s.public.Route)}
+}
+
+// RemoteAllowed lists the paths served on a remote route (relay, funnel):
+// what an app uses (login, its own account and devices, albums,
+// invitations, health). Every other path, in particular the dashboard page
+// and /api/v1/admin/, is not. A path that is not in canonical form is
+// refused rather than interpreted.
+func RemoteAllowed(p string) bool {
+	if p == "" || path.Clean(p) != p {
+		return false
+	}
+	under := func(prefix string) bool { return p == prefix || strings.HasPrefix(p, prefix+"/") }
+	return p == "/api/v1/health" || under("/api/v1/auth") || under("/api/v1/me") || under("/api/v1/folders") || under("/api/v1/invitations")
+}
+
+// RemoteOnly wraps the API handler of a listener for connections from
+// outside the home network (relay, funnel): it marks the requests with
+// route and serves only the app routes of RemoteAllowed. The error code is
+// not_available_via_relay for both routes, so apps handle one code.
+func RemoteOnly(route Route, next http.Handler) http.Handler {
+	return WithRoute(route, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !RemoteAllowed(r.URL.Path) {
+			h := w.Header()
+			h.Set("Content-Type", "application/json; charset=utf-8")
+			h.Set("X-Content-Type-Options", "nosniff")
+			h.Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+			h.Set("Cache-Control", "no-store")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = io.WriteString(w, `{"error":"not_available_via_relay","route":"`+string(route)+`"}`+"\n")
+			return
+		}
+		next.ServeHTTP(w, r)
+	}))
 }

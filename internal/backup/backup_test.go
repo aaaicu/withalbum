@@ -13,6 +13,7 @@ import (
 	"image"
 	"image/jpeg"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -457,6 +458,10 @@ func TestRestoreRefusesNonEmptyAndKeepsReplaced(t *testing.T) {
 	before := treeOf(t, filepath.Join(l.root, ".system"))
 	if _, err := Restore(t.Context(), r.Path, l.root, RestoreOptions{}); !errors.Is(err, ErrTargetNotEmpty) {
 		t.Fatalf("non-empty target: %v", err)
+	}
+	// The refused restore changed nothing.
+	if after := treeOf(t, filepath.Join(l.root, ".system")); !maps.Equal(after, before) {
+		t.Fatalf("refused restore changed the library:\nbefore %v\nafter  %v", before, after)
 	}
 	// Change the library after the backup, then restore over it.
 	l.store, _ = sqlitestore.Open(t.Context(), l.vol)

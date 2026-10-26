@@ -81,6 +81,7 @@ func identityUser(id session.Identity) userJSON {
 func ts(t time.Time) string { return t.UTC().Format(time.RFC3339) }
 
 func setCookie(w http.ResponseWriter, r *http.Request, name, value, path string, maxAge time.Duration, httpOnly bool) {
+	// #nosec G124 -- Secure on every TLS listener; plain HTTP exists on loopback only
 	c := &http.Cookie{Name: name, Value: value, Path: path, HttpOnly: httpOnly, Secure: r.TLS != nil,
 		SameSite: http.SameSiteStrictMode, MaxAge: int(maxAge / time.Second)}
 	if maxAge < 0 {
@@ -147,8 +148,8 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		errorReply(w, 400, "invalid_device")
 		return
 	}
-	c := client(r)
-	if ok, wait := s.auth.Limiter.Allow(rateKey(c.IP), req.LoginName); !ok {
+	c, sc := client(r), rateScope(r)
+	if ok, wait := s.auth.Limiter.AllowIn(sc, rateKey(c.IP), req.LoginName); !ok {
 		rateLimited(w, wait)
 		return
 	}
@@ -159,7 +160,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		s.auth.Limiter.Success(rateKey(c.IP), req.LoginName)
 		s.tokenReply(w, r, t, id)
 	case errors.Is(err, session.ErrInvalidCredentials):
-		if s.auth.Limiter.Failure(rateKey(c.IP), req.LoginName) {
+		if s.auth.Limiter.FailureIn(sc, rateKey(c.IP), req.LoginName) {
 			if err := s.auth.Sessions.AuditThrottled(r.Context(), req.LoginName, c); err != nil {
 				internalError(w, "audit login throttle", err)
 				return
@@ -303,14 +304,14 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
 		jsonReply(w, 400, map[string]string{"error": "invalid_password", "message": err.Error()})
 		return
 	}
-	c := client(r)
-	if ok, wait := s.auth.Limiter.Allow(rateKey(c.IP), id.LoginName); !ok {
+	c, sc := client(r), rateScope(r)
+	if ok, wait := s.auth.Limiter.AllowIn(sc, rateKey(c.IP), id.LoginName); !ok {
 		rateLimited(w, wait)
 		return
 	}
 	err := s.auth.Sessions.VerifyPassword(r.Context(), id.UserID, req.CurrentPassword)
 	if errors.Is(err, session.ErrInvalidCredentials) {
-		s.auth.Limiter.Failure(rateKey(c.IP), id.LoginName)
+		s.auth.Limiter.FailureIn(sc, rateKey(c.IP), id.LoginName)
 		if err := s.auth.Sessions.AuditPasswordChangeFailure(r.Context(), id.UserID, c); err != nil {
 			internalError(w, "audit password change", err)
 			return

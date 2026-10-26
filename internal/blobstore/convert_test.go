@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -363,3 +364,26 @@ func TestPreviewsCarryNoLocation(t *testing.T) {
 	}
 	noMetadata(t, s.PreviewPath(sha))
 }
+
+// TestSipsRefusesHugeCanvas: a still image that declares more pixels than
+// maxConvertPixels (a decompression bomb) is never handed to sips for
+// conversion; a normal one is.
+func TestSipsRefusesHugeCanvas(t *testing.T) {
+	dir := t.TempDir()
+	for _, c := range []struct {
+		w, h int
+		ok   bool
+	}{{30000, 30000, false}, {12000, 10001, false}, {8064, 6048, true}} {
+		tool := filepath.Join(dir, "fake-sips")
+		script := "#!/bin/sh\necho \"/x\"\necho \"  pixelWidth: " + itoa(c.w) + "\"\necho \"  pixelHeight: " + itoa(c.h) + "\"\n"
+		if err := os.WriteFile(tool, []byte(script), 0700); err != nil {
+			t.Fatal(err)
+		}
+		attempts, err := NewSips(tool).attempts(context.Background(), filepath.Join(dir, "src"), filepath.Join(dir, "out.jpg"), dir)
+		if c.ok != (err == nil) || c.ok && len(attempts) != 1 || !c.ok && len(attempts) != 0 {
+			t.Errorf("%dx%d: attempts %v, err %v", c.w, c.h, attempts, err)
+		}
+	}
+}
+
+func itoa(n int) string { return strconv.Itoa(n) }

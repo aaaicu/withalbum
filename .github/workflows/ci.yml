@@ -3,6 +3,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Weekly, so that a newly published vulnerability in Go or a dependency
+  # shows up without a code change (security-checks).
+  schedule:
+    - cron: '17 3 * * 1'
 permissions:
   contents: read
 jobs:
@@ -21,6 +25,46 @@ jobs:
       - run: go test -race -count=1 ./...
       - name: Third-party licenses are up to date
         run: bash scripts/third-party-licenses.sh --check
+  security-checks:
+    # docs/SECURITY_REVIEW_2026-10.md explains the gosec exclusions: G104
+    # (unchecked Close/Remove on cleanup paths), G115 (integer conversions,
+    # all bounded where they matter) and G304 (file paths built from the
+    # storage root and validated SHA-256 names) were triaged as a class;
+    # every other finding is fixed or carries a justified #nosec comment.
+    name: govulncheck, staticcheck, gosec
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          check-latest: true
+          cache: true
+      - name: Install pinned tools
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+          go install honnef.co/go/tools/cmd/staticcheck@v0.8.2
+          go install github.com/securego/gosec/v2/cmd/gosec@v2.30.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: govulncheck (linux)
+        run: govulncheck ./...
+      - name: govulncheck (darwin, the Mac mini build)
+        run: GOOS=darwin govulncheck ./...
+      - run: staticcheck ./...
+      - name: gosec
+        run: gosec -quiet -exclude=G104,G115,G304 -exclude-dir=tools -exclude-dir=third_party ./...
+      - name: Fuzz the request and media parsers briefly
+        run: |
+          set -e
+          fuzz() { go test "$1" -run '^$' -fuzz "^$2\$" -fuzztime 15s; }
+          fuzz ./internal/httpapi FuzzParseCursor
+          fuzz ./internal/httpapi FuzzParseComment
+          fuzz ./internal/httpapi FuzzStoredFilename
+          fuzz ./internal/httpapi FuzzDecodeJSON
+          fuzz ./internal/proxyproto FuzzRead
+          fuzz ./internal/relay FuzzReadFrame
+          fuzz ./internal/tlsid FuzzPairingPayload
+          fuzz ./internal/capturetime FuzzExtract
   cross-build:
     name: Cross-build ${{ matrix.goos }}/${{ matrix.goarch }}${{ matrix.goarm }}
     runs-on: ubuntu-latest

@@ -487,7 +487,7 @@ func removeBackupTemps(p paths) error {
 }
 
 func syncFile(path string) error {
-	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	f, err := os.OpenFile(path, os.O_RDWR, 0) // #nosec G703 -- the operator's own storage root (CLI argument) and validated SHA-256 names
 	if err != nil {
 		return err
 	}
@@ -501,7 +501,7 @@ func syncFile(path string) error {
 // syncDir fsyncs a directory so that renames in it are durable. File systems
 // that do not support fsync on directories are tolerated.
 func syncDir(dir string) error {
-	d, err := os.Open(dir)
+	d, err := os.Open(dir) // #nosec G703 -- the operator's own storage root (CLI argument) and validated SHA-256 names
 	if err != nil {
 		return err
 	}

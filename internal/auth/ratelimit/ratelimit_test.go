@@ -101,3 +101,35 @@ func TestBoundedTables(t *testing.T) {
 		t.Fatalf("%d keys", len(l.ips))
 	}
 }
+
+// TestRemoteFailuresDoNotLockLocal: an attacker on the internet (relay or
+// funnel) who exhausts an account's failure budget from many addresses
+// blocks further remote attempts on it, but not a login at home.
+func TestRemoteFailuresDoNotLockLocal(t *testing.T) {
+	l, _ := newTest(Config{IPBurst: 1000, PairFailures: 3, AccountFailures: 5, Window: time.Minute})
+	for i := range 5 {
+		ip := fmt.Sprintf("203.0.113.%d", i)
+		if ok, _ := l.AllowIn(ScopeRemote, ip, "mom"); !ok {
+			t.Fatalf("remote attempt %d refused", i)
+		}
+		l.FailureIn(ScopeRemote, ip, "mom")
+	}
+	if ok, _ := l.AllowIn(ScopeRemote, "198.51.100.7", "mom"); ok {
+		t.Fatal("remote account limit not applied")
+	}
+	if ok, _ := l.Allow("192.168.1.20", "mom"); !ok {
+		t.Fatal("remote failures blocked a login on the home network")
+	}
+	// And the other way round: failures at home count only at home.
+	for i := range 5 {
+		ip := fmt.Sprintf("192.168.1.%d", 100+i)
+		l.Allow(ip, "dad")
+		l.Failure(ip, "dad")
+	}
+	if ok, _ := l.Allow("192.168.1.50", "dad"); ok {
+		t.Fatal("local account limit not applied")
+	}
+	if ok, _ := l.AllowIn(ScopeRemote, "203.0.113.50", "dad"); !ok {
+		t.Fatal("local failures blocked a remote login")
+	}
+}

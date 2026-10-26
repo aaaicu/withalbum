@@ -77,7 +77,7 @@ func verifyFiles(ctx context.Context, root string, st *state, progress io.Writer
 		fc.files++
 		if a.PreviewReady {
 			prel := blobstore.PreviewRelPath(sha)
-			info, err := os.Lstat(filepath.Join(root, filepath.FromSlash(prel)))
+			info, err := os.Lstat(filepath.Join(root, filepath.FromSlash(prel))) // #nosec G703 -- the operator's own storage root (CLI argument) and validated SHA-256 names
 			switch {
 			case errors.Is(err, fs.ErrNotExist):
 				bad("asset %s: preview_ready but preview %s is missing", sha, prel)
@@ -113,14 +113,14 @@ func verifyFiles(ctx context.Context, root string, st *state, progress io.Writer
 // hashRegularFile returns the size and SHA-256 hex of a regular file. Symlinks
 // and other non-regular files are refused.
 func hashRegularFile(path string) (int64, string, error) {
-	info, err := os.Lstat(path)
+	info, err := os.Lstat(path) // #nosec G703 -- the operator's own storage root (CLI argument) and validated SHA-256 names
 	if err != nil {
 		return 0, "", err
 	}
 	if !info.Mode().IsRegular() {
 		return 0, "", errors.New("not a regular file")
 	}
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G703 -- the operator's own storage root (CLI argument) and validated SHA-256 names
 	if err != nil {
 		return 0, "", err
 	}

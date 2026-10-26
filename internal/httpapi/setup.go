@@ -371,6 +371,7 @@ func (s *Setup) unlock(w http.ResponseWriter, r *http.Request) {
 	}
 	c.used = true
 	s.session = &setupSession{sum: sha256.Sum256([]byte(token)), csrf: csrf, expires: now.Add(setupSessionTTL)}
+	// #nosec G124 -- the setup screen is served on the plain loopback listener only (no TLS there)
 	http.SetCookie(w, &http.Cookie{Name: setupCookie, Value: token, Path: "/setup", HttpOnly: true, SameSite: http.SameSiteStrictMode,
 		Secure: r.TLS != nil, MaxAge: int(setupSessionTTL / time.Second)})
 	log.Printf("setup: the setup code was accepted; continue in the browser")
@@ -660,6 +661,7 @@ func (s *Setup) useStorage(w http.ResponseWriter, r *http.Request) {
 func (s *Setup) finishLocked(w http.ResponseWriter) {
 	s.step = "done"
 	s.session = nil
+	// #nosec G124 -- clears the loopback-only setup cookie
 	http.SetCookie(w, &http.Cookie{Name: setupCookie, Value: "", Path: "/setup", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: -1})
 	s.cfg.Activate()
 }

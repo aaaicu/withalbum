@@ -223,10 +223,6 @@ func be32(v uint32) []byte { return binary.BigEndian.AppendUint32(nil, v) }
 // an Exif IFD holding exif, when exif is not nil).
 func TIFFIFD0(bo ByteOrder, ifd0, exif []Entry) []byte {
 	dirSize := func(n int) int { return 2 + n*12 + 4 }
-	n0 := len(ifd0)
-	if exif != nil {
-		n0++
-	}
 	// layout: header | IFD0 | IFD0 data | Exif IFD | Exif data
 	writeDir := func(base int, es []Entry, extra func(dir []byte) []byte) []byte {
 		count := len(es)

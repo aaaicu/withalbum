@@ -35,6 +35,7 @@ func platformDiskUUID(path string) (string, error) {
 	}
 	al := attrList{bitmapCount: attrBitMapCount, volAttr: attrVolInfo | attrVolUUID}
 	var buf [64]byte
+	// #nosec G103 -- getattrlist(2) needs pointers to the attribute list and buffer, both alive for the call
 	_, _, errno := syscall.Syscall6(syscall.SYS_GETATTRLIST, uintptr(unsafe.Pointer(p)), uintptr(unsafe.Pointer(&al)),
 		uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)), 0, 0)
 	if errno != 0 {

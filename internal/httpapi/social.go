@@ -233,7 +233,7 @@ func parseComment(in commentInput) (string, []string, string) {
 		return "", nil, "invalid_comment"
 	}
 	for _, r := range body {
-		if unicode.IsControl(r) && r != '\n' && r != '\t' {
+		if unicode.IsControl(r) && r != '\n' && r != '\t' || bidiControl(r) {
 			return "", nil, "invalid_comment"
 		}
 	}
@@ -267,6 +267,28 @@ func parseComment(in commentInput) (string, []string, string) {
 	}
 	slices.Sort(ids)
 	return body, ids, ""
+}
+
+// bidiControl reports the bidirectional embedding, override and isolate
+// controls (U+202A-U+202E, U+2066-U+2069). In a comment they would let one
+// member make text display in an order other than the one stored (and
+// shown to others), e.g. to disguise a mention or a link. The plain marks
+// U+200E/U+200F that right-to-left text needs are allowed.
+func bidiControl(r rune) bool { return r >= 0x202A && r <= 0x202E || r >= 0x2066 && r <= 0x2069 }
+
+// plainLabel reports whether s is valid UTF-8 without control characters
+// or bidirectional overrides: what a one-line name that other members see
+// (album name, uploader device label) may contain.
+func plainLabel(s string) bool {
+	if !utf8.ValidString(s) {
+		return false
+	}
+	for _, r := range s {
+		if unicode.IsControl(r) || bidiControl(r) {
+			return false
+		}
+	}
+	return true
 }
 
 // errCommentTooLong: the body with the mentions' display names is longer

@@ -80,7 +80,14 @@ Re-check these pages before release; Funnel is beta and may change.
   `UNKNOWN`), every funnel connection shares the key `funnel-unknown`, so
   the per-IP login budget (10 at once, then 1 per 6 s) becomes a limit for
   the whole route; per-account limits (5 failures per account and IP, 20
-  per account, 15 minutes) always apply. The header is trusted only
+  per account, 15 minutes) always apply. The per-account count of logins
+  over the funnel or the relay is kept apart from the one of logins at
+  home (M41): someone on the internet who knows a login name and fails its
+  password can throttle that account's remote logins, never its login (or
+  the pairing of a new phone) on the LAN or this Mac. Apps that are already
+  signed in are not affected either way (refresh is not login-limited, and
+  an unknown refresh token is refused without touching the database write
+  lock). The header is trusted only
   because the listener is loopback: a local process could forge it, which
   only changes rate-limit keys (it is never used for authorization).
   Forwarding headers (`X-Forwarded-For`) are never read.
