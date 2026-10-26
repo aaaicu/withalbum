@@ -24,10 +24,22 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      # Build with the newest patched Go release, not the minimum version in
+      # go.mod: the standard library (net/http, crypto/tls, crypto/x509) is
+      # compiled into the binaries, and go.mod's "go 1.26.0" would ship its
+      # known vulnerabilities (docs/SECURITY_REVIEW_2026-10.md).
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: stable
+          check-latest: true
           cache: true
+      - name: Go version used for the release
+        run: go version
+      - name: Known vulnerabilities (govulncheck, linux and darwin)
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+          "$(go env GOPATH)/bin/govulncheck" ./...
+          GOOS=darwin "$(go env GOPATH)/bin/govulncheck" ./...
       - name: Release notes must exist
         env:
           TAG: ${{ github.ref_name }}

@@ -4,6 +4,18 @@
 
 아래 [0.1.0-alpha.1] 초안 이후의 변경을 여기에 적습니다.
 
+### Security (independent review, M41)
+- 위협 모델 `docs/THREAT_MODEL.md`(진입점별 STRIDE·행위자·테스트 대응), 리뷰 결과·외부 리뷰어 안내 `docs/SECURITY_REVIEW_2026-10.md`, `SECURITY.md` 요약.
+- 로그인 계정별 실패 한도를 원격(중계·Funnel)과 집(LAN·이 Mac)으로 나눠 셈: 인터넷에서 비밀번호를 틀려도 집에서의 로그인·새 폰 연결은 막히지 않음(`ratelimit.Scope`).
+- 서버가 발급한 적 없는 refresh 토큰은 DB 쓰기 잠금 없이 읽기 조회로 거부(인터넷에서 무작위 토큰을 쏟아 업로드를 막는 공격 방지).
+- 저장 파일 이름 `..` 거부(SHA-256으로 대체), 다운로드 `Content-Disposition`에 `.`/`..` 미전송.
+- `sips` 변환 전 1억 2천만 화소 초과 이미지 거부(압축 폭탄).
+- 댓글·앨범 이름·기기 라벨에서 양방향 덮어쓰기 문자(U+202A–U+202E, U+2066–U+2069), 앨범 이름·기기 라벨에서 제어 문자 거부(기존 400 코드).
+- 서버가 root로는 기동 거부(`WITHALBUM_ALLOW_ROOT=1`로만 허용).
+- CI `security-checks`(govulncheck linux·darwin, staticcheck, gosec, 짧은 퍼즈; PR·매주), 릴리스는 go.mod 최소 버전 대신 최신 안정 Go로 빌드하고 govulncheck 통과 필요.
+- 테스트: 라우트 × 호출자 10종 × 경로(direct·relay·funnel) 권한 전수 매트릭스(분류 없는 라우트는 실패), 다른 앨범 ID 교차 검사, 새 퍼즈(sync·소셜 커서, 댓글, 파일 이름, JSON 본문, Upload-Offset, 페어링 페이로드).
+- 리팩터: 원격 경로 표 `relayAllowed`/`remoteOnly`를 `httpapi.RemoteAllowed`/`httpapi.RemoteOnly`로 옮김(동작 동일, 테스트용).
+
 ### Added (likes, comments and mentions, M49)
 - 좋아요(자산·앨범·계정당 1개, `PUT`/`DELETE .../assets/{asset_id}/likes/me` 멱등, `GET .../likes` 누른 사람 표시 이름), 댓글(`GET`/`POST .../comments`, `PATCH`/`DELETE .../comments/{comment_id}` — 수정은 작성자, 삭제는 작성자·앨범 OWNER, 삭제는 흔적 없이 지움), 멘션(본문 `<@user_id>` 토큰 + `mentions` 목록, 쓰는 순간 앨범 읽기 권한자만, 표시 이름은 읽을 때 현재 이름, 권한을 잃은 사람은 일반 텍스트), `GET /folders/{folder_id}/mentionable`, `GET /me/activity`(나를 멘션한 댓글·내 사진의 댓글·좋아요, 커서 페이지). 권한: OWNER·CONTRIBUTOR·VIEWER(새 동작 `react_to_asset`, 삭제 모더레이션 `moderate_comments`), UPLOADER 403, 비멤버·관리자 404.
 - 이벤트 피드에 `likes_updated`·`comment_added`·`comment_updated`·`comment_removed`(`comment_id`), 자산 JSON에 `like_count`·`liked_by_me`·`comment_count`(GET /assets, /sync). `/me` `server_features`에 `reactions_comments`. 모르는 이벤트 종류는 건너뛰는 기존 앱과 호환.

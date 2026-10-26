@@ -90,6 +90,7 @@ func (s *Store) FindFolderAssets(ctx context.Context, folderID string, shas []st
 	for _, h := range shas {
 		args = append(args, h)
 	}
+	// #nosec G202 -- only "?" placeholders are concatenated; the hashes are arguments
 	rows, err := s.db.QueryContext(ctx, `SELECT m.sha, m.id,
 			COALESCE((SELECT c.sha256 FROM asset_components c WHERE c.asset_id = m.id AND c.role = 'paired_video'), '')
 		FROM (SELECT a.original_sha256 AS sha, MIN(a.asset_id) AS id FROM folder_assets fa JOIN assets a ON a.asset_id = fa.asset_id

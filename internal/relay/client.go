@@ -203,7 +203,7 @@ func (c *Client) backoff(n int) time.Duration {
 		d *= 2
 	}
 	d = min(d, c.cfg.MaxBackoff)
-	return d/2 + rand.N(d/2+1)
+	return d/2 + rand.N(d/2+1) // #nosec G404 -- reconnect jitter, not a secret
 }
 
 // serve hands the streams of sess to Accept until it ends.

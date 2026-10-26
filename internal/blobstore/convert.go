@@ -72,9 +72,13 @@ var ErrConvert = errors.New("preview conversion failed")
 
 const (
 	maxConvertInput = 256 << 20 // still images
-	maxToolOutput   = 32 << 20  // bytes of the JPEG a tool writes
-	toolLogLimit    = 2048      // bytes of a tool's stdout/stderr kept for the log
-	workPrefix      = "preview-"
+	// maxConvertPixels bounds the canvas of a still image given to sips
+	// (decoded at 4 bytes per pixel: about 480 MiB). Panoramas and 48 MP
+	// phone photos are well below it.
+	maxConvertPixels = 120_000_000
+	maxToolOutput    = 32 << 20 // bytes of the JPEG a tool writes
+	toolLogLimit     = 2048     // bytes of a tool's stdout/stderr kept for the log
+	workPrefix       = "preview-"
 )
 
 // convertSlots runs one external conversion at a time. It is separate from
@@ -138,6 +142,11 @@ func NewSips(path string) Converter {
 			w, h := sipsDimension(info, "pixelWidth"), sipsDimension(info, "pixelHeight")
 			if w <= 0 || h <= 0 {
 				return nil, fmt.Errorf("cannot read the image size: %q", info)
+			}
+			// A small file can declare a huge canvas (a decompression
+			// bomb); sips would decode all of it in memory.
+			if int64(w)*int64(h) > maxConvertPixels {
+				return nil, fmt.Errorf("image of %dx%d pixels is above the %d limit", w, h, maxConvertPixels)
 			}
 			args := []string{"-s", "format", "jpeg", "-s", "formatOptions", "85"}
 			if max(w, h) > 1600 {
@@ -346,7 +355,7 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 func runTool(ctx context.Context, path string, args []string, dir string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, convertTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, path, args...)
+	cmd := exec.CommandContext(ctx, path, args...) // #nosec G204 -- absolute tool path from FindConverters, argument array, no shell
 	cmd.Dir = dir
 	cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + dir, "TMPDIR=" + dir, "LC_ALL=C"}
 	cmd.Stdin = nil

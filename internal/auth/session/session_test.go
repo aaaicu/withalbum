@@ -3,6 +3,7 @@ package session_test
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -475,5 +476,40 @@ func TestValidateDevice(t *testing.T) {
 		if err := session.ValidateDevice(c.name, c.platform); (err == nil) != c.ok {
 			t.Errorf("%q/%q: %v", c.name, c.platform, err)
 		}
+	}
+}
+
+// TestUnknownRefreshTokenTakesNoWriteLock: refresh is reachable without a
+// session from the internet (relay, funnel) and is not rate limited, so a
+// token the server never issued must be refused without waiting for (or
+// taking) the database write lock that uploads and logins need.
+func TestUnknownRefreshTokenTakesNoWriteLock(t *testing.T) {
+	e := setup(t)
+	tok := e.mustLogin(t)
+	ctx := context.Background()
+	conn, err := e.db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		t.Fatal(err)
+	}
+	b := make([]byte, 32)
+	for i := range b {
+		b[i] = byte(i * 7)
+	}
+	start := time.Now()
+	short, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	_, _, err = e.svc.Refresh(short, session.RefreshRequest{RefreshToken: base64.RawURLEncoding.EncodeToString(b)})
+	if !errors.Is(err, session.ErrUnauthenticated) || time.Since(start) > time.Second {
+		t.Fatalf("unknown token while another writer holds the lock: %v after %s", err, time.Since(start))
+	}
+	if _, err := conn.ExecContext(ctx, "ROLLBACK"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := e.svc.Refresh(ctx, session.RefreshRequest{RefreshToken: tok.RefreshToken}); err != nil {
+		t.Fatalf("real token: %v", err)
 	}
 }

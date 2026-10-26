@@ -130,7 +130,7 @@ var errNoRoom = errors.New("not enough free space for the upload")
 // createUpload: POST /folders/{fid}/uploads {"bytes", "sha256", "filename"}.
 func (s *Server) createUpload(w http.ResponseWriter, r *http.Request, a albumRequest) {
 	deviceLabel := strings.TrimSpace(r.Header.Get("X-Device-ID"))
-	if len(deviceLabel) > 100 {
+	if len(deviceLabel) > 100 || !plainLabel(deviceLabel) {
 		errorReply(w, 400, "invalid_device_id")
 		return
 	}
@@ -292,6 +292,16 @@ func (s *Server) restartUpload(ctx context.Context, ref meta.UploadRef, from int
 	return s.meta.AdvanceUploadSession(ctx, ref, from, 0)
 }
 
+// parseUploadOffset parses an Upload-Offset header: a non-negative decimal
+// integer, digits only (no sign, space or prefix).
+func parseUploadOffset(v string) (int64, bool) {
+	offset, err := strconv.ParseInt(v, 10, 64)
+	if v == "" || err != nil || offset < 0 || strings.TrimLeft(v, "0123456789") != "" {
+		return 0, false
+	}
+	return offset, true
+}
+
 // appendUpload: PATCH with Upload-Offset (must be the session's offset) and
 // the next bytes as the body; optional X-Chunk-SHA256 of these bytes.
 func (s *Server) appendUpload(w http.ResponseWriter, r *http.Request, a albumRequest, ref meta.UploadRef, us meta.UploadSession) {
@@ -299,9 +309,8 @@ func (s *Server) appendUpload(w http.ResponseWriter, r *http.Request, a albumReq
 		errorReply(w, 409, "upload_completed")
 		return
 	}
-	v := r.Header.Get(headerUploadOffset)
-	offset, err := strconv.ParseInt(v, 10, 64)
-	if v == "" || err != nil || offset < 0 || strings.TrimLeft(v, "0123456789") != "" {
+	offset, ok := parseUploadOffset(r.Header.Get(headerUploadOffset))
+	if !ok {
 		errorReply(w, 400, "invalid_offset")
 		return
 	}

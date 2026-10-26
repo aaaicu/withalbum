@@ -591,6 +591,21 @@ func (s *Service) Refresh(ctx context.Context, req RefreshRequest) (Tokens, Iden
 		return Tokens{}, Identity{}, ErrUnauthenticated
 	}
 	h := HashToken(req.RefreshToken)
+	// Refresh is reachable without a session from anywhere the server is
+	// (also the relay and the funnel) and is not rate limited. A token this
+	// server never issued must not take the database write lock (every
+	// transaction here is BEGIN IMMEDIATE), or a flood of random tokens
+	// would hold up uploads and logins: look it up read-only first. A token
+	// is only ever moved from auth_sessions to auth_refresh_used, so one
+	// found in neither cannot appear in the transaction below.
+	var known bool
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM auth_sessions WHERE refresh_token_sha256 = ?1)
+		OR EXISTS(SELECT 1 FROM auth_refresh_used WHERE token_sha256 = ?1)`, h).Scan(&known); err != nil {
+		return Tokens{}, Identity{}, err
+	}
+	if !known {
+		return Tokens{}, Identity{}, ErrUnauthenticated
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Tokens{}, Identity{}, err

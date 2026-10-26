@@ -165,7 +165,7 @@ func PinnedClientConfig(pin [32]byte) *tls.Config {
 		MinVersion: tls.VersionTLS13,
 		// The CA chain and host name are not what is trusted here; the pin
 		// is, and it is checked below on every handshake.
-		InsecureSkipVerify: true,
+		InsecureSkipVerify: true, // #nosec G402 -- the SPKI pin is verified in VerifyConnection below
 		VerifyConnection: func(cs tls.ConnectionState) error {
 			if len(cs.PeerCertificates) == 0 {
 				return errors.New("tls pin: no server certificate")

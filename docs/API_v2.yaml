@@ -374,7 +374,12 @@ paths:
         '401': {description: invalid_credentials}
         '415': {description: json_required}
         '429':
-          description: rate_limited
+          description: >-
+            rate_limited: per client address, per account and address, and
+            per account. The per-account count is kept separately for logins
+            over the relay or the funnel and for logins on the server's own
+            listener, so failures from the internet never block a login at
+            home.
           headers:
             Retry-After: {schema: {type: integer}, description: seconds}
         '503':
@@ -948,7 +953,7 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Folder'}
-        '400': {description: 'invalid_json, invalid_folder_name, invalid_idempotency_key'}
+        '400': {description: 'invalid_json, invalid_folder_name (empty after trimming, over 80 characters, invalid UTF-8, control characters or bidirectional overrides), invalid_idempotency_key'}
         '401': {description: unauthorized}
         '403': {description: 'forbidden (no album-creation permission) or csrf_failed'}
         '404': {description: 'folder_not_found: a retried key whose folder was archived or is no longer visible to the caller'}
@@ -1312,7 +1317,9 @@ paths:
       description: >-
         Whole file in one request, at most 512 MiB. Headers: Idempotency-Key
         (required, see the top of this document), X-Filename
-        (percent-encoded allowed), X-Device-ID (free-form label shown as
+        (percent-encoded allowed; only its last path element is kept, and
+        an empty name, ".", ".." or one over 240 bytes is replaced by the
+        SHA-256), X-Device-ID (free-form label shown as
         uploader_device_id, at most 100 bytes), X-Content-SHA256 (optional;
         422 hash_mismatch on mismatch). Cookie sessions need X-CSRF-Token.
         Success is sent only after the original file, its metadata and the
@@ -1360,7 +1367,7 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/UploadReceipt'}
-        '400': {description: 'idempotency_key_required, invalid_idempotency_key, empty_file, upload_failed (body cut short), invalid_device_id'}
+        '400': {description: 'idempotency_key_required, invalid_idempotency_key, empty_file, upload_failed (body cut short), invalid_device_id (over 100 bytes, invalid UTF-8, control characters or bidirectional overrides)'}
         '401': {description: unauthorized}
         '403': {description: 'forbidden (VIEWER, or role lowered during the upload) or csrf_failed'}
         '404': {description: 'folder_not_found (not owner/member, or membership removed during the upload)'}
@@ -2181,7 +2188,7 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Comment'}
-        '400': {description: 'invalid_json, comment_empty, comment_too_long, invalid_comment (control characters), invalid_mentions (not 32 hex digits, or not the accounts of the tokens), too_many_mentions, invalid_idempotency_key'}
+        '400': {description: 'invalid_json, comment_empty, comment_too_long, invalid_comment (control characters, or the bidirectional overrides U+202A-U+202E and isolates U+2066-U+2069; U+200E/U+200F are allowed), invalid_mentions (not 32 hex digits, or not the accounts of the tokens), too_many_mentions, invalid_idempotency_key'}
         '401': {description: unauthorized}
         '403': {description: 'forbidden (UPLOADER) or csrf_failed'}
         '404': {description: 'folder_not_found, asset_not_found'}

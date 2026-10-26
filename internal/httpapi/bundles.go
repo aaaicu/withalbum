@@ -82,7 +82,7 @@ func componentOffsets(b meta.Bundle) map[string]any {
 // "components": [{"role", "bytes", "sha256", "filename"}, ...]}.
 func (s *Server) createBundle(w http.ResponseWriter, r *http.Request, a albumRequest) {
 	deviceLabel := strings.TrimSpace(r.Header.Get("X-Device-ID"))
-	if len(deviceLabel) > 100 {
+	if len(deviceLabel) > 100 || !plainLabel(deviceLabel) {
 		errorReply(w, 400, "invalid_device_id")
 		return
 	}

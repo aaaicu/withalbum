@@ -404,6 +404,10 @@ func contractUploadFilenames(t *testing.T, env contractEnv) {
 		{`dir\sub/evil.jpg`, "evil.jpg"},
 		{"", ""}, // falls back to the sha
 		{strings.Repeat("n", 241), ""},
+		// A name an app would save as the parent directory (M41).
+		{"..", ""},
+		{"..%2F..", ""},
+		{`x\..`, ""},
 	}
 	for i, tc := range cases {
 		body := []byte(fmt.Sprintf("file %d", i))

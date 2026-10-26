@@ -7,12 +7,10 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
 	"os"
-	"path"
 	"strconv"
 	"strings"
 
@@ -126,40 +124,18 @@ func relayTargetFor(id *tlsid.Identity, addr string) relayTarget {
 	return relayTarget{Addr: addr, RID: relay.RendezvousID(id.SPKISHA256)}
 }
 
-// relayAllowed lists the paths served through the relay: what an app uses
-// (login, its own account and devices, albums, invitations, health). Every
-// other path, in particular the dashboard page and /api/v1/admin/, is not.
-// A path that is not in canonical form is refused rather than interpreted.
-func relayAllowed(p string) bool {
-	if p == "" || path.Clean(p) != p {
-		return false
-	}
-	under := func(prefix string) bool { return p == prefix || strings.HasPrefix(p, prefix+"/") }
-	return p == "/api/v1/health" || under("/api/v1/auth") || under("/api/v1/me") || under("/api/v1/folders") || under("/api/v1/invitations")
-}
+// relayAllowed lists the paths served through the relay and the funnel
+// (httpapi.RemoteAllowed).
+func relayAllowed(p string) bool { return httpapi.RemoteAllowed(p) }
 
 // relayOnly wraps the API handler for connections that came through the
 // relay.
 func relayOnly(next http.Handler) http.Handler { return remoteOnly(httpapi.RouteRelay, next) }
 
-// remoteOnly wraps the API handler of a listener for connections from
-// outside the home network (relay, funnel): it marks the requests with
-// route and serves only the app routes of relayAllowed. The error code is
-// not_available_via_relay for both routes, so apps handle one code.
+// remoteOnly marks the requests of a remote listener with route and serves
+// only the app routes (httpapi.RemoteOnly).
 func remoteOnly(route httpapi.Route, next http.Handler) http.Handler {
-	return httpapi.WithRoute(route, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !relayAllowed(r.URL.Path) {
-			h := w.Header()
-			h.Set("Content-Type", "application/json; charset=utf-8")
-			h.Set("X-Content-Type-Options", "nosniff")
-			h.Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
-			h.Set("Cache-Control", "no-store")
-			w.WriteHeader(http.StatusForbidden)
-			io.WriteString(w, `{"error":"not_available_via_relay","route":"`+string(route)+`"}`+"\n")
-			return
-		}
-		next.ServeHTTP(w, r)
-	}))
+	return httpapi.RemoteOnly(route, next)
 }
 
 // setupRelay checks the administrator condition, builds the tunnel client

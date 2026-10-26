@@ -148,7 +148,7 @@ func runBackup(args []string, stdout, stderr io.Writer) int {
 			return exitProblems
 		}
 		// It holds password hashes and every photo: owner only.
-		if err := os.Chmod(*to, 0700); err != nil {
+		if err := os.Chmod(*to, 0700); err != nil { // #nosec G302 -- a directory: owner rwx only
 			fmt.Fprintf(stderr, "backup: WARNING: could not restrict %s to its owner (chmod 0700): %v\n", *to, err)
 		}
 		fmt.Fprintf(stdout, "Registered backup target %s (target_id=%s, mode 0700)\n", *to, m.VolumeID)

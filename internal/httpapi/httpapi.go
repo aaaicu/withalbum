@@ -342,7 +342,7 @@ func (s *Server) createFolder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	request.Name = strings.TrimSpace(request.Name)
-	if len(request.Name) == 0 || len([]rune(request.Name)) > 80 {
+	if len(request.Name) == 0 || len([]rune(request.Name)) > 80 || !plainLabel(request.Name) {
 		errorReply(w, 400, "invalid_folder_name")
 		return
 	}
@@ -484,7 +484,7 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request, a albumRequest) 
 	ctx := r.Context()
 	folderID := a.Folder.Folder.ID
 	deviceID := strings.TrimSpace(r.Header.Get("X-Device-ID"))
-	if len(deviceID) > 100 {
+	if len(deviceID) > 100 || !plainLabel(deviceID) {
 		errorReply(w, 400, "invalid_device_id")
 		return
 	}
@@ -580,10 +580,12 @@ func uploadFilename(filename, sha string) string {
 }
 
 // storedFilename is the last path element of the client's name, or the
-// hash when there is no usable name.
+// hash when there is no usable name. ".." is not a usable name: apps and
+// browsers save a download under it, and joined to a directory it names
+// the parent.
 func storedFilename(filename, sha string) string {
 	name := filepath.Base(strings.ReplaceAll(filename, "\\", "/"))
-	if name == "" || name == "." || name == "/" || len(name) > 240 {
+	if name == "" || name == "." || name == ".." || name == "/" || len(name) > 240 {
 		name = sha
 	}
 	return name
@@ -790,7 +792,11 @@ func (s *Server) download(preview bool) albumHandler {
 func serveOriginal(w http.ResponseWriter, r *http.Request, path, mimeType, filename string) {
 	w.Header().Set("Content-Type", mimeType)
 	w.Header().Set("Content-Security-Policy", downloadCSP)
-	disposition := mime.FormatMediaType("attachment", map[string]string{"filename": filename})
+	disposition := ""
+	// Names stored before ".." was refused (storedFilename) are not sent.
+	if filename != "" && filename != "." && filename != ".." {
+		disposition = mime.FormatMediaType("attachment", map[string]string{"filename": filename})
+	}
 	if disposition == "" {
 		disposition = "attachment"
 	}

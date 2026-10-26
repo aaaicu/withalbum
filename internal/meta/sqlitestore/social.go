@@ -128,6 +128,7 @@ func (s *Store) ListLikes(ctx context.Context, folderID, assetID string) ([]meta
 	if err := assetInFolder(ctx, s.db, folderID, assetID); err != nil {
 		return nil, err
 	}
+	// #nosec G202 -- readerCond is constant SQL over column names; values are arguments
 	rows, err := s.db.QueryContext(ctx, `SELECT l.user_id, u.display_name, l.created_at FROM asset_likes l JOIN users u ON u.user_id = l.user_id
 		WHERE l.folder_id = ? AND l.asset_id = ? AND `+readerCond("l.folder_id", "l.user_id")+` ORDER BY l.created_at, l.user_id`, folderID, assetID)
 	if err != nil {
@@ -165,6 +166,7 @@ func (s *Store) SocialSummaries(ctx context.Context, folderID, userID string, as
 			marks[i] = fmt.Sprintf("?%d", i+3)
 		}
 		in := strings.Join(marks, ",")
+		// #nosec G202 -- constant SQL and numbered "?N" placeholders; the IDs are arguments
 		rows, err := s.db.QueryContext(ctx, `SELECT asset_id, sum(likes), max(mine), sum(comments) FROM (
 				SELECT l.asset_id, `+readerCond("l.folder_id", "l.user_id")+` AS likes, l.user_id = ?2 AS mine, 0 AS comments
 					FROM asset_likes l WHERE l.folder_id = ?1 AND l.asset_id IN (`+in+`)
@@ -484,6 +486,7 @@ func (s *Store) Mentionable(ctx context.Context, folderID string) ([]meta.Member
 // activityQuery lists the activity of user ?1 newest first before (?2, ?3)
 // (no bound when ?2 is ""), limit ?4. The folders are those ?1 can read now
 // (not archived), the assets those still in them.
+// #nosec G202 -- readerCond is constant SQL over column names and ?1; values are arguments
 var activityQuery = `WITH mine AS (
 		SELECT f.folder_id, f.folder_name FROM folders f
 		WHERE f.archived_at IS NULL AND ` + readerCond("f.folder_id", "?1") + `

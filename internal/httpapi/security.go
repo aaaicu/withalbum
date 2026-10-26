@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/aaaicu/withalbum/internal/auth/ratelimit"
 )
 
 // Response hardening shared by every route, and the TLS identity shown to
@@ -98,6 +100,17 @@ func rateKey(ip string) string {
 		return ip
 	}
 	return parsed.Mask(net.CIDRMask(64, 128)).String() + "/64"
+}
+
+// rateScope is the login rate-limit scope of a request: failures that
+// arrive over a remote route (relay, funnel) are counted apart from those on
+// this Mac or the home network, so that nobody on the internet can block an
+// account's logins at home (ratelimit.ScopeRemote).
+func rateScope(r *http.Request) ratelimit.Scope {
+	if RouteFrom(r.Context()).Remote() {
+		return ratelimit.ScopeRemote
+	}
+	return ratelimit.ScopeLocal
 }
 
 // TLSInfo describes the server's TLS identity for administrators

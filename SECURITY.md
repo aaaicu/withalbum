@@ -46,7 +46,7 @@ Off by default. With `-tls -funnel-url https://<machine>.<tailnet>.ts.net` (or `
 
 - **TLS passes through end to end.** Funnel's relays route by SNI without decrypting, and tailscaled forwards the bytes; the app runs the same pinned TLS 1.3 session with the server's own key as on the LAN. Neither Tailscale's servers nor tailscaled on the Mac can read or change it, and a wrong key fails the pin. A TLS-terminating Funnel (`tailscale funnel 8788`, `--https`, `--tls-terminated-tcp`) is **not supported**: tailscaled on the same Mac would then decrypt and apps would have to trust a CA-issued ts.net certificate instead of the pin; such a setup fails closed because the pin does not match.
 - **The login endpoint becomes reachable from the internet** for anyone who knows the URL (it is in the pairing QR; not a secret). Only app routes are served (same table as the relay); the dashboard, the setup screen and `/api/v1/admin/*` answer `403 not_available_via_relay` with `"route":"funnel"`, also for administrators.
-- Login limits: per client IP from the optional PROXY v1/v2 header, else one shared key `funnel-unknown` for the whole route; per-account limits always. The header is accepted only on the loopback listener and only used as a rate-limit/audit key. Forwarding headers are never read.
+- Login limits: per client IP from the optional PROXY v1/v2 header, else one shared key `funnel-unknown` for the whole route; per-account limits always, counted separately for remote (funnel, relay) and home logins, so failures from the internet never lock an account out at home (M41). The header is accepted only on the loopback listener and only used as a rate-limit/audit key. Forwarding headers are never read.
 - Exposure limits on the funnel listener: 128 connections at once, 10 s for the PROXY header and the TLS handshake, JSON bodies 8 KiB within 30 s (all listeners), 64 KiB headers. Audit entries of logins, refreshes, logouts and device revocations carry `"route":"funnel"` or `"relay"`.
 - Lost device: `POST /api/v1/me/devices/revoke-others` signs out every other device of the account (served on every route).
 - Tailscale sees client IPs, the ts.net name, times and byte counts. Funnel is a beta service with unpublished bandwidth limits.
@@ -266,6 +266,16 @@ Anyone with console access to the server and write access to the storage can do 
 `internal/authz`의 정책은 HTTP 서버의 모든 관리자·앨범 라우트에서 매 요청 적용됩니다(`internal/httpapi/middleware_authz.go`). 최초 관리자는 콘솔 명령(`admin init`)으로만 만들 수 있고, 대시보드 페이지·health·login·refresh 외 모든 API는 세션이 필요합니다. 서버 관리자도 소유·멤버가 아닌 앨범의 데이터는 읽을 수 없습니다(404). 초대·역할 변경·추방·소유권 이전은 앨범 OWNER만 할 수 있고 같은 트랜잭션에서 감사 로그에 남습니다. LAN 공개는 위 조건(TLS + 관리자 + 명시적 플래그)에서만 가능하며, 인터넷 공개나 실사용 원본의 유일 저장소로 사용하면 안 됩니다.
 
 최종 정책은 [ACCESS_CONTROL_v1.4.md](docs/ACCESS_CONTROL_v1.4.md) 참조.
+
+## Security review (M41, 2026-10)
+
+Internal adversarial review after the internet routes (funnel, relay) and the social, location and camera features: threat model [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) (STRIDE per entry point and actor), findings and the brief for an external reviewer in [`docs/SECURITY_REVIEW_2026-10.md`](docs/SECURITY_REVIEW_2026-10.md). Summary:
+
+- **Fixed:** remote login failures could lock an account out at home too (per-account limit now counted separately for remote and home logins); random refresh tokens from the internet took the database write lock (now refused read-only first); release binaries were built with the minimum Go version of `go.mod` (now the latest stable Go, gated by `govulncheck`); a stored filename could be `..`; `sips` decoded arbitrarily large canvases (now ≤ 120 MP); bidirectional-override and control characters in comments, album names and device labels; the server could run as root (now refused unless `WITHALBUM_ALLOW_ROOT=1`).
+- **Open:** funnel connection-slot exhaustion by slow clients (no per-client cap yet), Argon2id slot saturation (503 busy for logins during an attack), unbounded failed-login audit rows, no total memory limit for preview tools.
+- **Accepted:** originals keep their GPS tags even when locations are hidden in the API; a small timing difference for UPLOADER duplicates; the PROXY header is trusted from local processes (rate-limit key only); a verified backup is trusted content on restore.
+- **Automated:** CI job `security-checks` (`govulncheck` linux+darwin, `staticcheck`, `gosec` with triaged exclusions, short fuzz runs) on every PR and weekly; an exhaustive route × caller × transport authorization matrix (`internal/httpapi/authz_matrix_test.go`) that fails on any unclassified route.
+- **Still required:** an external human review (see the brief) before relying on a public route for irreplaceable photos.
 
 ## Security review (M15, 2026-10)
 

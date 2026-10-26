@@ -195,3 +195,45 @@ func TestPinnedHandshake(t *testing.T) {
 		t.Fatal("TLS 1.2 client was accepted")
 	}
 }
+
+// FuzzPairingPayload: whatever the server URL, relay and public addresses
+// (they come from settings and the environment), a pairing payload decodes
+// to exactly the fields it was built from: no value can add, repeat or
+// override another field, in particular the pinned spki_sha256.
+func FuzzPairingPayload(f *testing.F) {
+	pin := strings.Repeat("ab", 32)
+	f.Add("https://192.168.1.20:8787", "relay.example.org:443", "0123456789abcdef", "https://home.example-tailnet.ts.net", "funnel")
+	f.Add("https://x/?spki_sha256=00&v=2", "a&spki_sha256=00", "#", "https://h.ts.net/#&url=evil", "funnel&v=9")
+	f.Add("", "", "", "", "")
+	f.Add("https://a b", "%zz", "\x00", "\n", "+")
+	f.Fuzz(func(t *testing.T, serverURL, relayAddr, rid, publicURL, publicRoute string) {
+		x := tlsid.PairingExtras{RelayAddr: relayAddr, RID: rid, PublicURL: publicURL, PublicRoute: publicRoute}
+		p := tlsid.PairingPayloadWith(serverURL, pin, x)
+		u, err := url.Parse(p)
+		if err != nil {
+			t.Fatalf("payload %q does not parse: %v", p, err)
+		}
+		if u.Scheme != "withalbum" || u.Host != "pair" || u.Fragment != "" {
+			t.Fatalf("payload %q: scheme %q host %q fragment %q", p, u.Scheme, u.Host, u.Fragment)
+		}
+		q, err := url.ParseQuery(u.RawQuery)
+		if err != nil {
+			t.Fatalf("payload %q: query: %v", p, err)
+		}
+		want := map[string]string{"v": "1", "url": serverURL, "spki_sha256": pin}
+		if relayAddr != "" {
+			want["relay"], want["rid"] = relayAddr, rid
+		}
+		if publicURL != "" {
+			want["public_url"], want["public_route"] = publicURL, publicRoute
+		}
+		if len(q) != len(want) {
+			t.Fatalf("payload %q has fields %v, want %v", p, q, want)
+		}
+		for k, v := range want {
+			if got := q[k]; len(got) != 1 || got[0] != v {
+				t.Fatalf("payload %q: %s = %q, want %q", p, k, got, v)
+			}
+		}
+	})
+}
