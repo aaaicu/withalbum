@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/aaaicu/withalbum/internal/authz"
 	"github.com/aaaicu/withalbum/internal/blobstore"
@@ -121,6 +122,11 @@ type Server struct {
 	uploads          uploadLocks
 	previewKick      chan struct{} // wakes the preview worker (capacity 1)
 	captureKick      chan struct{} // wakes the capture-time worker (capacity 1)
+	playbackKick     chan struct{} // wakes the playback worker (capacity 1)
+	playback         meta.PlaybackStore
+	playbackNow      func() time.Time
+	playbackLimit    func(durMS int64) time.Duration
+	playbackGap      time.Duration // pause between two conversions
 }
 
 // New returns a Server for cfg.
@@ -128,7 +134,8 @@ func New(cfg Config) *Server {
 	s := &Server{vol: cfg.Volume, meta: cfg.Meta, blobs: cfg.Blobs, version: cfg.Version,
 		minFree: max(cfg.MinFreeBytes, 0), freeBytes: cfg.FreeBytes, integrityWarning: cfg.IntegrityWarning, faults: cfg.Faults, auth: cfg.Auth,
 		members: cfg.Members, tls: cfg.TLS, startup: cfg.StartupCheck, previewKick: make(chan struct{}, 1),
-		captureKick: make(chan struct{}, 1), social: cfg.Social, socialLimit: newSocialLimiter()}
+		captureKick: make(chan struct{}, 1), playbackKick: make(chan struct{}, 1), social: cfg.Social, socialLimit: newSocialLimiter()}
+	s.playbackDefaults()
 	if s.members == nil {
 		s.members, _ = cfg.Meta.(meta.Memberships)
 	}
@@ -205,6 +212,7 @@ func (s *Server) Handler() http.Handler {
 	s.bundleRoutes(rt)
 	rt.handleAlbum("GET /api/v1/folders/{folderID}/assets/{assetID}/original", s.download(false))
 	rt.handleAlbum("GET /api/v1/folders/{folderID}/assets/{assetID}/preview", s.download(true))
+	rt.handleAlbum("GET /api/v1/folders/{folderID}/assets/{assetID}/playback", s.getPlayback)
 	s.syncRoutes(rt)
 	s.socialRoutes(rt)
 	s.memberRoutes(rt)
@@ -673,8 +681,10 @@ func (s *Server) commitOriginal(w http.ResponseWriter, r *http.Request, a albumR
 		s.kickPreviews()
 	}
 	// Every outcome wakes the capture-time worker (it finds nothing to do
-	// for bytes it has already read).
+	// for bytes it has already read) and the playback worker (a video's
+	// original was queued in the commit).
 	s.kickCaptures()
+	s.kickPlayback()
 	uploadReply(w, folderID, sha, staged.Size, res, canRead)
 	return true
 }

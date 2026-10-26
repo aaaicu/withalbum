@@ -19,3 +19,9 @@ func isolateProcess(cmd *exec.Cmd) {
 		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
 }
+
+// lowerPriority makes a started tool yield the CPU to the server and to
+// uploads (nice 10). Its helpers inherit it. Failure is not an error.
+func lowerPriority(pid int) {
+	_ = syscall.Setpriority(syscall.PRIO_PROCESS, pid, 10)
+}

@@ -4,6 +4,14 @@
 
 아래 [0.1.0-alpha.1] 초안 이후의 변경을 여기에 적습니다.
 
+### Added (playback copies of videos, M50)
+- 동영상 자산마다 재생용 경량본을 백그라운드에서 만듦: MP4(H.264 + AAC), 보이는 방향 기준 최대 1920×1080(회전 반영), moov가 mdat 앞(fast start), 위치 등 메타데이터 제거, HDR→SDR(도구가 할 수 있을 때). macOS는 `/usr/bin/avconvert`(`Preset1920x1080`, 하드웨어 인코더) 우선, 없으면 `ffmpeg`(`h264_videotoolbox`/`libx264`, 약 4.5Mbit/s, AAC 128k, 최대 60fps). `WITHALBUM_PLAYBACK=off|avconvert|ffmpeg`, `WITHALBUM_AVCONVERT`.
+- 자산 JSON `playback`: 동영상이면 `{"status": "pending"|"ready"|"failed"|"unsupported", "bytes", "width", "height", "mime_type"}`(ready일 때만 값), 그 밖(라이브 포토 포함)은 null. 상태가 바뀌면 `asset_updated`. `GET /api/v1/folders/{folder_id}/assets/{asset_id}/playback`: 원본과 같은 권한(UPLOADER 403, 중계·Funnel 허용)·Range/If-Range·첨부·sandbox CSP, `video/mp4`, 준비 전 404 `playback_not_ready`. `/me` `server_features`에 `video_playback`.
+- 경량본이 원본의 80%보다 크면 저장하지 않고 `unsupported`(원본 재생). 실패는 10분·40분 뒤 재시도, 세 번째 실패에서 `failed`. 3시간 넘는 영상은 `unsupported`. 도구가 없으면 `unsupported`(도구가 생긴 뒤 다음 기동에서 다시 대기열). 저장장치가 없거나 여유 공간이 모자라면 멈춤, 종료 시 도구를 끝내고 대기 유지.
+- 파생 파일 `.system/playback/<sha[:2]>/<sha>.mp4`(백업에 넣지 않음, 없어지면 다시 만듦). 그 원본을 가진 사용 중 동영상 자산이 없어지면 삭제. 기동 시 DB가 ready라고 하지 않는 파일 삭제, 파일이 없거나 크기가 다른 ready는 다시 대기열.
+- 관리자 `GET /admin/server/storage`에 `playback`(도구, pending·ready·failed·unsupported 수, `ready_bytes`), 관리 화면 저장 공간에 "재생용 영상" 줄.
+- 마이그레이션 **0016**(`blob_playback`, 링크·재링크 트리거 — 업로드 커밋과 같은 트랜잭션에서 대기열, 기존 동영상 백필).
+
 ### Security (independent review, M41)
 - 위협 모델 `docs/THREAT_MODEL.md`(진입점별 STRIDE·행위자·테스트 대응), 리뷰 결과·외부 리뷰어 안내 `docs/SECURITY_REVIEW_2026-10.md`, `SECURITY.md` 요약.
 - 로그인 계정별 실패 한도를 원격(중계·Funnel)과 집(LAN·이 Mac)으로 나눠 셈: 인터넷에서 비밀번호를 틀려도 집에서의 로그인·새 폰 연결은 막히지 않음(`ratelimit.Scope`).

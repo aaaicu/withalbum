@@ -104,6 +104,9 @@ var routePolicies = []RoutePolicy{
 	{"GET /api/v1/folders/{folderID}/assets/{assetID}/original", AccessAlbum, authz.DownloadAsset},
 	{"GET /api/v1/folders/{folderID}/assets/{assetID}/preview", AccessAlbum, authz.DownloadAsset},
 	{"GET /api/v1/folders/{folderID}/assets/{assetID}/components/{role}", AccessAlbum, authz.DownloadAsset},
+	// The playback copy of a video (playback.go): derived from the
+	// original, so the same access as the original.
+	{"GET /api/v1/folders/{folderID}/assets/{assetID}/playback", AccessAlbum, authz.DownloadAsset},
 	// Likes, comments and mentions (social.go): readers only; edits and
 	// deletes of comments are checked against the author (and the owner
 	// for deletes) inside the transaction.

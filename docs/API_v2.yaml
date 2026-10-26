@@ -244,6 +244,25 @@ info:
     is unchanged. Servers that report it list "asset_camera" in GET /me
     server_features.
 
+    Playback copies of videos ("video_playback"). For each video asset
+    (media_kind "video"; not a live_photo) the server makes a smaller
+    copy for streaming in the background after the upload: MP4, H.264
+    video and AAC audio, at most 1920x1080 in the video's own orientation
+    (rotation applied), HDR converted to SDR where the tool can, moov
+    before mdat (a player can start at once), private metadata such as
+    the location removed. Its state is the asset's "playback" object:
+    pending (being made; stream the original meanwhile and say so),
+    ready (GET .../assets/{asset_id}/playback, with bytes, width and
+    height), failed (the tool failed three times) or unsupported (no tool
+    on this server, the video is very long, or the copy would not be
+    meaningfully smaller than the original, which is then streamed as it
+    is). Each change of the state is an asset_updated event. The copy is
+    derived data like a preview: the original is never changed, and only
+    the original is "kept" (its SHA-256 verified by the server); a
+    client never shows a downloaded copy as kept and verifies only an
+    original against sha256. Same access as the original (UPLOADER 403).
+    Older servers omit the key and the route.
+
 
     Live Photos. A Live Photo (an iPhone still and its short video) is
     one asset with media_kind "live_photo": its own original (sha256,
@@ -441,7 +460,7 @@ paths:
                   server_features:
                     type: array
                     items: {type: string}
-                    examples: [[live_photo_bundles, folder_create_idempotency, asset_duration, asset_location, reactions_comments, asset_camera]]
+                    examples: [[live_photo_bundles, folder_create_idempotency, asset_duration, asset_location, reactions_comments, asset_camera, video_playback]]
                     description: >-
                       Optional abilities of this server. "live_photo_bundles":
                       POST .../bundles stores Live Photos (still and video as
@@ -455,6 +474,8 @@ paths:
                       /me/activity, the social event kinds and
                       like_count/liked_by_me/comment_count on assets.
                       "asset_camera": assets carry camera, width and height.
+                      "video_playback": assets carry playback and GET
+                      .../assets/{asset_id}/playback serves the copy.
                       Absent on older servers; clients must ignore unknown
                       values.
                   relay:
@@ -824,7 +845,7 @@ paths:
   /api/v1/admin/server/storage:
     get:
       tags: [Server Admin]
-      summary: Storage volume state, free space, stored and album totals, and startup check (SERVER_ADMIN only)
+      summary: Storage volume state, free space, stored and album totals, playback copies, and startup check (SERVER_ADMIN only)
       description: >-
         No path or volume identifier. integrity and startup_check come from
         the reconciliation at server start (counts only). The full check
@@ -857,6 +878,19 @@ paths:
                       album_copies: {type: integer, description: 'Originals as albums hold them: one per asset in a folder (archived folders included) plus its paired video'}
                       album_bytes: {type: integer, description: The bytes of album_copies as if each were its own file}
                       dedup_saved_bytes: {type: integer, description: 'album_bytes minus the bytes of the distinct originals they use: what storing each SHA-256 once saves'}
+                  playback:
+                    type: object
+                    description: >-
+                      Playback copies of videos (totals only). Absent when they
+                      could not be read.
+                    required: [tool, pending, ready, failed, unsupported, ready_bytes]
+                    properties:
+                      tool: {type: [string, 'null'], enum: [avconvert, ffmpeg, null], description: 'The tool that makes them; null: none (every video unsupported)'}
+                      pending: {type: integer, description: 'Originals waiting (new uploads first, then the backfill of older videos)'}
+                      ready: {type: integer}
+                      failed: {type: integer}
+                      unsupported: {type: integer, description: 'No tool, too long, or the copy would not be smaller than the original'}
+                      ready_bytes: {type: integer, description: 'Bytes of the ready copies (not part of stored_bytes)'}
                   startup_check:
                     type: object
                     properties:
@@ -2025,6 +2059,42 @@ paths:
         '401': {description: unauthorized}
         '403': {description: 'forbidden (UPLOADER)'}
         '404': {description: 'folder_not_found, asset_not_found, component_not_found (the asset has no component of this role)'}
+  /api/v1/folders/{folder_id}/assets/{asset_id}/playback:
+    get:
+      tags: [Assets]
+      summary: Stream or download the playback copy of a video; same access as the original
+      description: >-
+        Only while the asset's playback.status is ready. Same headers,
+        ranges and rules as .../original (Accept-Ranges, Last-Modified,
+        Range, If-Range, 206, 416, attachment, sandbox CSP, no-store), with
+        Content-Type video/mp4 and the original's file name with the
+        extension .mp4. The copy is derived data: there is no sha256 to
+        verify it against, and it is never "kept". A copy can be made
+        again (another file, another Last-Modified): a client resuming with
+        If-Range then gets the whole new file (200). 404
+        playback_not_ready while there is none (pending, failed,
+        unsupported, or the file went missing; the server then makes it
+        again and sends asset_updated). Served over the relay and the
+        funnel like the original.
+      parameters:
+        - $ref: '#/components/parameters/FolderID'
+        - $ref: '#/components/parameters/AssetID'
+        - in: header
+          name: Range
+          required: false
+          schema: {type: string, examples: ['bytes=0-1048575']}
+        - in: header
+          name: If-Range
+          required: false
+          schema: {type: string}
+      responses:
+        '200': {description: 'The copy (video/mp4, attachment, sandbox CSP, Accept-Ranges: bytes, no-store)'}
+        '206': {description: 'Partial content, as for the original'}
+        '304': {description: 'not modified (If-Modified-Since)'}
+        '416': {description: 'range not satisfiable (text/plain body), as for the original'}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (UPLOADER; the same answer for any asset id)'}
+        '404': {description: 'folder_not_found, asset_not_found, playback_not_ready'}
   /api/v1/folders/{folder_id}/assets/{asset_id}/preview:
     get:
       tags: [Assets]
@@ -2445,7 +2515,7 @@ components:
         focal_35mm: {type: [integer, 'null'], minimum: 1, maximum: 10000, example: 24, description: 'focal length in 35 mm film terms, whole millimetres (EXIF FocalLengthIn35mmFilm)'}
     Asset:
       type: object
-      required: [id, sha256, filename, mime_type, bytes, preview_ready, preview_status, uploaded_at, captured_at, duration_ms, location, camera, width, height, uploaded_by_name, media_kind, like_count, liked_by_me, comment_count]
+      required: [id, sha256, filename, mime_type, bytes, preview_ready, preview_status, uploaded_at, captured_at, duration_ms, location, camera, width, height, uploaded_by_name, media_kind, playback, like_count, liked_by_me, comment_count]
       properties:
         id: {type: string, description: 'random; valid only under its folder'}
         sha256: {type: string, description: 'of the original, to verify a download'}
@@ -2550,6 +2620,14 @@ components:
           type: array
           description: Live photos only. The extra originals, each downloaded from .../components/{role}.
           items: {$ref: '#/components/schemas/Component'}
+        playback:
+          oneOf:
+            - $ref: '#/components/schemas/Playback'
+            - type: 'null'
+          description: >-
+            The playback copy of a video asset; null for every other asset
+            (live_photo included). Servers before "video_playback" omit the
+            key.
         like_count:
           type: integer
           minimum: 0
@@ -2559,6 +2637,25 @@ components:
             likes_updated events with the asset in "assets".
         liked_by_me: {type: boolean, description: the caller's own like}
         comment_count: {type: integer, minimum: 0, description: 'comments on the asset in this folder (comment_* events)'}
+    Playback:
+      type: object
+      required: [status, bytes, width, height, mime_type]
+      description: >-
+        State of the playback copy of a video (see the description at the
+        top). bytes, width, height and mime_type are set only when status
+        is ready.
+      properties:
+        status:
+          type: string
+          enum: [pending, ready, failed, unsupported]
+          description: >-
+            pending: being made (an asset_updated event follows); stream the
+            original meanwhile. ready: GET .../playback. failed and
+            unsupported: there will be no copy; stream the original.
+        bytes: {type: [integer, 'null'], minimum: 1, description: 'Size of the copy, to show "compressed (size)" next to the original'}
+        width: {type: [integer, 'null'], minimum: 1, maximum: 1920, description: 'Pixel width of the copy as displayed (rotation applied)'}
+        height: {type: [integer, 'null'], minimum: 1, maximum: 1920}
+        mime_type: {type: [string, 'null'], enum: [video/mp4, null]}
     Component:
       type: object
       required: [role, sha256, bytes, mime_type, filename, duration_ms]

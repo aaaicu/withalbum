@@ -35,7 +35,8 @@ type StartupCheck struct {
 // serverStorage answers GET /api/v1/admin/server/storage (SERVER_ADMIN):
 // whether the storage volume is present, its free space and upload
 // reserve, the stored and album totals (usage: how much storing every
-// SHA-256 once saves, totals only), and the startup check. No path or
+// SHA-256 once saves, totals only), the playback copies of videos (tool,
+// counts by state, bytes of the ready copies), and the startup check. No path or
 // volume identifier. The full check (withalbum-server verify) is a console
 // command; its result is not kept by the server.
 func (s *Server) serverStorage(w http.ResponseWriter, r *http.Request) {
@@ -59,6 +60,18 @@ func (s *Server) serverStorage(w http.ResponseWriter, r *http.Request) {
 				"album_copies": u.AlbumCopies, "album_bytes": u.AlbumBytes, "dedup_saved_bytes": u.SavedBytes}
 		} else {
 			log.Printf("admin storage: cannot read storage usage: %v", err)
+		}
+	}
+	if s.playback != nil {
+		if st, err := s.playback.PlaybackStats(r.Context()); err == nil {
+			tool := ""
+			if t := s.blobs.Transcoder(); t != nil {
+				tool = t.Name()
+			}
+			body["playback"] = map[string]any{"tool": nonEmpty(tool), "pending": st.Pending, "ready": st.Ready, "failed": st.Failed,
+				"unsupported": st.Unsupported, "ready_bytes": st.ReadyBytes}
+		} else {
+			log.Printf("admin storage: cannot read playback copies: %v", err)
 		}
 	}
 	if c := s.startup; c != nil {

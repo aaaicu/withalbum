@@ -176,7 +176,7 @@ func TestAdminServerStorageUnavailable(t *testing.T) {
 	}
 	r := e.as(t, "root", "GET", "/api/v1/admin/server/storage", nil, nil)
 	m := wantJSON(t, "storage", r, 200)
-	wantKeys(t, "storage", m, "storage", "integrity", "free_bytes", "min_free_bytes", "usage")
+	wantKeys(t, "storage", m, "storage", "integrity", "free_bytes", "min_free_bytes", "usage", "playback")
 	if m["storage"] != "unavailable" {
 		t.Fatalf("storage %v", m)
 	}
@@ -250,7 +250,7 @@ func TestAdminServerStorage(t *testing.T) {
 	}
 	r := e.as(t, "root", "GET", "/api/v1/admin/server/storage", nil, nil)
 	m := wantJSON(t, "admin", r, 200)
-	wantKeys(t, "storage", m, "storage", "integrity", "free_bytes", "min_free_bytes", "usage")
+	wantKeys(t, "storage", m, "storage", "integrity", "free_bytes", "min_free_bytes", "usage", "playback")
 	if m["storage"] != "ok" || m["integrity"] != "ok" {
 		t.Fatalf("storage %v", m)
 	}
