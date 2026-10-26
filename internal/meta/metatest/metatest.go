@@ -150,7 +150,7 @@ func mustCommit(t *testing.T, s Store, req meta.CommitRequest, want string) meta
 
 func mustEvents(t *testing.T, s Store, folderID string, cursor int64, limit int) meta.EventPage {
 	t.Helper()
-	p, err := s.ListEvents(context.Background(), folderID, cursor, limit)
+	p, err := s.ListEvents(context.Background(), folderID, cursor, limit, meta.ViewAll)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,12 +247,12 @@ func testCommitUpload(t *testing.T, s Store) {
 	if got, err := s.GetAssetBySHA(ctx, sha(0)); err != nil || got != stored {
 		t.Fatalf("GetAssetBySHA = %+v, %v", got, err)
 	}
-	if got, err := s.GetFolderAsset(ctx, f1.ID, stored.ID); err != nil || got != stored {
+	if got, err := s.GetFolderAsset(ctx, f1.ID, stored.ID, meta.ViewAll); err != nil || got != stored {
 		t.Fatalf("GetFolderAsset = %+v, %v", got, err)
 	}
 	// Not reachable through another folder (IDOR) or by its hash.
 	for _, q := range [][2]string{{f2.ID, stored.ID}, {f1.ID, sha(0)}, {f1.ID, "missing"}} {
-		if _, err := s.GetFolderAsset(ctx, q[0], q[1]); !errors.Is(err, meta.ErrAssetNotFound) {
+		if _, err := s.GetFolderAsset(ctx, q[0], q[1], meta.ViewAll); !errors.Is(err, meta.ErrAssetNotFound) {
 			t.Fatalf("GetFolderAsset(%s, %s) err = %v", q[0], q[1], err)
 		}
 	}
@@ -273,7 +273,7 @@ func testCommitUpload(t *testing.T, s Store) {
 	if got, _ := s.GetAssetBySHA(ctx, sha(0)); got != stored {
 		t.Fatalf("GetAssetBySHA after link: %+v, want the oldest %+v", got, stored)
 	}
-	if _, err := s.GetFolderAsset(ctx, f1.ID, second.ID); !errors.Is(err, meta.ErrAssetNotFound) {
+	if _, err := s.GetFolderAsset(ctx, f1.ID, second.ID, meta.ViewAll); !errors.Is(err, meta.ErrAssetNotFound) {
 		t.Fatalf("f2 asset visible in f1: %v", err)
 	}
 
@@ -297,11 +297,11 @@ func testCommitUpload(t *testing.T, s Store) {
 
 func testListEvents(t *testing.T, s Store) {
 	ctx := context.Background()
-	if _, err := s.ListEvents(ctx, "missing", 0, 10); !errors.Is(err, meta.ErrFolderNotFound) {
+	if _, err := s.ListEvents(ctx, "missing", 0, 10, meta.ViewAll); !errors.Is(err, meta.ErrFolderNotFound) {
 		t.Fatalf("ListEvents(missing) err = %v", err)
 	}
 	f := mustFolder(t, s, "f")
-	if _, err := s.ListEvents(ctx, f.ID, 0, 0); !errors.Is(err, meta.ErrInvalidLimit) {
+	if _, err := s.ListEvents(ctx, f.ID, 0, 0, meta.ViewAll); !errors.Is(err, meta.ErrInvalidLimit) {
 		t.Fatalf("ListEvents(limit 0) err = %v", err)
 	}
 	p := mustEvents(t, s, f.ID, 0, 10)

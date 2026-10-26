@@ -389,7 +389,7 @@ func (a albumRequest) isOwner() bool { return a.Folder.Access.OwnerID == a.P.Use
 // listLikes: GET .../likes, the current readers who like the asset.
 func (s *Server) listLikes(w http.ResponseWriter, r *http.Request, a albumRequest) {
 	assetID := r.PathValue("assetID")
-	likes, err := s.social.ListLikes(r.Context(), a.Folder.Folder.ID, assetID)
+	likes, err := s.social.ListLikes(r.Context(), a.Folder.Folder.ID, assetID, a.view())
 	if err != nil {
 		socialReadError(w, err)
 		return
@@ -440,7 +440,7 @@ func (s *Server) listComments(w http.ResponseWriter, r *http.Request, a albumReq
 		return
 	}
 	folderID, assetID := a.Folder.Folder.ID, r.PathValue("assetID")
-	page, err := s.social.ListComments(r.Context(), folderID, assetID, cur, limit)
+	page, err := s.social.ListComments(r.Context(), folderID, assetID, a.view(), cur, limit)
 	if err != nil {
 		socialReadError(w, err)
 		return

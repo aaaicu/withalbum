@@ -14,8 +14,11 @@ import (
 // Sync API v2 (docs/API_v2.yaml): the change feed with tombstones, the
 // asset snapshot, the folder-scoped duplicate check, asset removal and the
 // optional cursor acknowledgement. Only readers of the folder (OWNER,
-// CONTRIBUTOR, VIEWER) reach these routes, except removal (OWNER); an
-// UPLOADER is refused with 403 by the route policy before anything is read.
+// CONTRIBUTOR, VIEWER) reach these routes, except removal (OWNER,
+// CONTRIBUTOR); an UPLOADER is refused with 403 by the route policy before
+// anything is read. Every read is made with the caller's view
+// (meta.ViewOf): a VIEWER never gets a hidden asset, and its cursors carry
+// another epoch than those of the OWNER and CONTRIBUTORs.
 //
 // A sync cursor is "<epoch>.<seq>": the folder's feed epoch (16 hex digits,
 // see meta.FeedState) and the last applied event sequence. It is valid
@@ -167,6 +170,9 @@ type assetJSON struct {
 	LikeCount    int  `json:"like_count"`
 	LikedByMe    bool `json:"liked_by_me"`
 	CommentCount int  `json:"comment_count"`
+	// Hidden: the OWNER or a CONTRIBUTOR hid the asset; only they see it
+	// (always false for a VIEWER, who never gets a hidden asset).
+	Hidden bool `json:"hidden"`
 }
 
 // componentJSON is an extra original of an asset.
@@ -232,7 +238,7 @@ func assetView(as meta.Asset, viewer locationViewer, sum meta.SocialSummary) ass
 		PreviewReady: as.PreviewReady, PreviewStatus: as.PreviewStatus, UploadedAt: as.UploadedAt,
 		CapturedAt: nonEmpty(as.CapturedAt), UploadedByName: nonEmpty(as.UploaderName), MediaKind: as.MediaKind,
 		Pairing: nonEmpty(as.Pairing), Components: componentsView(as), Playback: playbackView(as),
-		LikeCount: sum.LikeCount, LikedByMe: sum.LikedByMe, CommentCount: sum.CommentCount}
+		LikeCount: sum.LikeCount, LikedByMe: sum.LikedByMe, CommentCount: sum.CommentCount, Hidden: as.Hidden}
 	if as.MediaKind != meta.MediaLivePhoto {
 		v.DurationMS = positive(as.DurationMS)
 	}
@@ -297,7 +303,7 @@ func (s *Server) syncEvents(w http.ResponseWriter, r *http.Request, a albumReque
 	if !ok {
 		return
 	}
-	page, err := s.meta.ListEvents(r.Context(), folderID, cur.seq, limit)
+	page, err := s.meta.ListEvents(r.Context(), folderID, cur.seq, limit, a.view())
 	if errors.Is(err, meta.ErrFolderNotFound) {
 		errorReply(w, 404, "folder_not_found")
 		return
@@ -331,7 +337,9 @@ func (s *Server) syncEvents(w http.ResponseWriter, r *http.Request, a albumReque
 // returns "cursor", the feed position read before the snapshot: after the
 // last page the client continues with GET /sync from that cursor, which
 // replays every change made while it was paging (applying them is
-// idempotent by asset id).
+// idempotent by asset id). With liked_by_me=true only the assets the
+// caller likes are listed, and there is no "cursor" (a filtered list, not
+// a snapshot to sync from).
 func (s *Server) listAssets(w http.ResponseWriter, r *http.Request, a albumRequest) {
 	folderID := a.Folder.Folder.ID
 	after := r.URL.Query().Get("after")
@@ -343,7 +351,16 @@ func (s *Server) listAssets(w http.ResponseWriter, r *http.Request, a albumReque
 	if !ok {
 		return
 	}
-	page, err := s.meta.ListFolderAssets(r.Context(), folderID, after, limit)
+	q := meta.AssetQuery{View: a.view()}
+	switch v := r.URL.Query()["liked_by_me"]; {
+	case len(v) == 0, len(v) == 1 && v[0] == "false":
+	case len(v) == 1 && v[0] == "true":
+		q.LikedBy = a.P.UserID
+	default:
+		errorReply(w, 400, "invalid_filter")
+		return
+	}
+	page, err := s.meta.ListFolderAssets(r.Context(), folderID, after, limit, q)
 	if errors.Is(err, meta.ErrFolderNotFound) {
 		errorReply(w, 404, "folder_not_found")
 		return
@@ -370,7 +387,7 @@ func (s *Server) listAssets(w http.ResponseWriter, r *http.Request, a albumReque
 		next = ""
 	}
 	body := map[string]any{"folder_id": folderID, "assets": list, "has_more": page.HasMore, "next_after": next}
-	if after == "" {
+	if after == "" && q.LikedBy == "" {
 		body["cursor"] = encodeCursor(page.State.Epoch, page.State.LastSeq)
 	}
 	jsonReply(w, 200, body)
@@ -405,7 +422,7 @@ func (s *Server) checkAssets(w http.ResponseWriter, r *http.Request, a albumRequ
 			hashes = append(hashes, h)
 		}
 	}
-	found, err := s.meta.FindFolderAssets(r.Context(), a.Folder.Folder.ID, hashes)
+	found, err := s.meta.FindFolderAssets(r.Context(), a.Folder.Folder.ID, hashes, a.view())
 	if err != nil {
 		metaReadFailed(w, err)
 		return
@@ -425,9 +442,11 @@ func (s *Server) checkAssets(w http.ResponseWriter, r *http.Request, a albumRequ
 	jsonReply(w, 200, map[string]any{"folder_id": a.Folder.Folder.ID, "present": present})
 }
 
-// removeAsset: DELETE /folders/{id}/assets/{aid} (OWNER). The asset leaves
-// the folder and an asset_removed event is appended, in one audited
-// transaction that re-checks the caller. The original stays on disk.
+// removeAsset: DELETE /folders/{id}/assets/{aid} (OWNER, CONTRIBUTOR, any
+// asset of the album). The asset moves to the album's trash (albums.go)
+// and an asset_removed event is appended, in one audited transaction that
+// re-checks the caller. Its likes and comments stay until the trash is
+// purged; the original stays on disk.
 func (s *Server) removeAsset(w http.ResponseWriter, r *http.Request, a albumRequest) {
 	if !s.storageReady(w) {
 		return
@@ -462,7 +481,7 @@ func (s *Server) ackCursor(w http.ResponseWriter, r *http.Request, a albumReques
 		errorReply(w, 400, "invalid_cursor")
 		return
 	}
-	st, err := s.meta.FeedState(r.Context(), a.Folder.Folder.ID)
+	st, err := s.meta.FeedState(r.Context(), a.Folder.Folder.ID, a.view())
 	if err != nil {
 		membershipError(w, "sync cursor", err)
 		return

@@ -141,17 +141,17 @@ type CommentChange struct {
 }
 
 // Social stores likes and comments. Every write is one transaction that
-// re-checks the caller, requires the asset to be in the folder
-// (ErrAssetNotFound otherwise), appends its change event when something
+// re-checks the caller, requires the asset to be in the folder and visible
+// to the caller (ErrAssetNotFound otherwise), appends its change event when something
 // changed and writes an audit row (never the comment text).
 type Social interface {
 	// SetLike adds (liked) or removes c.ActorID's like on asset c.TargetID
 	// and returns the caller's summary afterwards. Setting the current
 	// state changes nothing (changed false, no event).
 	SetLike(ctx context.Context, c AlbumChange, liked bool) (sum SocialSummary, changed bool, err error)
-	// ListLikes lists the current readers' likes on the asset, oldest
-	// first. ErrAssetNotFound.
-	ListLikes(ctx context.Context, folderID, assetID string) ([]Like, error)
+	// ListLikes lists the current readers' likes on the asset (visible
+	// with view), oldest first. ErrAssetNotFound.
+	ListLikes(ctx context.Context, folderID, assetID string, view View) ([]Like, error)
 	// SocialSummaries returns the summary of each given asset of the folder
 	// for userID (assets without likes or comments are absent).
 	SocialSummaries(ctx context.Context, folderID, userID string, assetIDs []string) (map[string]SocialSummary, error)
@@ -165,16 +165,18 @@ type Social interface {
 	// DeleteComment deletes c.CommentID and its mentions
 	// (EventCommentRemoved). ErrCommentNotFound.
 	DeleteComment(ctx context.Context, c CommentChange) error
-	// ListComments returns up to limit comments of the asset after the
-	// cursor, oldest first. ErrAssetNotFound, ErrInvalidLimit.
-	ListComments(ctx context.Context, folderID, assetID string, after SocialCursor, limit int) (CommentPage, error)
+	// ListComments returns up to limit comments of the asset (visible with
+	// view) after the cursor, oldest first. ErrAssetNotFound,
+	// ErrInvalidLimit.
+	ListComments(ctx context.Context, folderID, assetID string, view View, after SocialCursor, limit int) (CommentPage, error)
 	// Mentionable lists the folder's current readers whose accounts can
 	// log in: the owner first, then members by join time.
 	Mentionable(ctx context.Context, folderID string) ([]Member, error)
 	// ListActivity returns, newest first and before the cursor (zero: from
 	// the newest), the comments mentioning userID, the comments and likes
 	// of others on assets userID uploaded, in the folders userID can read
-	// now (not archived) and on assets still in them. A comment that both
+	// now (not archived or deleted) and on assets still in them that userID
+	// may see (hidden ones only where userID may see hidden assets). A comment that both
 	// mentions userID and is on its upload is one ActivityMention.
 	ListActivity(ctx context.Context, userID string, before SocialCursor, limit int) (ActivityPage, error)
 }

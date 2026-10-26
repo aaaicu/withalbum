@@ -29,19 +29,24 @@
 
 ### 앨범 범위
 
-| 작업 | OWNER | CONTRIBUTOR (읽기+업로드) | VIEWER (읽기) | UPLOADER (업로드만) |
+| 작업 | OWNER | CONTRIBUTOR (읽기+업로드+사진 관리) | VIEWER (읽기) | UPLOADER (업로드만) |
 |---|:---:|:---:|:---:|:---:|
 | 최소 앨범 이름/내 역할 조회 | O | O | O | O |
-| 사진 목록 및 증분 변경 내역 조회 | O | O | O | X |
-| 미리보기·원본 다운로드 | O | O | O | X |
+| 사진 목록 및 증분 변경 내역 조회 | O | O | O(비공개 사진 제외) | X |
+| 미리보기·원본 다운로드 | O | O | O(비공개 사진 제외) | X |
 | 사진 업로드 | O | O | X | O |
-| 타인의 사진 삭제 / 폴더 설정 | O | X | X | X |
-| 초대·추방·역할 변경 | O | X | X | X |
-| 소유권 이전 / 앨범 삭제 | O | X | X | X |
+| 참여자(멤버) 목록 | O(비활성 계정·대기 초대 포함) | O | O | X |
+| 사진 삭제(휴지통으로, 남이 올린 것 포함)·휴지통 보기·복구 | O | O | X | X |
+| 사진 비공개/공개 전환, 비공개 사진 보기 | O | O | X | X |
+| 폴더 설정 | O | X | X | X |
+| 초대·추방·역할 변경·대기 초대 보기 | O | X | X | X |
+| 소유권 이전 / 앨범 삭제·복구·보관 | O | X | X | X |
 
-초기 CONTRIBUTOR에게는 **타인의 파일 삭제 권한을 주지 않는다**. 본인이 업로드한 항목을 철회하는 기능은 추후 별도 정책·감사 로그와 함께 검토한다.
+M51(2026-10-27 사용자 요구 "올리기 권한이 있는 사람은 사진 삭제 권한도"): CONTRIBUTOR는 앨범의 **모든** 사진을 앨범 휴지통으로 옮길 수 있다(30일 동안 OWNER·CONTRIBUTOR가 복구, 그 뒤 좋아요·댓글 삭제로 확정, 원본 파일은 남음). UPLOADER는 앨범 내용을 볼 수 없으므로 삭제하지 못한다(사용자 요구 문구의 "올리기 권한"은 리드 해석으로 CONTRIBUTOR에 한정). 이전 정책(CONTRIBUTOR 타인 삭제 금지)은 이 결정으로 대체되었다.
 
-읽기 권한자(OWNER·CONTRIBUTOR·VIEWER)는 자산마다 촬영 시각(`captured_at`, 서버가 원본에서 읽은 값만)과 올린 사람의 **표시 이름**(`uploaded_by_name`; 로그인 아이디·user_id·이메일 아님, 비활성·로그인 불가·없는 계정은 null)을, 폴더 요약에서 멤버 수(`member_count`: 오너 + 로그인 가능한 활성 멤버, 대기 초대 제외)를 본다. 멤버 목록과 대기 초대는 계속 오너 전용이다.
+읽기 권한자(OWNER·CONTRIBUTOR·VIEWER)는 자산마다 촬영 시각(`captured_at`, 서버가 원본에서 읽은 값만)과 올린 사람의 **표시 이름**(`uploaded_by_name`; 로그인 아이디·user_id·이메일 아님, 비활성·로그인 불가·없는 계정은 null)을, 폴더 요약에서 멤버 수(`member_count`: 오너 + 로그인 가능한 활성 멤버, 대기 초대 제외)를 본다. M51부터 멤버 목록(`GET /folders/{id}/members`: 이름·역할·참여일·`is_me`·`is_owner`)은 읽기 권한자 모두가 보고(오너만 로그인 불가 계정과 대기 초대 포함), 대기 초대 목록(`GET .../invitations`)은 계속 오너 전용이다.
+
+비공개 사진(M51): OWNER·CONTRIBUTOR가 `PATCH /folders/{id}/assets/{aid}` `{"hidden": true}`로 지정. VIEWER에게는 모든 읽기 경로(스냅샷·피드·중복 확인·원본·미리보기·구성 요소·재생용 영상·좋아요·댓글·활동·위치·내 좋아요)에서 앨범에 없는 것처럼 보인다(404 `asset_not_found`, 피드에서는 `asset_removed`/`asset_added`로 변환, 커서 epoch이 보기별로 다름). 앱 수준의 공개 범위일 뿐 원본은 그대로 디스크에 있고, 이미 내려받은 사본은 회수되지 않는다.
 
 UPLOADER는 업로드 대상 선택을 위해 최소한의 앨범 이름 및 자신의 역할은 볼 수 있다(멤버 수·촬영 시각·올린 사람은 보지 않는다 — 폴더 응답에 `member_count` 키 자체가 없다). 하지만 업로드한 원본을 서버에서 다시 읽거나 타인 자료의 존재를 유추할 API는 제공하지 않는다. 클라이언트는 자기 **로컬 대기열과 전송 영수증**만 표시할 수 있다. UI에서 보이는 로컬 사본은 서버 다운로드 권한을 뜻하지 않는다.
 
@@ -131,7 +136,7 @@ Drive의 개인 My Drive ACL 역할은 `owner`, `writer`, `commenter`, `reader` 
 2. USER는 기본적으로 새 앨범을 못 만든다. 권한을 받은 USER는 새 앨범 생성과 동시에 OWNER가 된다.
 3. 이름만 알면 앨범을 가져올 수 있는 IDOR 문제를 차단한다.
 4. VIEWER 업로드는 403. UPLOADER 목록/변경 커서/프리뷰/원본 요청은 403 또는 404.
-5. CONTRIBUTOR는 목록·다운로드·업로드 가능. 다른 사람 사진 삭제/멤버 초대는 거부.
+5. CONTRIBUTOR는 목록·다운로드·업로드·사진 삭제(휴지통)·복구·비공개 전환 가능(M51). 멤버 초대는 거부. VIEWER는 비공개 사진을 어떤 경로로도 받지 못한다.
 6. OWNER만 유효한 서버 계정을 역할과 함께 초대. 수락 전 접근 거부.
 7. 탈퇴·차단·역할 하향 즉시 기존 세션에서 재검사. 이전에 다운로드한 원본의 원격 삭제를 약속하지 않는다.
 8. UPLOADER 파일을 중복 업로드해도 타인의 자산 식별·존재 여부를 유추할 수 없다.
@@ -175,9 +180,9 @@ Drive의 개인 My Drive ACL 역할은 `owner`, `writer`, `commenter`, `reader` 
   - 대기 초대 목록: 본인 것만(`GET /invitations`), 오너는 앨범의 대기 초대(`GET /folders/{id}/invitations`, 수락·취소·만료·거절된 초대는 빠짐)·취소(`DELETE .../invitations/{iid}`, 이미 끝난 초대 410).
   - 역할 변경(`PATCH /folders/{id}/members/{uid}`)·추방(`DELETE`): 대상이 오너면 409 `target_is_owner`, 멤버가 아니면 404 `member_not_found`. 다음 요청부터 새 역할로 판정(하향 → 403, 추방 → 404, 업로드 중 추방 → 커밋 재확인에서 404).
   - 소유권 이전(`POST /folders/{id}/owner`, `new_owner_user_id`): 새 오너는 **현재 멤버이며 활성 계정**이어야 한다(아니면 404 `member_not_found` / 409 `user_inactive`). 앨범을 동의 없는 계정에 떠넘기지 않기 위해 멤버로 제한했다. 1 트랜잭션: 새 오너 멤버십 삭제 → `owner_user_id` 변경 → 이전 오너를 **CONTRIBUTOR** 멤버로 삽입(트리거 순서) → 대기 초대 전부 취소 → 감사. 중간 실패는 전부 롤백되고 오너는 항상 1명(실패 주입 테스트).
-  - 보관(`DELETE /folders/{id}`): `archived_at` 설정 + 대기 초대 취소 + 감사. 파일·행은 남고 모든 라우트에서 404(오너 포함). 복원 API는 없다. **한계:** 보관된 앨범도 소유로 남아 그 오너 계정은 비활성화할 수 없다(트리거 `cannot_disable_owner`); 관리자 복구 기능은 후속.
+  - 보관(M51부터 `POST /folders/{id}/archive`, 이전에는 `DELETE /folders/{id}`): `archived_at` 설정 + 대기 초대 취소 + 감사. 파일·행은 남고 모든 라우트에서 404(오너 포함). 복원 API는 없다. **한계:** 보관된 앨범도 소유로 남아 그 오너 계정은 비활성화할 수 없다(트리거 `cannot_disable_owner`); 관리자 복구 기능은 후속.
 - **M16 추가(HTTP 테스트·로컬 바이너리 스모크 검증):**
-  - 사진 제거 `DELETE /folders/{fid}/assets/{aid}`: OWNER만(§7-5: CONTRIBUTOR는 자기 사진도 403, VIEWER·UPLOADER 403, 비멤버·관리자 404). 트랜잭션 안 재판정 + `asset.remove` 감사, `asset_removed` tombstone. 원본 파일은 지우지 않는다(GC 없음).
+  - 사진 제거 `DELETE /folders/{fid}/assets/{aid}`: M16에서는 OWNER만(M51부터 OWNER·CONTRIBUTOR, 앨범 휴지통으로 — 아래 M51 항목), VIEWER·UPLOADER 403, 비멤버·관리자 404. 트랜잭션 안 재판정 + `asset.remove` 감사, `asset_removed` tombstone. 원본 파일은 지우지 않는다(GC 없음).
   - `/assets/check`: 읽기 권한자만, **이 폴더의** 해시만 대조(전역·타 폴더 존재 비노출). UPLOADER 403(§4 "이 역할에서는 사전 중복 조회를 막는다").
   - 멱등 키는 계정·세션 기기·폴더 범위(`upload_receipts` PK). 다른 계정·기기·폴더의 같은 키 문자열은 별개 요청이라 결과·존재가 교차 노출되지 않는다. 모든 업로드가 영수증을 같은 트랜잭션에 기록하므로 UPLOADER의 신규/중복 업로드가 같은 쓰기·fsync 경로를 탄다(지연 차이 완화; 새 pool 파일의 디렉터리 fsync 차이는 남음).
   - refresh 유예: 앱(Bearer) refresh 토큰이 교환 후 30초 안에, 그 뒤 다른 교환 없이 다시 오면 1회만 재회전(`auth.refresh_grace` 감사), 첫 교환이 발급한 토큰은 사용된 것으로 기록. 유예 밖·두 번째·브라우저는 기존대로 세션 폐기. 대가: 토큰을 훔친 쪽이 정상 기기 직후 30초 안에 쓰면 정상 기기의 다음 refresh까지 세션을 얻는다(그때 재사용 감지로 폐기).
@@ -185,6 +190,7 @@ Drive의 개인 My Drive ACL 역할은 `owner`, `writer`, `commenter`, `reader` 
   - 관리자: `GET /admin/users/{uid}/devices`, `DELETE /admin/users/{uid}/devices/{did}`(`device.admin_revoke`, 행위자 = 관리자). 앨범 열람권은 여전히 없음.
   - 감사: 본인 비밀번호 변경 실패(`account.password_change` denied), 권한 거부 요약(`access.denied`: 계정·라우트·상태별 첫 거부를 즉시, 이후 10분 창 동안은 개수만 세어 다음 행의 `suppressed_before`로). 401은 기록하지 않는다(행위자 없음, DB 쓰기 폭주 방지).
 - **좋아요·댓글·멘션 (M49, 서버 모드만):** 동작 `react_to_asset`(좋아요, 댓글 작성·본인 댓글 수정·삭제) = OWNER·CONTRIBUTOR·VIEWER, `moderate_comments`(남의 댓글 삭제) = OWNER. 읽기(누른 사람·댓글·멘션 대상 목록)는 `list_album_assets`와 같음. UPLOADER는 모두 403·이벤트 없음, 비멤버·관리자 404. 이름(누른 사람·작성자·멘션)은 읽는 순간 그 앨범 읽기 권한자인 활성 계정만 표시. 추방·UPLOADER로 변경 시 그 앨범의 좋아요 삭제, 댓글은 작성자 없이 유지, 사진 제거 시 좋아요·댓글 삭제. Drive 모드는 같은 보장을 할 수 없어 숨김(§6).
+- **앨범 관리 (M51, 서버 모드만, HTTP·스토어·마이그레이션 테스트 검증, 앱 연동 전):** 앨범 삭제 `DELETE /folders/{id}`(OWNER, `deleted_at`, 모두에게 즉시 404, 대기 초대 취소, 감사 `folder.delete`) → 30일 동안 오너만 `GET /folders/deleted`·`POST /folders/{id}/restore`(그 밖의 모든 호출자 404, 트랜잭션 안 재판정, 감사 `folder.restore`) → 6시간 주기 정리가 앨범 행과 다른 자산이 쓰지 않는 원본을 삭제(감사 `folder.purge`, 원본 파일은 커밋 직전 `.system/purge`로 옮기고 커밋 뒤 삭제, 기동 시 복구). 삭제된 앨범만 가진 계정은 비활성화 가능(트리거 갱신). 관리자는 삭제된 앨범 **개수만**(`deleted_albums`, `deleted_owned`). 사진 휴지통(`GET .../trash`, `.../trash/{aid}/preview`, `POST .../trash/{aid}/restore`, 감사 `asset.restore`·`trash.purge`), 비공개(`asset.hide`/`asset.unhide`), `action` `delete_asset`·`hide_asset`·`see_hidden_assets` = OWNER·CONTRIBUTOR, `list_members` = 읽기 권한자, `list_invitations` = OWNER.
 - **미구현:** 멤버 스스로 탈퇴, 보관 앨범 복원·관리자 복구(설계 메모: 마일스톤 M16 파일), 앱 UX(핀닝 구현 포함), Drive 계정 연동, 이벤트 보존 기간·삭제(409 경로만 구현).
 - 구현 순서: SQLite 트랜잭션 및 마이그레이션 → 최초 관리자 생성/로그인 → 권한 미들웨어 → 폴더 오너/멤버 권한 → 초대/수락/회수 → 전체 통합 테스트 → Mac LAN 테스트.
 - **중요:** LAN 공개는 위 TLS 게이트에서만 가능하다(SECURITY.md). 인터넷 공개·대체 불가능한 원본의 유일 저장소로 사용하면 안 된다.

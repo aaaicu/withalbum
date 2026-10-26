@@ -176,7 +176,7 @@ func TestAdminServerStorageUnavailable(t *testing.T) {
 	}
 	r := e.as(t, "root", "GET", "/api/v1/admin/server/storage", nil, nil)
 	m := wantJSON(t, "storage", r, 200)
-	wantKeys(t, "storage", m, "storage", "integrity", "free_bytes", "min_free_bytes", "usage", "playback")
+	wantKeys(t, "storage", m, "storage", "integrity", "free_bytes", "min_free_bytes", "usage", "playback", "deleted_albums")
 	if m["storage"] != "unavailable" {
 		t.Fatalf("storage %v", m)
 	}
@@ -220,7 +220,7 @@ func TestDashboardCSRF(t *testing.T) {
 			t.Fatalf("%s: %d %s", what, r.Status, r.Body)
 		}
 	}
-	wantStatus204("owner archives family", e.as(t, "owner", "DELETE", "/api/v1/folders/"+e.family, nil, nil))
+	wantStatus204("owner archives family", e.as(t, "owner", "POST", "/api/v1/folders/"+e.family+"/archive", nil, nil))
 	unsafe := []struct{ method, path, body string }{
 		{"POST", "/api/v1/admin/folders/" + e.family + "/owner", `{"new_owner_user_id":"` + e.ids["viewer"] + `"}`},
 		{"PATCH", "/api/v1/admin/users/" + e.ids["outsider"], `{"status":"disabled"}`},
@@ -250,7 +250,7 @@ func TestAdminServerStorage(t *testing.T) {
 	}
 	r := e.as(t, "root", "GET", "/api/v1/admin/server/storage", nil, nil)
 	m := wantJSON(t, "admin", r, 200)
-	wantKeys(t, "storage", m, "storage", "integrity", "free_bytes", "min_free_bytes", "usage", "playback")
+	wantKeys(t, "storage", m, "storage", "integrity", "free_bytes", "min_free_bytes", "usage", "playback", "deleted_albums")
 	if m["storage"] != "ok" || m["integrity"] != "ok" {
 		t.Fatalf("storage %v", m)
 	}
@@ -298,7 +298,7 @@ func TestReassignArchivedOwner(t *testing.T) {
 	}
 	wantError(t, "disable owner of a folder in use", e.asJSON(t, "root", "PATCH", "/api/v1/admin/users/"+e.ids["owner"], `{"status":"disabled"}`), 409, "owns_albums")
 
-	if r := e.as(t, "owner", "DELETE", "/api/v1/folders/"+e.family, nil, nil); r.Status != 204 {
+	if r := e.as(t, "owner", "POST", "/api/v1/folders/"+e.family+"/archive", nil, nil); r.Status != 204 {
 		t.Fatalf("archive %d", r.Status)
 	}
 	m := owned()
@@ -375,7 +375,7 @@ func TestReassignArchivedOwner(t *testing.T) {
 // as stored inside the transaction, not on what the request carried.
 func TestReassignRechecksCallerInTransaction(t *testing.T) {
 	e := newACLEnv(t)
-	if r := e.as(t, "owner", "DELETE", "/api/v1/folders/"+e.family, nil, nil); r.Status != 204 {
+	if r := e.as(t, "owner", "POST", "/api/v1/folders/"+e.family+"/archive", nil, nil); r.Status != 204 {
 		t.Fatalf("archive %d", r.Status)
 	}
 	errNo := errors.New("not an administrator")

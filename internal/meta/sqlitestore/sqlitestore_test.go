@@ -177,7 +177,7 @@ func TestFailedCommitRollsBack(t *testing.T) {
 	if _, err := s.CommitUpload(ctx, meta.CommitRequest{FolderID: f.ID, Asset: bad}); err != nil {
 		t.Fatal(err)
 	}
-	if p, err := s.ListEvents(ctx, f.ID, 0, 10); err != nil || len(p.Events) != 1 || p.Events[0].Seq != 1 {
+	if p, err := s.ListEvents(ctx, f.ID, 0, 10, meta.ViewAll); err != nil || len(p.Events) != 1 || p.Events[0].Seq != 1 {
 		t.Fatalf("events after recovery %+v %v", p, err)
 	}
 }
@@ -254,7 +254,7 @@ func TestConcurrentUploadsSameBlob(t *testing.T) {
 		t.Fatalf("shared links %d, want %d", c, n/2+1)
 	}
 	for i, f := range own {
-		p, err := s.ListEvents(ctx, f.ID, 0, 100)
+		p, err := s.ListEvents(ctx, f.ID, 0, 100, meta.ViewAll)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -262,7 +262,7 @@ func TestConcurrentUploadsSameBlob(t *testing.T) {
 			t.Fatalf("own folder %d events %+v", i, p.Events)
 		}
 	}
-	p, err := s.ListEvents(ctx, shared.ID, 0, 100)
+	p, err := s.ListEvents(ctx, shared.ID, 0, 100, meta.ViewAll)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -308,8 +308,8 @@ func TestRestartPreservesState(t *testing.T) {
 		t.Fatal(err)
 	}
 	folders, _ := s.ListFolders(ctx)
-	before1, _ := s.ListEvents(ctx, f1.ID, 1, 10)
-	before2, _ := s.ListEvents(ctx, f2.ID, 0, 10)
+	before1, _ := s.ListEvents(ctx, f1.ID, 1, 10, meta.ViewAll)
+	before2, _ := s.ListEvents(ctx, f2.ID, 0, 10, meta.ViewAll)
 	asset0, _ := s.GetAssetBySHA(ctx, sha(0))
 	owner := s.ownerID
 	if err := s.Close(); err != nil {
@@ -325,8 +325,8 @@ func TestRestartPreservesState(t *testing.T) {
 	if fmt.Sprint(after) != fmt.Sprint(folders) {
 		t.Fatalf("folders %v, want %v", after, folders)
 	}
-	after1, _ := r.ListEvents(ctx, f1.ID, 1, 10)
-	after2, _ := r.ListEvents(ctx, f2.ID, 0, 10)
+	after1, _ := r.ListEvents(ctx, f1.ID, 1, 10, meta.ViewAll)
+	after2, _ := r.ListEvents(ctx, f2.ID, 0, 10, meta.ViewAll)
 	if fmt.Sprintf("%+v", after1) != fmt.Sprintf("%+v", before1) || fmt.Sprintf("%+v", after2) != fmt.Sprintf("%+v", before2) {
 		t.Fatalf("events changed:\n%+v\n%+v\nwant\n%+v\n%+v", after1, after2, before1, before2)
 	}
@@ -340,7 +340,7 @@ func TestRestartPreservesState(t *testing.T) {
 	if err != nil || res.Result != meta.ResultCreated {
 		t.Fatal(res, err)
 	}
-	if p, _ := r.ListEvents(ctx, f1.ID, 3, 10); len(p.Events) != 1 || p.Events[0].Seq != 4 {
+	if p, _ := r.ListEvents(ctx, f1.ID, 3, 10, meta.ViewAll); len(p.Events) != 1 || p.Events[0].Seq != 4 {
 		t.Fatalf("seq after reopen %+v", p)
 	}
 }

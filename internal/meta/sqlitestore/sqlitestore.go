@@ -301,13 +301,14 @@ func principalTx(ctx context.Context, q queryer, userID, sessionID string) (auth
 	return p, nil
 }
 
-// folderAccessQuery selects one non-archived folder and the relation of the
-// user given as the first argument. It is completed by a WHERE clause.
+// folderAccessQuery selects one folder in use (not archived or deleted) and
+// the relation of the user given as the first argument. It is completed by
+// a WHERE clause.
 const folderAccessQuery = `SELECT f.folder_id, f.folder_name, f.created_at, f.hide_location, f.owner_user_id, m.role,
 		(SELECT count(*) FROM users u WHERE u.user_id = f.owner_user_id AND ` + activeUser + `) +
 		(SELECT count(*) FROM folder_members mm JOIN users u ON u.user_id = mm.user_id WHERE mm.folder_id = f.folder_id AND ` + activeUser + `)
 	FROM folders f LEFT JOIN folder_members m ON m.folder_id = f.folder_id AND m.user_id = ?
-	WHERE f.archived_at IS NULL AND `
+	WHERE f.archived_at IS NULL AND f.deleted_at IS NULL AND `
 
 // activeUser is the condition on users u for an account that is active and
 // can log in (the password is not a locked marker).
@@ -337,6 +338,25 @@ func getFolderAccess(ctx context.Context, q queryer, folderID, userID string) (m
 		return meta.FolderAccess{}, meta.ErrFolderNotFound
 	}
 	return fa, err
+}
+
+// deletedFolderAccessQuery is folderAccessQuery for a deleted folder that
+// can still be restored: its arguments are the user, the folder and
+// cutoff(now).
+var deletedFolderAccessQuery = strings.Replace(folderAccessQuery, "f.deleted_at IS NULL AND ", "", 1) +
+	"f.folder_id = ? AND f.deleted_at IS NOT NULL AND f.deleted_at > ?"
+
+func getDeletedFolderAccess(ctx context.Context, q queryer, folderID, userID string, t time.Time) (meta.FolderAccess, error) {
+	fa, err := scanFolderAccess(q.QueryRowContext(ctx, deletedFolderAccessQuery, userID, folderID, cutoff(t)))
+	if errors.Is(err, sql.ErrNoRows) {
+		return meta.FolderAccess{}, meta.ErrFolderNotFound
+	}
+	return fa, err
+}
+
+// GetDeletedFolderAccess implements meta.AlbumManagement.
+func (s *Store) GetDeletedFolderAccess(ctx context.Context, folderID, userID string, t time.Time) (meta.FolderAccess, error) {
+	return getDeletedFolderAccess(ctx, s.db, folderID, userID, t)
 }
 
 // ListFoldersFor implements meta.MetadataStore.
@@ -520,13 +540,16 @@ func setLocation(a *meta.Asset, loc sql.NullString) error {
 // disabled, locked).
 const uploaderName = "(SELECT u.display_name FROM users u WHERE u.user_id = a.uploaded_by_user_id AND " + activeUser + ")"
 
-func scanAsset(row scanner) (meta.Asset, error) {
+func scanAsset(row scanner) (meta.Asset, error) { return scanAssetWith(row) }
+
+// scanAssetWith scans assetColumns followed by the columns of extra.
+func scanAssetWith(row scanner, extra ...any) (meta.Asset, error) {
 	var a meta.Asset
 	var state, captured, uploader, kind, pairing, paired, loc, hiddenBy, media sql.NullString
 	var dur sql.NullInt64
 	var playback sql.NullString
-	err := row.Scan(&a.ID, &a.SHA256, &a.Filename, &a.MimeType, &a.Bytes, &a.PreviewReady, &state, &a.UploadedAt, &captured, &dur, &uploader,
-		&kind, &pairing, &paired, &loc, &hiddenBy, &media, &playback)
+	err := row.Scan(append([]any{&a.ID, &a.SHA256, &a.Filename, &a.MimeType, &a.Bytes, &a.PreviewReady, &state, &a.UploadedAt, &captured, &dur, &uploader,
+		&kind, &pairing, &paired, &loc, &hiddenBy, &media, &playback}, extra...)...)
 	if errors.Is(err, sql.ErrNoRows) {
 		return meta.Asset{}, meta.ErrAssetNotFound
 	}
@@ -585,10 +608,35 @@ func (s *Store) GetAssetBySHA(ctx context.Context, sha string) (meta.Asset, erro
 }
 
 // GetFolderAsset implements meta.MetadataStore.
-func (s *Store) GetFolderAsset(ctx context.Context, folderID, assetID string) (meta.Asset, error) {
-	return scanAsset(s.db.QueryRowContext(ctx, "SELECT "+assetColumns+` FROM folder_assets fa
+func (s *Store) GetFolderAsset(ctx context.Context, folderID, assetID string, view meta.View) (meta.Asset, error) {
+	return getFolderAsset(ctx, s.db, folderID, assetID, view)
+}
+
+func getFolderAsset(ctx context.Context, q queryer, folderID, assetID string, view meta.View) (meta.Asset, error) {
+	return scanLinkedAsset(q.QueryRowContext(ctx, "SELECT "+linkedAssetColumns+` FROM folder_assets fa
 		JOIN assets a ON a.asset_id = fa.asset_id JOIN blobs b ON b.sha256 = a.original_sha256
-		WHERE fa.folder_id = ? AND fa.asset_id = ? AND fa.removed_at IS NULL`, folderID, assetID))
+		WHERE fa.folder_id = ? AND fa.asset_id = ? AND fa.removed_at IS NULL AND `+visibleIn(view), folderID, assetID))
+}
+
+// visibleIn is the condition on folder_assets fa for a link visible with
+// view: hidden links only in ViewAll.
+func visibleIn(view meta.View) string {
+	if view == meta.ViewAll {
+		return "1"
+	}
+	return "fa.hidden_at IS NULL"
+}
+
+// linkedAssetColumns selects a meta.Asset with its Hidden flag
+// (scanLinkedAsset) from folder_assets fa JOIN assets a JOIN blobs b.
+const linkedAssetColumns = assetColumns + ", fa.hidden_at IS NOT NULL"
+
+// scanLinkedAsset scans linkedAssetColumns.
+func scanLinkedAsset(row scanner) (meta.Asset, error) {
+	var hidden bool
+	a, err := scanAssetWith(row, &hidden)
+	a.Hidden = hidden
+	return a, err
 }
 
 // MediaKind maps a sniffed MIME type to assets.media_kind.
@@ -744,7 +792,7 @@ func (s *Store) commitUpload(ctx context.Context, req meta.CommitRequest) (meta.
 	}
 	ts := now()
 
-	existing, err := scanAsset(tx.QueryRowContext(ctx, "SELECT "+assetColumns+` FROM folder_assets fa
+	existing, err := scanLinkedAsset(tx.QueryRowContext(ctx, "SELECT "+linkedAssetColumns+` FROM folder_assets fa
 		JOIN assets a ON a.asset_id = fa.asset_id JOIN blobs b ON b.sha256 = a.original_sha256
 		WHERE fa.folder_id = ? AND a.original_sha256 = ? AND fa.removed_at IS NULL ORDER BY fa.rowid LIMIT 1`, req.FolderID, sha))
 	if err == nil {
@@ -835,18 +883,23 @@ func (s *Store) commitUpload(ctx context.Context, req meta.CommitRequest) (meta.
 // transaction. The feed state is read first; events are append-only and
 // each page is one statement, so a concurrent commit or removal can only add
 // events after the page, which HasMore then reports.
-func (s *Store) ListEvents(ctx context.Context, folderID string, cursor int64, limit int) (meta.EventPage, error) {
+//
+// The stored kinds asset_hidden and asset_unhidden are shown as the view
+// requires (feedKind); which assets are hidden is read with the page, so
+// an asset hidden now is never named with its data in a ViewVisible page,
+// whatever its earlier events were.
+func (s *Store) ListEvents(ctx context.Context, folderID string, cursor int64, limit int, view meta.View) (meta.EventPage, error) {
 	if limit <= 0 {
 		return meta.EventPage{}, meta.ErrInvalidLimit
 	}
-	state, err := s.FeedState(ctx, folderID)
+	state, err := s.FeedState(ctx, folderID, view)
 	if err != nil {
 		return meta.EventPage{}, err
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT c.seq, c.event_type, c.asset_id, COALESCE(c.uploader_device_label, ''), c.occurred_at, COALESCE(c.comment_id, ''),
 			a.original_sha256, a.original_filename, b.mime_type, b.bytes, a.preview_ready, a.preview_state, a.created_at,
 			b.captured_at, b.duration_ms, `+uploaderName+`, fa.asset_id IS NOT NULL AND fa.removed_at IS NULL, a.media_kind, a.pairing_state, `+pairedVideo+`,
-			`+blobLocation+`, `+locationHiddenBy+`, `+blobMedia+`, `+blobPlayback+`
+			`+blobLocation+`, `+locationHiddenBy+`, `+blobMedia+`, `+blobPlayback+`, fa.hidden_at IS NOT NULL
 		FROM folder_changes c
 		LEFT JOIN assets a ON a.asset_id = c.asset_id
 		LEFT JOIN blobs b ON b.sha256 = a.original_sha256
@@ -863,8 +916,9 @@ func (s *Store) ListEvents(ctx context.Context, folderID string, cursor int64, l
 		var size, dur sql.NullInt64
 		var preview sql.NullBool
 		var linked bool
+		var hidden sql.NullBool
 		if err := rows.Scan(&e.Seq, &e.Kind, &e.AssetID, &e.UploaderDeviceID, &e.OccurredAt, &e.CommentID,
-			&sha, &filename, &mime, &size, &preview, &state, &uploadedAt, &captured, &dur, &uploader, &linked, &kind, &pairing, &paired, &loc, &hiddenBy, &media, &playback); err != nil {
+			&sha, &filename, &mime, &size, &preview, &state, &uploadedAt, &captured, &dur, &uploader, &linked, &kind, &pairing, &paired, &loc, &hiddenBy, &media, &playback, &hidden); err != nil {
 			return meta.EventPage{}, err
 		}
 		if !sha.Valid || !mime.Valid {
@@ -872,6 +926,7 @@ func (s *Store) ListEvents(ctx context.Context, folderID string, cursor int64, l
 			// event silently, since clients would see a gap in seq.
 			return meta.EventPage{}, fmt.Errorf("folder %s event %d references a missing asset or blob", folderID, e.Seq)
 		}
+		feedKind(&e, view, hidden.Bool)
 		page.Events = append(page.Events, e)
 		if e.Kind != meta.EventAssetRemoved && linked {
 			a := meta.Asset{ID: e.AssetID, SHA256: sha.String, Filename: filename.String, MimeType: mime.String,
@@ -889,6 +944,7 @@ func (s *Store) ListEvents(ctx context.Context, folderID string, cursor int64, l
 			if err := setPlayback(&a, playback); err != nil {
 				return meta.EventPage{}, err
 			}
+			a.Hidden = hidden.Bool
 			page.Assets[e.AssetID] = a
 		}
 		page.NextCursor = e.Seq
@@ -902,6 +958,33 @@ func (s *Store) ListEvents(ctx context.Context, folderID string, cursor int64, l
 		return meta.EventPage{}, err
 	}
 	return page, nil
+}
+
+// Stored feed kinds that are never shown under their own name (feedKind).
+const (
+	eventAssetHidden   = "asset_hidden"
+	eventAssetUnhidden = "asset_unhidden"
+)
+
+// feedKind rewrites a stored event for view. hiddenNow reports whether the
+// event's asset is hidden in the folder now. In ViewAll hiding and showing
+// are asset_updated. In ViewVisible every event of an asset hidden now is
+// asset_removed (no comment, no device), hiding is asset_removed and
+// showing asset_added, so a client applying the feed from any cursor ends
+// with exactly the visible assets. Sequence numbers are never changed.
+func feedKind(e *meta.Event, view meta.View, hiddenNow bool) {
+	if view == meta.ViewAll {
+		if e.Kind == eventAssetHidden || e.Kind == eventAssetUnhidden {
+			e.Kind = meta.EventAssetUpdated
+		}
+		return
+	}
+	switch {
+	case hiddenNow, e.Kind == eventAssetHidden:
+		e.Kind, e.CommentID, e.UploaderDeviceID = meta.EventAssetRemoved, "", ""
+	case e.Kind == eventAssetUnhidden:
+		e.Kind = meta.EventAssetAdded
+	}
 }
 
 // ForEachBlob implements blobstore.BlobIndex: it calls fn for every blobs

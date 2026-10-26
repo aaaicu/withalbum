@@ -74,6 +74,13 @@ func (s *Server) serverStorage(w http.ResponseWriter, r *http.Request) {
 			log.Printf("admin storage: cannot read playback copies: %v", err)
 		}
 	}
+	// Deleted albums waiting for their purge: a number only, never which
+	// ones (administrators do not see albums).
+	if n, err := s.albums.DeletedFolderCount(r.Context()); err == nil {
+		body["deleted_albums"] = n
+	} else {
+		log.Printf("admin storage: cannot count deleted albums: %v", err)
+	}
 	if c := s.startup; c != nil {
 		body["startup_check"] = map[string]int{"blobs": c.Blobs, "missing": c.Missing, "size_mismatch": c.SizeMismatch,
 			"orphans": c.Orphans, "unexpected": c.Unexpected}
@@ -82,8 +89,10 @@ func (s *Server) serverStorage(w http.ResponseWriter, r *http.Request) {
 }
 
 // adminOwnedFolders answers GET /api/v1/admin/users/{userID}/folders: how
-// many folders in use the account owns, and the IDs and dates of its
-// archived ones, which an administrator may reassign before disabling it.
+// many folders in use the account owns, how many deleted ones (they do not
+// keep it from being disabled; they are purged 30 days after deletion),
+// and the IDs and dates of its archived ones, which an administrator may
+// reassign before disabling it.
 func (s *Server) adminOwnedFolders(w http.ResponseWriter, r *http.Request) {
 	userID := r.PathValue("userID")
 	if _, err := s.auth.Users.Get(r.Context(), userID); err != nil {
@@ -99,7 +108,7 @@ func (s *Server) adminOwnedFolders(w http.ResponseWriter, r *http.Request) {
 	for _, f := range of.Archived {
 		archived = append(archived, map[string]string{"folder_id": f.ID, "created_at": f.CreatedAt, "archived_at": f.ArchivedAt})
 	}
-	jsonReply(w, 200, map[string]any{"user_id": userID, "active_owned": of.Active, "archived": archived})
+	jsonReply(w, 200, map[string]any{"user_id": userID, "active_owned": of.Active, "deleted_owned": of.Deleted, "archived": archived})
 }
 
 // adminReassignArchivedOwner answers POST /api/v1/admin/folders/{folderID}/owner

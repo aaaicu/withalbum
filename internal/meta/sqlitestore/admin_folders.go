@@ -19,7 +19,8 @@ import (
 // OwnedFolders implements meta.Memberships.
 func (s *Store) OwnedFolders(ctx context.Context, userID string) (meta.OwnedFolders, error) {
 	out := meta.OwnedFolders{Archived: []meta.ArchivedFolder{}}
-	if err := s.db.QueryRowContext(ctx, "SELECT count(*) FROM folders WHERE owner_user_id = ? AND archived_at IS NULL", userID).Scan(&out.Active); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FILTER (WHERE deleted_at IS NULL), count(*) FILTER (WHERE deleted_at IS NOT NULL)
+		FROM folders WHERE owner_user_id = ? AND archived_at IS NULL`, userID).Scan(&out.Active, &out.Deleted); err != nil {
 		return meta.OwnedFolders{}, err
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT folder_id, created_at, archived_at FROM folders

@@ -68,11 +68,11 @@ func TestCaptureTimes(t *testing.T) {
 	if got, _ := s.PendingCaptures(ctx, 10); len(got) != 0 {
 		t.Fatalf("still pending %v", got)
 	}
-	got, err := s.GetFolderAsset(ctx, f1, a1.ID)
+	got, err := s.GetFolderAsset(ctx, f1, a1.ID, meta.ViewAll)
 	if err != nil || got.CapturedAt != "2026-10-19T14:03:22+09:00" {
 		t.Fatalf("asset %+v, %v", got, err)
 	}
-	page, err := s.ListEvents(ctx, f1, 0, 100)
+	page, err := s.ListEvents(ctx, f1, 0, 100, meta.ViewAll)
 	if err != nil || page.Assets[a1.ID].CapturedAt != "2026-10-19T14:03:22+09:00" || page.Assets[a1.ID].UploaderName != "owner" {
 		t.Fatalf("feed asset %+v, %v", page.Assets[a1.ID], err)
 	}
@@ -84,7 +84,7 @@ func TestCaptureTimes(t *testing.T) {
 	if n, err := s.SetCaptureTimes(ctx, []meta.CaptureResult{{SHA256: sha(1), CapturedAt: "2020-01-01T00:00:00"}}); err != nil || n != 0 {
 		t.Fatalf("second SetCaptureTimes = %d, %v", n, err)
 	}
-	if got, _ := s.GetFolderAsset(ctx, f1, a1.ID); got.CapturedAt != "2026-10-19T14:03:22+09:00" {
+	if got, _ := s.GetFolderAsset(ctx, f1, a1.ID, meta.ViewAll); got.CapturedAt != "2026-10-19T14:03:22+09:00" {
 		t.Fatalf("changed: %+v", got)
 	}
 	// A new upload of known bytes in another folder has the capture time
@@ -145,7 +145,7 @@ func TestUploaderNameAndMemberCount(t *testing.T) {
 	if n := countFor(owner); n != 1 {
 		t.Fatalf("member count %d, want 1", n)
 	}
-	if a, err := s.GetFolderAsset(ctx, f.ID, res.Asset.ID); err != nil || a.UploaderName != "" {
+	if a, err := s.GetFolderAsset(ctx, f.ID, res.Asset.ID, meta.ViewAll); err != nil || a.UploaderName != "" {
 		t.Fatalf("asset of a disabled uploader %+v, %v", a, err)
 	}
 	list, err := s.ListFoldersFor(ctx, owner)
@@ -183,7 +183,7 @@ func TestLocations(t *testing.T) {
 	if err != nil || n != 1 {
 		t.Fatalf("SetCaptureTimes = %d, %v", n, err)
 	}
-	a, err := s.GetFolderAsset(ctx, f.ID, res.Asset.ID)
+	a, err := s.GetFolderAsset(ctx, f.ID, res.Asset.ID, meta.ViewAll)
 	if err != nil || a.Location == nil || *a.Location != (meta.Location{Lat: -12.3456789, Lon: 123.4567891, AccuracyM: 4.5}) {
 		t.Fatalf("asset %+v %v", a.Location, err)
 	}
@@ -231,11 +231,11 @@ func TestMediaInfo(t *testing.T) {
 	if err != nil || n != 1 {
 		t.Fatalf("SetCaptureTimes = %d, %v", n, err)
 	}
-	a, err := s.GetFolderAsset(ctx, f.ID, id)
+	a, err := s.GetFolderAsset(ctx, f.ID, id, meta.ViewAll)
 	if err != nil || a.Camera == nil || *a.Camera != cam || a.Width != 4032 || a.Height != 3024 {
 		t.Fatalf("asset %+v %d×%d %v", a.Camera, a.Width, a.Height, err)
 	}
-	b, err := s.GetFolderAsset(ctx, f.ID, plain)
+	b, err := s.GetFolderAsset(ctx, f.ID, plain, meta.ViewAll)
 	if err != nil || b.Camera != nil || b.Width != 0 {
 		t.Fatalf("plain asset %+v %d %v", b.Camera, b.Width, err)
 	}

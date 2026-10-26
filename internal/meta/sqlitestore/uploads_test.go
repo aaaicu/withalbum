@@ -271,7 +271,7 @@ func TestPreviewStatusUpdatesEveryFolder(t *testing.T) {
 		t.Fatalf("set ready: %d %v", n, err)
 	}
 	for _, f := range []string{e.folder, e.folder2} {
-		page, err := e.s.ListEvents(ctx, f, 0, 10)
+		page, err := e.s.ListEvents(ctx, f, 0, 10, meta.ViewAll)
 		if err != nil {
 			t.Fatal(err)
 		}

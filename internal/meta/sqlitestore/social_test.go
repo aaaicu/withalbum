@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/aaaicu/withalbum/internal/authz"
+	"github.com/aaaicu/withalbum/internal/meta"
 )
 
 // TestReaderCondMatchesAuthz: the SQL that decides whose likes, names and
@@ -44,6 +45,18 @@ func TestReaderCondMatchesAuthz(t *testing.T) {
 		}
 		if want != authz.Allowed(p, authz.ReactToAsset, &fa.Access) {
 			t.Errorf("%s: ReactToAsset differs from ListAlbumAssets", login)
+		}
+		// TestManagerCondMatchesAuthz: managerCond (used with readerCond)
+		// is authz.SeeHiddenAssets for every reader.
+		var manager bool
+		if err := e.s.db.QueryRow("SELECT "+readerCond("?1", "?2")+" AND "+managerCond("?1", "?2"), e.folder, id).Scan(&manager); err != nil {
+			t.Fatal(err)
+		}
+		if seeAll := authz.Allowed(p, authz.SeeHiddenAssets, &fa.Access); manager != seeAll {
+			t.Errorf("%s: managerCond %v, authz SeeHiddenAssets %v", login, manager, seeAll)
+		}
+		if meta.ViewOf(p, fa.Access) == meta.ViewAll != authz.Allowed(p, authz.SeeHiddenAssets, &fa.Access) {
+			t.Errorf("%s: ViewOf differs from SeeHiddenAssets", login)
 		}
 	}
 }

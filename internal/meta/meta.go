@@ -114,6 +114,9 @@ type Asset struct {
 	// original (PlaybackStore), nil when the original has none (not a
 	// video asset, or a store without playback copies).
 	Playback *Playback `json:"-"`
+	// Hidden: the asset is hidden in the folder it was read from
+	// (AlbumManagement); only a ViewAll read returns hidden assets.
+	Hidden bool `json:"-"`
 }
 
 // Playback is the state of the playback copy of one original: a smaller
@@ -303,6 +306,11 @@ type Event struct {
 
 // Event kinds. EventAssetRemoved is a tombstone: the asset is no longer in
 // the folder (its original stays on disk; other folders are not affected).
+// Hiding and showing an asset (AlbumManagement) is EventAssetUpdated in a
+// ViewAll feed; in a ViewVisible feed hiding is EventAssetRemoved, showing
+// EventAssetAdded, and every event of an asset that is hidden now is
+// EventAssetRemoved, so the feed never names a hidden asset's data and its
+// sequence numbers stay the same in both views.
 const (
 	EventAssetAdded   = "asset_added"   // written by CommitUpload
 	EventAssetRemoved = "asset_removed" // written by RemoveAsset
@@ -323,9 +331,10 @@ const (
 )
 
 // FeedState locates a folder's change feed. Epoch identifies the feed of
-// this folder in this database: it differs between folders and changes
-// when the database is restored from a backup, so a sync cursor carrying
-// another epoch does not belong to this feed. Events with Seq <= PrunedSeq
+// this folder in this database as seen with one View: it differs between
+// folders and views and changes when the database is restored from a
+// backup, so a sync cursor carrying another epoch does not belong to this
+// feed (a reader whose view changed reloads the snapshot). Events with Seq <= PrunedSeq
 // may no longer be kept (retention; nothing prunes events yet).
 type FeedState struct {
 	Epoch     string
@@ -806,10 +815,12 @@ var (
 )
 
 // OwnedFolders is what an administrator may know about the folders an
-// account owns: how many are in use, and the IDs of the archived ones.
-// Never names, members or contents.
+// account owns: how many are in use, how many are deleted (restorable by
+// their owner, purged later), and the IDs of the archived ones. Never
+// names, members or contents.
 type OwnedFolders struct {
 	Active   int
+	Deleted  int
 	Archived []ArchivedFolder
 }
 
@@ -926,8 +937,8 @@ type MetadataStore interface {
 	// GetFolder returns ErrFolderNotFound for an unknown id.
 	GetFolder(ctx context.Context, id string) (Folder, error)
 	// GetFolderAccess returns the folder and userID's relation to it, which
-	// may be none at all. It returns ErrFolderNotFound for an unknown or
-	// archived folder.
+	// may be none at all. It returns ErrFolderNotFound for an unknown,
+	// archived or deleted folder.
 	GetFolderAccess(ctx context.Context, folderID, userID string) (FolderAccess, error)
 	// CommitUpload atomically registers the blob (if new) and a new asset,
 	// links the asset to the folder and appends one EventAssetAdded event.
@@ -935,25 +946,26 @@ type MetadataStore interface {
 	// nothing and returns ResultAlreadyPresent with that asset. It returns
 	// ErrFolderNotFound for an unknown folder.
 	CommitUpload(ctx context.Context, req CommitRequest) (CommitResult, error)
-	// ListEvents returns up to limit events with Seq > cursor, in Seq order.
-	// It returns ErrFolderNotFound for an unknown folder and ErrInvalidLimit
-	// for limit <= 0.
-	ListEvents(ctx context.Context, folderID string, cursor int64, limit int) (EventPage, error)
-	// FeedState returns the folder's feed position. ErrFolderNotFound.
-	FeedState(ctx context.Context, folderID string) (FeedState, error)
+	// ListEvents returns up to limit events with Seq > cursor, in Seq order,
+	// as seen with view (see the event kinds). It returns ErrFolderNotFound
+	// for an unknown folder and ErrInvalidLimit for limit <= 0.
+	ListEvents(ctx context.Context, folderID string, cursor int64, limit int, view View) (EventPage, error)
+	// FeedState returns the folder's feed position for view. ErrFolderNotFound.
+	FeedState(ctx context.Context, folderID string, view View) (FeedState, error)
 	// ListFolderAssets returns up to limit assets currently linked to the
-	// folder with Asset.ID > after, in Asset.ID order (a snapshot page).
-	// ErrFolderNotFound, ErrInvalidLimit.
-	ListFolderAssets(ctx context.Context, folderID, after string, limit int) (AssetPage, error)
+	// folder that q selects, with Asset.ID > after, in Asset.ID order (a
+	// snapshot page). ErrFolderNotFound, ErrInvalidLimit.
+	ListFolderAssets(ctx context.Context, folderID, after string, limit int, q AssetQuery) (AssetPage, error)
 	// FindFolderAssets returns, for each given SHA-256 that the folder
-	// currently holds as an asset's original, that asset there (by its
-	// smallest ID). It never looks at other folders.
-	FindFolderAssets(ctx context.Context, folderID string, shas []string) (map[string]FolderMatch, error)
-	// RemoveAsset unlinks asset c.TargetID from c.FolderID and appends an
-	// EventAssetRemoved event, re-checking the caller (c.Authorize) and
-	// writing an audit row in the same transaction. The asset row and the
-	// original file are kept. ErrAssetNotFound (unknown, removed already,
-	// or of another folder).
+	// currently holds as an asset's original (visible with view), that
+	// asset there (by its smallest ID). It never looks at other folders.
+	FindFolderAssets(ctx context.Context, folderID string, shas []string, view View) (map[string]FolderMatch, error)
+	// RemoveAsset moves asset c.TargetID of c.FolderID to the folder's trash
+	// (AlbumManagement) and appends an EventAssetRemoved event, re-checking
+	// the caller (c.Authorize) and writing an audit row in the same
+	// transaction. The asset row, its likes and comments and the original
+	// file are kept. ErrAssetNotFound (unknown, removed already, or of
+	// another folder).
 	RemoveAsset(ctx context.Context, c AlbumChange) error
 	// AckSyncCursor records that deviceID has applied c.FolderID's feed up
 	// to seq (device_sync_cursors), after re-checking the caller.
@@ -1057,9 +1069,9 @@ type MetadataStore interface {
 	// no event. It returns the number of events appended.
 	SetCaptureTimes(ctx context.Context, results []CaptureResult) (int, error)
 	// GetFolderAsset returns the asset with this ID if it is currently linked
-	// to the folder, and ErrAssetNotFound otherwise (unknown ID, removed, or
-	// an asset of another folder).
-	GetFolderAsset(ctx context.Context, folderID, assetID string) (Asset, error)
+	// to the folder and visible with view, and ErrAssetNotFound otherwise
+	// (unknown ID, removed, hidden from view, or an asset of another folder).
+	GetFolderAsset(ctx context.Context, folderID, assetID string, view View) (Asset, error)
 	// GetAssetBySHA returns the oldest asset whose original has this hash,
 	// in any folder, or ErrAssetNotFound. It serves deduplication inside the
 	// server; its result must never be shown to a user.

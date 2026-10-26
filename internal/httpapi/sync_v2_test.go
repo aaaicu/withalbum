@@ -91,7 +91,7 @@ func (e *aclEnv) snapshot(t *testing.T, login, folder string, limit int) (feed, 
 		}
 		for _, a := range m["assets"].([]any) {
 			a := a.(map[string]any)
-			wantKeys(t, "snapshot asset", a, "id", "sha256", "filename", "mime_type", "bytes", "preview_ready", "preview_status", "uploaded_at", "captured_at", "duration_ms", "location", "camera", "width", "height", "uploaded_by_name", "media_kind", "playback", "like_count", "liked_by_me", "comment_count")
+			wantKeys(t, "snapshot asset", a, "id", "sha256", "filename", "mime_type", "bytes", "preview_ready", "preview_status", "uploaded_at", "captured_at", "duration_ms", "location", "camera", "width", "height", "uploaded_by_name", "media_kind", "playback", "like_count", "liked_by_me", "comment_count", "hidden")
 			local[a["id"].(string)] = a["sha256"].(string)
 		}
 		if m["has_more"] != true {
@@ -403,17 +403,24 @@ func TestSyncV2RouteMatrix(t *testing.T) {
 		if r := e.asJSON(t, login, "POST", f+"/assets/check", `{"sha256":["`+shaHex(e.pic)+`"]}`); r.Status != readers[login] {
 			t.Fatalf("check as %s: %d", login, r.Status)
 		}
-		if r := e.asJSON(t, login, "PUT", f+"/sync/cursor", `{"cursor":"`+cursor+`"}`); r.Status != acks[login] {
+		cur := cursor
+		if login == "viewer" {
+			// A VIEWER's feed has an epoch of its own (hidden assets).
+			wantError(t, "owner's cursor as viewer", e.asJSON(t, login, "PUT", f+"/sync/cursor", `{"cursor":"`+cursor+`"}`), 409, "cursor_invalid")
+			cur = e.pull(t, "viewer", e.family, "", feed{}, 100)
+		}
+		if r := e.asJSON(t, login, "PUT", f+"/sync/cursor", `{"cursor":"`+cur+`"}`); r.Status != acks[login] {
 			t.Fatalf("ack as %s: %d %s", login, r.Status, r.Body)
 		}
 	}
 	if n := e.count(t, "SELECT count(*) FROM device_sync_cursors WHERE folder_id = ?", e.family); n != 3 {
 		t.Fatalf("acknowledged cursors %d, want 3", n)
 	}
-	// §7-5: only the owner removes photos, a contributor not even its own.
+	// M51: the owner and CONTRIBUTORs remove any photo (to the trash); a
+	// VIEWER or UPLOADER not even its own.
 	own := wantJSON(t, "contributor upload", e.upload(t, "contributor", e.family, []byte("contributor photo"), "cp"), 201)["asset_id"].(string)
 	for _, target := range []string{e.photo, own} {
-		for login, want := range map[string]int{"contributor": 403, "viewer": 403, "uploader": 403, "outsider": 404, "root": 404} {
+		for login, want := range map[string]int{"viewer": 403, "uploader": 403, "outsider": 404, "root": 404} {
 			r := e.as(t, login, "DELETE", f+"/assets/"+target, nil, nil)
 			if r.Status != want {
 				t.Fatalf("delete %s as %s: %d %s", target, login, r.Status, r.Body)
@@ -428,7 +435,10 @@ func TestSyncV2RouteMatrix(t *testing.T) {
 	if r := e.as(t, "owner", "DELETE", f+"/assets/"+own, nil, nil); r.Status != 204 {
 		t.Fatalf("owner removes: %d %s", r.Status, r.Body)
 	}
-	if e.audits(t, "asset.remove") != 1 {
+	if r := e.as(t, "contributor", "DELETE", f+"/assets/"+e.photo, nil, nil); r.Status != 204 {
+		t.Fatalf("contributor removes the owner's photo: %d %s", r.Status, r.Body)
+	}
+	if e.audits(t, "asset.remove") != 2 {
 		t.Fatal("removal not audited")
 	}
 	// An upload-only member's attempts are summarized in the audit log.

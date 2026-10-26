@@ -35,6 +35,15 @@ func readerCond(f, u string) string {
 			OR EXISTS(SELECT 1 FROM folder_members rm WHERE rm.folder_id = ` + f + ` AND rm.user_id = ` + u + ` AND rm.role IN ('CONTRIBUTOR','VIEWER'))))`
 }
 
+// managerCond is true when account U may see the hidden assets of folder
+// F now: its owner or a CONTRIBUTOR member (authz.SeeHiddenAssets;
+// TestReaderCondMatchesAuthz pins the two together). It does not check
+// that U can log in; it is only used together with readerCond.
+func managerCond(f, u string) string {
+	return `(EXISTS(SELECT 1 FROM folders mf WHERE mf.folder_id = ` + f + ` AND mf.owner_user_id = ` + u + `)
+		OR EXISTS(SELECT 1 FROM folder_members mm WHERE mm.folder_id = ` + f + ` AND mm.user_id = ` + u + ` AND mm.role = 'CONTRIBUTOR'))`
+}
+
 // readerName selects the display name of account U while it can read
 // folder F (readerCond), else NULL.
 func readerName(f, u string) string {
@@ -42,10 +51,11 @@ func readerName(f, u string) string {
 }
 
 // assetInFolder returns meta.ErrAssetNotFound unless the asset is linked to
-// the folder and not removed.
-func assetInFolder(ctx context.Context, q queryer, folderID, assetID string) error {
+// the folder, not removed, and visible with view.
+func assetInFolder(ctx context.Context, q queryer, folderID, assetID string, view meta.View) error {
 	var ok bool
-	if err := q.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM folder_assets WHERE folder_id = ? AND asset_id = ? AND removed_at IS NULL)",
+	// #nosec G202 -- visibleIn is constant SQL
+	if err := q.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM folder_assets fa WHERE fa.folder_id = ? AND fa.asset_id = ? AND fa.removed_at IS NULL AND "+visibleIn(view)+")",
 		folderID, assetID).Scan(&ok); err != nil {
 		return err
 	}
@@ -84,8 +94,8 @@ func summary(ctx context.Context, q queryer, folderID, assetID, userID string) (
 func (s *Store) SetLike(ctx context.Context, c meta.AlbumChange, liked bool) (meta.SocialSummary, bool, error) {
 	var sum meta.SocialSummary
 	var changed bool
-	err := s.changeTx(ctx, c, c.FolderID, func(tx *sql.Tx, fa meta.FolderAccess) error {
-		if err := assetInFolder(ctx, tx, c.FolderID, c.TargetID); err != nil {
+	err := s.changeTxView(ctx, c, c.FolderID, func(tx *sql.Tx, fa meta.FolderAccess, view meta.View) error {
+		if err := assetInFolder(ctx, tx, c.FolderID, c.TargetID, view); err != nil {
 			return err
 		}
 		ts := now()
@@ -124,8 +134,8 @@ func (s *Store) SetLike(ctx context.Context, c meta.AlbumChange, liked bool) (me
 }
 
 // ListLikes implements meta.Social.
-func (s *Store) ListLikes(ctx context.Context, folderID, assetID string) ([]meta.Like, error) {
-	if err := assetInFolder(ctx, s.db, folderID, assetID); err != nil {
+func (s *Store) ListLikes(ctx context.Context, folderID, assetID string, view meta.View) ([]meta.Like, error) {
+	if err := assetInFolder(ctx, s.db, folderID, assetID, view); err != nil {
 		return nil, err
 	}
 	// #nosec G202 -- readerCond is constant SQL over column names; values are arguments
@@ -300,8 +310,8 @@ func (s *Store) CreateComment(ctx context.Context, c meta.CommentChange) (meta.C
 	}
 	var cm meta.Comment
 	var replayed bool
-	err := s.changeTx(ctx, c.AlbumChange, c.FolderID, func(tx *sql.Tx, fa meta.FolderAccess) error {
-		if err := assetInFolder(ctx, tx, c.FolderID, c.TargetID); err != nil {
+	err := s.changeTxView(ctx, c.AlbumChange, c.FolderID, func(tx *sql.Tx, fa meta.FolderAccess, view meta.View) error {
+		if err := assetInFolder(ctx, tx, c.FolderID, c.TargetID, view); err != nil {
 			return err
 		}
 		if c.Key != "" {
@@ -356,8 +366,8 @@ func (s *Store) EditComment(ctx context.Context, c meta.CommentChange) (meta.Com
 		return meta.Comment{}, err
 	}
 	var cm meta.Comment
-	err := s.changeTx(ctx, c.AlbumChange, c.FolderID, func(tx *sql.Tx, fa meta.FolderAccess) error {
-		if err := assetInFolder(ctx, tx, c.FolderID, c.TargetID); err != nil {
+	err := s.changeTxView(ctx, c.AlbumChange, c.FolderID, func(tx *sql.Tx, fa meta.FolderAccess, view meta.View) error {
+		if err := assetInFolder(ctx, tx, c.FolderID, c.TargetID, view); err != nil {
 			return err
 		}
 		old, err := getComment(ctx, tx, c.FolderID, c.TargetID, c.CommentID)
@@ -415,8 +425,8 @@ func (s *Store) DeleteComment(ctx context.Context, c meta.CommentChange) error {
 	if err := checkCommentChange(c, true); err != nil {
 		return err
 	}
-	return s.changeTx(ctx, c.AlbumChange, c.FolderID, func(tx *sql.Tx, fa meta.FolderAccess) error {
-		if err := assetInFolder(ctx, tx, c.FolderID, c.TargetID); err != nil {
+	return s.changeTxView(ctx, c.AlbumChange, c.FolderID, func(tx *sql.Tx, fa meta.FolderAccess, view meta.View) error {
+		if err := assetInFolder(ctx, tx, c.FolderID, c.TargetID, view); err != nil {
 			return err
 		}
 		old, err := getComment(ctx, tx, c.FolderID, c.TargetID, c.CommentID)
@@ -439,11 +449,11 @@ func (s *Store) DeleteComment(ctx context.Context, c meta.CommentChange) error {
 }
 
 // ListComments implements meta.Social.
-func (s *Store) ListComments(ctx context.Context, folderID, assetID string, after meta.SocialCursor, limit int) (meta.CommentPage, error) {
+func (s *Store) ListComments(ctx context.Context, folderID, assetID string, view meta.View, after meta.SocialCursor, limit int) (meta.CommentPage, error) {
 	if limit <= 0 {
 		return meta.CommentPage{}, meta.ErrInvalidLimit
 	}
-	if err := assetInFolder(ctx, s.db, folderID, assetID); err != nil {
+	if err := assetInFolder(ctx, s.db, folderID, assetID, view); err != nil {
 		return meta.CommentPage{}, err
 	}
 	rows, err := s.db.QueryContext(ctx, commentQuery+`c.folder_id = ? AND c.asset_id = ? AND (c.created_at, c.comment_id) > (?, ?)
@@ -485,18 +495,20 @@ func (s *Store) Mentionable(ctx context.Context, folderID string) ([]meta.Member
 
 // activityQuery lists the activity of user ?1 newest first before (?2, ?3)
 // (no bound when ?2 is ""), limit ?4. The folders are those ?1 can read now
-// (not archived), the assets those still in them.
-// #nosec G202 -- readerCond is constant SQL over column names and ?1; values are arguments
+// (not archived or deleted), the assets those still in them that ?1 may
+// see: hidden ones only in folders where ?1 may see hidden assets
+// (managerCond).
+// #nosec G202 -- readerCond and managerCond are constant SQL over column names and ?1; values are arguments
 var activityQuery = `WITH mine AS (
-		SELECT f.folder_id, f.folder_name FROM folders f
-		WHERE f.archived_at IS NULL AND ` + readerCond("f.folder_id", "?1") + `
+		SELECT f.folder_id, f.folder_name, ` + managerCond("f.folder_id", "?1") + ` AS all_assets FROM folders f
+		WHERE f.archived_at IS NULL AND f.deleted_at IS NULL AND ` + readerCond("f.folder_id", "?1") + `
 	), items AS (
 		SELECT c.created_at AS at, 'c' || c.comment_id AS id,
 			CASE WHEN EXISTS(SELECT 1 FROM comment_mentions cm WHERE cm.comment_id = c.comment_id AND cm.user_id = ?1) THEN 'mention' ELSE 'comment' END AS kind,
 			c.folder_id AS folder_id, mine.folder_name AS folder_name, c.asset_id AS asset_id, c.author_user_id AS actor,
 			COALESCE(` + readerName("c.folder_id", "c.author_user_id") + `, '') AS actor_name, c.comment_id AS comment_id
 		FROM asset_comments c JOIN mine ON mine.folder_id = c.folder_id
-		JOIN folder_assets fa ON fa.folder_id = c.folder_id AND fa.asset_id = c.asset_id AND fa.removed_at IS NULL
+		JOIN folder_assets fa ON fa.folder_id = c.folder_id AND fa.asset_id = c.asset_id AND fa.removed_at IS NULL AND (fa.hidden_at IS NULL OR mine.all_assets)
 		JOIN assets a ON a.asset_id = c.asset_id
 		WHERE c.author_user_id <> ?1 AND (a.uploaded_by_user_id = ?1
 			OR EXISTS(SELECT 1 FROM comment_mentions cm WHERE cm.comment_id = c.comment_id AND cm.user_id = ?1))
@@ -504,7 +516,7 @@ var activityQuery = `WITH mine AS (
 		SELECT l.created_at, 'l' || l.folder_id || l.asset_id || l.user_id, 'like', l.folder_id, mine.folder_name, l.asset_id, l.user_id,
 			COALESCE(` + readerName("l.folder_id", "l.user_id") + `, ''), ''
 		FROM asset_likes l JOIN mine ON mine.folder_id = l.folder_id
-		JOIN folder_assets fa ON fa.folder_id = l.folder_id AND fa.asset_id = l.asset_id AND fa.removed_at IS NULL
+		JOIN folder_assets fa ON fa.folder_id = l.folder_id AND fa.asset_id = l.asset_id AND fa.removed_at IS NULL AND (fa.hidden_at IS NULL OR mine.all_assets)
 		JOIN assets a ON a.asset_id = l.asset_id
 		WHERE a.uploaded_by_user_id = ?1 AND l.user_id <> ?1 AND ` + readerCond("l.folder_id", "l.user_id") + `
 	)
@@ -624,8 +636,9 @@ func dropLikes(ctx context.Context, tx *sql.Tx, folderID, userID string) (int, e
 }
 
 // dropAssetSocial deletes the likes and comments (with their mentions) of an
-// asset that leaves the folder. The asset_removed event that follows tells
-// clients to drop them; no social events are written.
+// asset whose removal from the folder becomes final (PurgeTrash). Its
+// asset_removed event was written when it went to the trash; no social
+// events are written.
 func dropAssetSocial(ctx context.Context, tx *sql.Tx, folderID, assetID string) (likes, comments int64, err error) {
 	res, err := tx.ExecContext(ctx, "DELETE FROM asset_likes WHERE folder_id = ? AND asset_id = ?", folderID, assetID)
 	if err != nil {

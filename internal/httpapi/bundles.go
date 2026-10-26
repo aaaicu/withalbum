@@ -50,7 +50,7 @@ const bundleCompleteRoute = "POST /api/v1/folders/{folderID}/bundles/{bundleID}/
 // social.go), asset_camera (camera, width and height on assets) and
 // video_playback (playback on assets and GET .../assets/{aid}/playback,
 // playback.go).
-var ServerFeatures = []string{"live_photo_bundles", "folder_create_idempotency", "asset_duration", "asset_location", "reactions_comments", "asset_camera", "video_playback"}
+var ServerFeatures = []string{"live_photo_bundles", "folder_create_idempotency", "asset_duration", "asset_location", "reactions_comments", "asset_camera", "video_playback", "album_management"}
 
 func (s *Server) bundleRoutes(rt *router) {
 	rt.handleAlbum("POST /api/v1/folders/{folderID}/bundles", s.createBundle)
@@ -504,7 +504,7 @@ func bundleReply(w http.ResponseWriter, folderID string, declared []meta.NewBund
 // folder in the path (readers only, like /original): role paired_video
 // of a live photo. Range requests work as for /original.
 func (s *Server) downloadComponent(w http.ResponseWriter, r *http.Request, a albumRequest) {
-	asset, err := s.meta.GetFolderAsset(r.Context(), a.Folder.Folder.ID, r.PathValue("assetID"))
+	asset, err := s.meta.GetFolderAsset(r.Context(), a.Folder.Folder.ID, r.PathValue("assetID"), a.view())
 	if errors.Is(err, meta.ErrAssetNotFound) {
 		errorReply(w, 404, "asset_not_found")
 		return
