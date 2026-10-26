@@ -89,7 +89,7 @@ and its preview reported as "unsupported".
 ## Playback copies of videos (M50)
 
 For each video asset the server makes a smaller MP4 for streaming
-(H.264 + AAC, at most 1920x1080, fast start) with macOS `avconvert`
+(H.264 + AAC, at most 1280x720, fast start) with macOS `avconvert`
 (AVFoundation) or, without it, `ffmpeg` with an H.264 encoder
 (`WITHALBUM_PLAYBACK=off|avconvert|ffmpeg`, `WITHALBUM_AVCONVERT`,
 `WITHALBUM_FFMPEG`). The video is untrusted input to these tools, so the

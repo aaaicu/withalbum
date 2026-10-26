@@ -247,7 +247,7 @@ info:
     Playback copies of videos ("video_playback"). For each video asset
     (media_kind "video"; not a live_photo) the server makes a smaller
     copy for streaming in the background after the upload: MP4, H.264
-    video and AAC audio, at most 1920x1080 in the video's own orientation
+    video and AAC audio, at most 1280x720 in the video's own orientation
     (rotation applied), HDR converted to SDR where the tool can, moov
     before mdat (a player can start at once), private metadata such as
     the location removed. Its state is the asset's "playback" object:

@@ -59,7 +59,7 @@ func Movie(w, h uint32, mdat int, seed byte) []byte {
 }
 
 // Fake is a Transcoder whose behavior a test sets. The zero value writes
-// a fast-start 1080×1920 MP4 of 1000 bytes.
+// a fast-start 720×1280 MP4 of 1000 bytes.
 type Fake struct {
 	mu    sync.Mutex
 	calls int
@@ -77,7 +77,7 @@ func (f *Fake) Transcode(ctx context.Context, src, out, dir string) error {
 	run := f.Run
 	f.mu.Unlock()
 	if run == nil {
-		return os.WriteFile(out, MP4(1080, 1920, 1000, 1, true), 0600)
+		return os.WriteFile(out, MP4(720, 1280, 1000, 1, true), 0600)
 	}
 	return run(ctx, src, out)
 }
