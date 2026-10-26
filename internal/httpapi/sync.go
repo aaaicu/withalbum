@@ -158,6 +158,9 @@ type assetJSON struct {
 	// Components (live photos only): the extra originals, each downloaded
 	// from .../components/{role}.
 	Components []componentJSON `json:"components,omitempty"`
+	// Playback: the playback copy of a video asset (playback.go), null
+	// for every other asset (a live_photo included).
+	Playback *playbackJSON `json:"playback"`
 	// LikeCount: likes of people who can read the folder now; LikedByMe:
 	// the caller's own; CommentCount: every comment on the asset in this
 	// folder (social.go). Only readers ever get an asset.
@@ -228,7 +231,7 @@ func assetView(as meta.Asset, viewer locationViewer, sum meta.SocialSummary) ass
 	v := assetJSON{ID: as.ID, SHA256: as.SHA256, Filename: as.Filename, MimeType: as.MimeType, Bytes: as.Bytes,
 		PreviewReady: as.PreviewReady, PreviewStatus: as.PreviewStatus, UploadedAt: as.UploadedAt,
 		CapturedAt: nonEmpty(as.CapturedAt), UploadedByName: nonEmpty(as.UploaderName), MediaKind: as.MediaKind,
-		Pairing: nonEmpty(as.Pairing), Components: componentsView(as),
+		Pairing: nonEmpty(as.Pairing), Components: componentsView(as), Playback: playbackView(as),
 		LikeCount: sum.LikeCount, LikedByMe: sum.LikedByMe, CommentCount: sum.CommentCount}
 	if as.MediaKind != meta.MediaLivePhoto {
 		v.DurationMS = positive(as.DurationMS)
@@ -432,6 +435,9 @@ func (s *Server) removeAsset(w http.ResponseWriter, r *http.Request, a albumRequ
 	err := s.meta.RemoveAsset(r.Context(), s.change(a, authz.DeleteAsset, r.PathValue("assetID")))
 	switch {
 	case err == nil:
+		// The playback copy goes when no video asset in use holds the
+		// original any more (playback.go).
+		s.kickPlayback()
 		w.WriteHeader(204)
 	case errors.Is(err, meta.ErrAssetNotFound):
 		errorReply(w, 404, "asset_not_found")

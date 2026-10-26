@@ -375,7 +375,8 @@ func runTool(ctx context.Context, path string, args []string, dir string) (strin
 	return text, nil
 }
 
-// cleanWork removes converter scratch directories left by a crash.
+// cleanWork removes converter and playback tool scratch directories left
+// by a crash.
 func (s *Store) cleanWork() error {
 	dir := filepath.Join(s.root, filepath.FromSlash(WorkRelDir))
 	entries, err := os.ReadDir(dir)
@@ -383,7 +384,7 @@ func (s *Store) cleanWork() error {
 		return err
 	}
 	for _, e := range entries {
-		if !strings.HasPrefix(e.Name(), workPrefix) {
+		if !strings.HasPrefix(e.Name(), workPrefix) && !strings.HasPrefix(e.Name(), playbackWorkPrefix) {
 			continue
 		}
 		if err := s.vol.Check(); err != nil {

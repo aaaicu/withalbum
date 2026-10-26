@@ -38,8 +38,8 @@ func TestEmbeddedMigrationsAreContiguous(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ms) != 15 || LatestVersion() != 15 {
-		t.Fatalf("got %d migrations, LatestVersion %d; want 15", len(ms), LatestVersion())
+	if len(ms) != 16 || LatestVersion() != 16 {
+		t.Fatalf("got %d migrations, LatestVersion %d; want 16", len(ms), LatestVersion())
 	}
 }
 
@@ -706,5 +706,79 @@ func TestMigration0015MediaInfo(t *testing.T) {
 	var idx int
 	if err := sqlDB.QueryRow("SELECT count(*) FROM sqlite_schema WHERE type = 'index' AND name = 'idx_blobs_media_pending'").Scan(&idx); err != nil || idx != 1 {
 		t.Fatalf("index %d, %v", idx, err)
+	}
+}
+
+// TestMigration0016VideoPlayback: the videos in use are queued (the
+// backfill; photos, live photos and removed videos are not), linking a
+// video queues it in the same statement, a link coming back requeues an
+// idle copy but no other state, and the columns accept only what the
+// worker writes.
+func TestMigration0016VideoPlayback(t *testing.T) {
+	ctx := context.Background()
+	sqlDB, _ := openTemp(t)
+	migrateTo(t, sqlDB, 15)
+	addUser(t, sqlDB, "owner", "active")
+	mustExec(t, sqlDB, "INSERT INTO folders(folder_id, folder_name, owner_user_id) VALUES ('f1', 'Trip', 'owner')")
+	blob := func(c, mime string) string {
+		sha := strings.Repeat(c, 64)
+		mustExec(t, sqlDB, "INSERT INTO blobs(sha256, bytes, mime_type, relative_path, verified_at) VALUES (?, 10, ?, ?, 'v')", sha, mime, "pool/"+c)
+		return sha
+	}
+	video, photo, live, gone, later := blob("a", "video/quicktime"), blob("b", "image/jpeg"), blob("c", "image/heic"), blob("d", "video/mp4"), blob("e", "video/mp4")
+	asset := func(id, sha, kind string, removed bool) {
+		mustExec(t, sqlDB, "INSERT INTO assets(asset_id, original_sha256, original_filename, media_kind) VALUES (?, ?, 'x', ?)", id, sha, kind)
+		var at any
+		if removed {
+			at = "t"
+		}
+		mustExec(t, sqlDB, "INSERT INTO folder_assets(folder_id, asset_id, removed_at) VALUES ('f1', ?, ?)", id, at)
+	}
+	asset("v1", video, "video", false)
+	asset("v2", video, "video", false) // the same bytes twice: one row
+	asset("p1", photo, "image", false)
+	asset("l1", live, "live_photo", false)
+	asset("g1", gone, "video", true)
+	if err := Migrate(ctx, sqlDB); err != nil {
+		t.Fatal(err)
+	}
+	rows := func() string {
+		t.Helper()
+		var s sql.NullString
+		if err := sqlDB.QueryRow("SELECT group_concat(substr(sha256, 1, 1) || ':' || status, ',') FROM (SELECT * FROM blob_playback ORDER BY sha256)").Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		return s.String
+	}
+	if got := rows(); got != "a:pending" {
+		t.Fatalf("after migration %q", got)
+	}
+	// A new link queues; a removed link coming back queues an idle row.
+	asset("n1", later, "video", false)
+	mustExec(t, sqlDB, "UPDATE folder_assets SET removed_at = NULL WHERE asset_id = 'g1'")
+	if got := rows(); got != "a:pending,d:pending,e:pending" {
+		t.Fatalf("after links %q", got)
+	}
+	mustExec(t, sqlDB, "UPDATE blob_playback SET status = 'ready', bytes = 5, width = 1920, height = 1080 WHERE sha256 = ?", video)
+	mustExec(t, sqlDB, "UPDATE blob_playback SET status = 'idle' WHERE sha256 = ?", later)
+	mustExec(t, sqlDB, "UPDATE folder_assets SET removed_at = 't' WHERE asset_id IN ('v2', 'n1')")
+	mustExec(t, sqlDB, "UPDATE folder_assets SET removed_at = NULL WHERE asset_id IN ('v2', 'n1')")
+	if got := rows(); got != "a:ready,d:pending,e:pending" {
+		t.Fatalf("after relinks %q", got)
+	}
+	var b sql.NullInt64
+	if err := sqlDB.QueryRow("SELECT bytes FROM blob_playback WHERE sha256 = ?", video).Scan(&b); err != nil || b.Int64 != 5 {
+		t.Fatalf("a ready copy changed by a relink: %v, %v", b, err)
+	}
+	expectReject(t, sqlDB, "CHECK constraint", "UPDATE blob_playback SET status = 'ready' WHERE sha256 = ?", later)
+	expectReject(t, sqlDB, "CHECK constraint", "UPDATE blob_playback SET bytes = 3 WHERE sha256 = ?", later)
+	expectReject(t, sqlDB, "CHECK constraint", "UPDATE blob_playback SET status = 'maybe' WHERE sha256 = ?", later)
+	expectReject(t, sqlDB, "CHECK constraint", "UPDATE blob_playback SET status = 'ready', bytes = 3, width = 9000, height = 10 WHERE sha256 = ?", later)
+	expectReject(t, sqlDB, "CHECK constraint", "UPDATE blob_playback SET status = 'failed', next_attempt_at = 't' WHERE sha256 = ?", later)
+	expectReject(t, sqlDB, "CHECK constraint", "UPDATE blob_playback SET reason = ? WHERE sha256 = ?", strings.Repeat("x", 33), later)
+	expectReject(t, sqlDB, "FOREIGN KEY", "INSERT INTO blob_playback(sha256, status, queued_at, updated_at) VALUES (?, 'pending', 't', 't')", strings.Repeat("f", 64))
+	var idx int
+	if err := sqlDB.QueryRow("SELECT count(*) FROM sqlite_schema WHERE name IN ('idx_blob_playback_pending', 'blob_playback_on_link', 'blob_playback_on_relink')").Scan(&idx); err != nil || idx != 3 {
+		t.Fatalf("index and triggers %d, %v", idx, err)
 	}
 }

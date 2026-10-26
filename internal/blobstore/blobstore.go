@@ -51,6 +51,7 @@ type Store struct {
 	vol        *storage.Volume
 	root       string
 	converters []Converter // set once with SetConverters, before use
+	transcoder Transcoder  // set once with SetTranscoder, before use; nil: none
 	// promoteMu serializes Promote per pool prefix directory (the first two
 	// hex digits of the hash). The checks Promote makes on an existing pool
 	// file and the rename that replaces it are not atomic together; without
@@ -61,15 +62,16 @@ type Store struct {
 }
 
 // New creates .system/incoming, .system/pool, .system/previews,
-// .system/uploads (resumable upload sessions) and .system/work (preview
-// converter scratch space) inside a verified volume. It never creates the
+// .system/uploads (resumable upload sessions), .system/work (preview
+// converter scratch space) and .system/playback (playback copies of
+// videos) inside a verified volume. It never creates the
 // volume root or any missing parent.
 func New(vol *storage.Volume) (*Store, error) {
 	if err := vol.Check(); err != nil {
 		return nil, err
 	}
 	root := vol.Root()
-	for _, p := range []string{".system", ".system/incoming", ".system/pool", ".system/previews", ".system/uploads", ".system/work"} {
+	for _, p := range []string{".system", ".system/incoming", ".system/pool", ".system/previews", ".system/uploads", ".system/work", PlaybackRelDir} {
 		if err := storage.MkdirIn(filepath.Join(root, p)); err != nil {
 			return nil, err
 		}

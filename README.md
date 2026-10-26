@@ -76,6 +76,7 @@ GitHub Releases는 git의 'release/' 폴더가 아니라 GitHub Releases 화면�
 - **규모:** 합성 라이브러리(실제 사진 아님) 10만·50만 자산에서 기동·동기화 스냅샷·이벤트·업로드·verify 시간과 메모리를 측정했습니다: [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md). 동기화 페이지·업로드 시간은 크기와 무관했지만, **서버 기동(모든 원본 크기 확인)은 50만 원본에서 약 45초**(10만은 1.1초, 파일 시스템 vnode 캐시 한계)이고 그동안 `/health`가 응답하지 않습니다. 실제 사진 크기의 파일·HDD·Raspberry Pi에서는 측정하지 않았습니다.
 - LAN은 자체 서명 TLS + 공개키 지문 핀만 지원합니다(브라우저 경고). 앱의 핀닝은 실기기에서 검증하지 않았습니다. 인터넷 접속·원격 중계는 없습니다.
 - HEIC·영상 미리보기는 `sips`/`ffmpeg`가 있을 때만 만들어집니다(없으면 원본만 보관, `unsupported`). Linux 외부 도구는 미검증입니다.
+- 동영상 재생용 경량본(M50)은 macOS `avconvert`(기본 설치) 또는 `ffmpeg`(H.264 인코더)가 있을 때만 만들어집니다(없으면 `playback.status`가 `unsupported`, 앱은 원본을 스트리밍). avconvert는 비트레이트를 정할 수 없어 1080p에서 약 9~11Mbit/s, ffmpeg는 약 4.5Mbit/s입니다. 실제 iPhone HDR/Dolby Vision 영상·Linux는 미검증입니다.
 - 동영상 길이(`duration_ms`)는 MP4/MOV의 `mvhd`/`mehd` 값이며 실제 iPhone·Android 영상과의 대조는 미검증입니다(조각 MP4 등 값이 없으면 null). 업로드·앨범 생성 멱등 키는 계정·기기 범위라, 다시 로그인한 기기의 재시도는 새 요청으로 처리됩니다.
 - 실시간 푸시, 자진 탈퇴·보관 복원은 없습니다.
 - 원본 다운로드의 416 응답 본문은 JSON 오류 객체가 아닌 짧은 text/plain입니다(`docs/API_v2.yaml`).
@@ -344,7 +345,7 @@ CAS pool 원본에 대해 해시가 같더라도 멀티파일 Live Photo, 메타
 
 나머지 `/api/v1/me*`, `/api/v1/admin/users*`(관리자의 타인 기기 목록·해지 포함)는 [`docs/API_v2.yaml`](docs/API_v2.yaml) 참조. 소유·멤버가 아닌 폴더(관리자 포함)는 존재하지 않는 폴더와 똑같이 404, 멤버인데 역할이 부족하면 403. 이 표는 실제 `internal/httpapi`(라우트 정책 표 `middleware_authz.go`)를 기준으로 합니다. 초대·멤버·소유권 이전·보관 라우트(`/api/v1/folders/{id}/invitations*`, `/members*`, `/owner`, `DELETE /api/v1/folders/{id}`, `/api/v1/invitations*`)도 같은 규격 파일에 있습니다.
 
-**미디어 목표:** HEIC/HEIF, JPG, PNG, RAW, Live Photo(HEIC+MOV 묶음), MP4/MOV, 4K/HDR, EXIF 및 촬영 날짜 유지. 원본 바이트는 변환하지 않고 보존, 프리뷰만 별도 생성. 현재 JPEG/PNG/GIF는 업로드 중 내장 디코더로 간이 JPEG 미리보기를 만들고, HEIC/HEIF/AVIF 등 정지 이미지(macOS `sips`)와 영상(`ffmpeg`, 대표 프레임 1장)은 **선택적 외부 도구**가 있을 때 커밋 후 백그라운드 워커가 만듭니다(M22: `preview_status` pending → ready/failed, 폴더 피드에 `asset_updated`). 도구가 없으면 원본만 보존하고 `unsupported`로 표시합니다. 도구는 셸 없이 인자 배열로만, 최소 환경·시간 제한·프로세스 그룹·격리된 작업 디렉터리(`.system/work`)에서 실행하고, 출력은 JPEG로 디코드·재인코드한 뒤에만 저장합니다. Live Photo는 사진+영상 묶음 업로드(M26: `POST /folders/{id}/bundles`, 두 원본 검증 후 한 트랜잭션 커밋, Apple content identifier 짝 확인, 영상은 `components/paired_video`로 다운로드)로 원본 그대로 보관합니다(실기기 iPhone 파일 대조 미검증). RAW·HDR 톤 매핑·영상 트랜스코딩은 미구현입니다.
+**미디어 목표:** HEIC/HEIF, JPG, PNG, RAW, Live Photo(HEIC+MOV 묶음), MP4/MOV, 4K/HDR, EXIF 및 촬영 날짜 유지. 원본 바이트는 변환하지 않고 보존, 프리뷰만 별도 생성. 현재 JPEG/PNG/GIF는 업로드 중 내장 디코더로 간이 JPEG 미리보기를 만들고, HEIC/HEIF/AVIF 등 정지 이미지(macOS `sips`)와 영상(`ffmpeg`, 대표 프레임 1장)은 **선택적 외부 도구**가 있을 때 커밋 후 백그라운드 워커가 만듭니다(M22: `preview_status` pending → ready/failed, 폴더 피드에 `asset_updated`). 도구가 없으면 원본만 보존하고 `unsupported`로 표시합니다. 도구는 셸 없이 인자 배열로만, 최소 환경·시간 제한·프로세스 그룹·격리된 작업 디렉터리(`.system/work`)에서 실행하고, 출력은 JPEG로 디코드·재인코드한 뒤에만 저장합니다. Live Photo는 사진+영상 묶음 업로드(M26: `POST /folders/{id}/bundles`, 두 원본 검증 후 한 트랜잭션 커밋, Apple content identifier 짝 확인, 영상은 `components/paired_video`로 다운로드)로 원본 그대로 보관합니다(실기기 iPhone 파일 대조 미검증). 동영상은 재생용 경량본(M50: H.264+AAC MP4, 최대 1080p, fast start, `GET .../assets/{id}/playback`)을 커밋 후 백그라운드에서 따로 만들고 원본은 그대로 둡니다. RAW는 미구현입니다.
 
 <!-- API 개발 지시:
 internal/httpapi는 512MiB 단일 요청 업로드 + 재개 가능한 업로드 세션(M22, uploads.go: 세션은 계정·기기·폴더 소유, 청크 fsync 후 오프셋 기록, 완료 시 전체 SHA-256 재계산 후 단일 업로드와 같은 commitOriginal). idempotency receipt·폴더 범위 hash preflight는 M16에서 구현.
@@ -423,7 +424,7 @@ GitHub에 곧바로 public push, Release 발행, 실제 원본 정리/삭제 등
 | `internal/meta/sqlitestore/` | **실행됨(부분 구현):** SQLite `MetadataStore`. 쓰기는 `BEGIN IMMEDIATE` 트랜잭션 하나(전역 mutex 없음), 읽기는 트랜잭션 없이 조회. 폴더별 랜덤 asset_id, 소유자는 `folders.owner_user_id`, 멤버는 `folder_members`. bootstrap 관리자(`account_bootstrap.user_id`로 식별, 처음엔 잠금된 `admin`)가 이전·이관 폴더 소유 |
 | `internal/meta/jsonstore/` | **서버 미사용·고정:** 이전 버전의 `.system/state.json` 구현. `MetadataStore`를 더 이상 구현하지 않으며 테스트에서 이전 버전 데이터를 만드는 용도로만 유지 |
 | `internal/legacyimport/` | **실행됨(`migrate-legacy`):** state.json → SQLite 무손실 이관. dry-run 기본, `-apply` 시 백업 → 임시 DB에 단일 트랜잭션 → 전 행 대조 검증 → 원자적 rename → state.json 보존 rename. 단계별 크래시·결함 입력 테스트 |
-| `internal/blobstore/` | **실행됨:** 업로드 임시 저장(해시·크기·MIME, HEIC/MOV 등 ISO BMFF 판별), pool 승격(원자적 rename, 0400, 접두 디렉터리별 직렬화), 재개 업로드 부분 파일(`.system/uploads`), JPEG 프리뷰, 선택적 외부 변환기(sips·ffmpeg) |
+| `internal/blobstore/` | **실행됨:** 업로드 임시 저장(해시·크기·MIME, HEIC/MOV 등 ISO BMFF 판별), pool 승격(원자적 rename, 0400, 접두 디렉터리별 직렬화), 재개 업로드 부분 파일(`.system/uploads`), JPEG 프리뷰, 선택적 외부 변환기(sips·ffmpeg), 동영상 재생용 경량본(avconvert·ffmpeg, `.system/playback`) |
 | `internal/integrity/` | **실행됨(`verify`):** 읽기 전용 무결성 검사 — DB integrity_check·foreign_key_check, 원본 존재·크기·(`-hash`) SHA-256, 손상 원본의 자산·폴더 보고, 프리뷰 누락·미참조 pool 파일·orphans 집계 |
 | `internal/backup/` | **실행됨(`backup`/`restore`):** `VACUUM INTO` 스냅샷 + 원본 증분 복사(복사 중 해시 검증) + 매니페스트, 백업 대상 마커·잠금. 복원은 전수 검증 → 스테이징 → 세션 폐기·감사 → 저널 → 원자적 rename(기존 데이터 보존). 단계별 크래시·손상 백업·업로드 중 백업 테스트 |
 | `server/maint.go` | **실행됨(콘솔):** `verify`·`backup`·`restore` 명령과 잠금 정책(verify·backup은 서버 실행 중 가능, restore는 중지 필요) |

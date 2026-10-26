@@ -1608,6 +1608,14 @@
         rows.push(checkRow('kept', '저장된 원본 ' + fmtBytes(u.stored_bytes) + ' · ' + u.stored_originals.toLocaleString('ko-KR') + '개',
           '앨범에 담긴 사진·동영상 ' + u.album_copies.toLocaleString('ko-KR') + '개 · ' + fmtBytes(u.album_bytes) + ' · 중복 제거로 아낀 용량 ' + fmtBytes(u.dedup_saved_bytes) + ' (같은 파일은 한 번만 저장)'));
       }
+      // Playback copies are derived files, never "kept" originals.
+      const pb = s.playback;
+      if (pb && !brief) {
+        rows.push(pb.tool
+          ? checkRow(pb.failed > 0 ? 'bad' : 'ok', '재생용 영상 ' + pb.ready.toLocaleString('ko-KR') + '개 · ' + fmtBytes(pb.ready_bytes),
+            '만드는 중 ' + pb.pending.toLocaleString('ko-KR') + ' · 실패 ' + pb.failed.toLocaleString('ko-KR') + ' · 원본으로 재생 ' + pb.unsupported.toLocaleString('ko-KR') + ' · 변환 ' + pb.tool)
+          : checkRow('off', '재생용 영상 · 변환 도구 없음', '동영상은 원본 그대로 재생해요'));
+      }
       const c = s.startup_check;
       if (c) {
         const good = c.blobs - c.missing - c.size_mismatch;

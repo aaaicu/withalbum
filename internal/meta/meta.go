@@ -110,6 +110,112 @@ type Asset struct {
 	// RolePairedVideo); the zero Component when the asset has none. The
 	// asset's own SHA256, MimeType and Bytes are always the still.
 	PairedVideo Component `json:"-"`
+	// Playback is the state of the playback copy of a video asset's
+	// original (PlaybackStore), nil when the original has none (not a
+	// video asset, or a store without playback copies).
+	Playback *Playback `json:"-"`
+}
+
+// Playback is the state of the playback copy of one original: a smaller
+// MP4 (H.264 + AAC, at most 1080p) made by the playback worker. Bytes,
+// Width and Height are set when Status is PlaybackReady.
+type Playback struct {
+	Status        string // PlaybackPending, PlaybackReady, PlaybackFailed, PlaybackUnsupported
+	Bytes         int64
+	Width, Height int
+}
+
+// Playback states (Playback.Status, blob_playback.status). PlaybackIdle is
+// internal: no video asset in use holds the bytes and the copy was
+// deleted; it is never shown.
+const (
+	PlaybackPending     = "pending"
+	PlaybackReady       = "ready"
+	PlaybackFailed      = "failed"
+	PlaybackUnsupported = "unsupported"
+	PlaybackIdle        = "idle"
+)
+
+// Playback reasons (blob_playback.reason): short codes, never paths.
+const (
+	PlaybackNoConverter   = "no_converter"   // unsupported: no tool on this server
+	PlaybackOriginalSmall = "original_small" // unsupported: the copy would not be meaningfully smaller
+	PlaybackTooLong       = "too_long"       // unsupported: longer than the worker converts
+	PlaybackConvertError  = "convert_error"  // the tool failed
+	PlaybackTimeout       = "timeout"        // the tool ran out of time
+	PlaybackBadOutput     = "invalid_output" // the tool's output was refused
+	PlaybackFileMissing   = "file_missing"   // pending again: a ready copy was missing
+)
+
+// PlaybackJob is an original whose playback copy is pending.
+type PlaybackJob struct {
+	SHA256     string
+	MimeType   string
+	Bytes      int64
+	DurationMS int64 // 0: unknown (not read yet, or none)
+	Attempts   int   // failed runs so far
+}
+
+// PlaybackResult settles one PlaybackJob (SetPlayback). Status is the new
+// state: PlaybackReady (with Bytes, Width, Height), PlaybackFailed,
+// PlaybackUnsupported, or PlaybackPending for a failed run that is retried
+// at RetryAt (Attempts counts it).
+type PlaybackResult struct {
+	SHA256        string
+	Status        string
+	Reason        string
+	Bytes         int64
+	Width, Height int
+	Attempts      int
+	RetryAt       time.Time
+}
+
+// PlaybackStats are the totals of the playback copies (no album, no name).
+type PlaybackStats struct {
+	Pending, Ready, Failed, Unsupported int64
+	ReadyBytes                          int64 // bytes of the ready copies
+}
+
+// PlaybackStore is a MetadataStore that keeps the state of playback
+// copies. A video asset linked to a folder queues its original in the same
+// transaction (pending); the worker takes pending originals, records each
+// result, and releases the copies of originals no video asset in use
+// holds any more.
+type PlaybackStore interface {
+	// PendingPlayback returns up to limit pending originals that a video
+	// asset in use holds and whose retry time is not after now, newest
+	// first.
+	PendingPlayback(ctx context.Context, now time.Time, limit int) ([]PlaybackJob, error)
+	// SetPlayback records r for an original whose copy is pending (any
+	// other state is left as it is, and nothing is appended). When the
+	// shown status changes it appends one EventAssetUpdated to every
+	// folder holding a video asset of the original, in the same
+	// transaction. It returns the number of events.
+	SetPlayback(ctx context.Context, r PlaybackResult) (int, error)
+	// RequeuePlayback makes the copy of sha pending again (a ready copy
+	// whose file is missing, an unsupported one whose tool is now there),
+	// if its status is from, with reason, and appends events like
+	// SetPlayback. It reports whether the row changed.
+	RequeuePlayback(ctx context.Context, sha, from, reason string) (bool, error)
+	// RequeueUnsupported requeues every copy that is unsupported for
+	// reason (a tool that is now available) and returns how many.
+	RequeueUnsupported(ctx context.Context, reason string) (int, error)
+	// UnreferencedPlayback returns up to limit originals whose copy is not
+	// idle although no video asset in use holds them any more.
+	UnreferencedPlayback(ctx context.Context, limit int) ([]string, error)
+	// ReleasePlayback marks the copy of sha idle if, checked again in the
+	// transaction, no video asset in use holds it; the caller then deletes
+	// the file. It reports whether it did.
+	ReleasePlayback(ctx context.Context, sha string) (bool, error)
+	// ReadyPlayback returns up to limit ready copies (original hash and the
+	// recorded size of the copy) with a hash greater than after, in hash
+	// order (checking that the files exist).
+	ReadyPlayback(ctx context.Context, after string, limit int) ([]PlaybackJob, error)
+	// PlaybackStatus returns the status of the copy of sha, "" when there
+	// is no row.
+	PlaybackStatus(ctx context.Context, sha string) (string, error)
+	// PlaybackStats returns the totals.
+	PlaybackStats(ctx context.Context) (PlaybackStats, error)
 }
 
 // Component is an extra original of an asset (asset_components), stored

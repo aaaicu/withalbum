@@ -388,7 +388,13 @@ func (s *Store) GetFolder(ctx context.Context, id string) (meta.Folder, error) {
 
 // assetColumns selects a meta.Asset (scanAsset) from assets a JOIN blobs b.
 const assetColumns = "a.asset_id, a.original_sha256, a.original_filename, b.mime_type, b.bytes, a.preview_ready, a.preview_state, a.created_at, b.captured_at, b.duration_ms, " +
-	uploaderName + ", a.media_kind, a.pairing_state, " + pairedVideo + ", " + blobLocation + ", " + locationHiddenBy + ", " + blobMedia
+	uploaderName + ", a.media_kind, a.pairing_state, " + pairedVideo + ", " + blobLocation + ", " + locationHiddenBy + ", " + blobMedia + ", " + blobPlayback
+
+// blobPlayback selects the playback copy state of the original b of a
+// video asset a as a JSON object (s, b, w, h), NULL for other assets and
+// originals without a row (setPlayback).
+const blobPlayback = `(SELECT json_object('s', p.status, 'b', p.bytes, 'w', p.width, 'h', p.height) FROM blob_playback p
+	WHERE p.sha256 = b.sha256 AND a.media_kind = 'video')`
 
 // blobMedia selects the camera and pixel size of blobs b as a JSON object
 // (make, model, lens, focal, w, h), NULL when none is known (setMedia).
@@ -518,8 +524,9 @@ func scanAsset(row scanner) (meta.Asset, error) {
 	var a meta.Asset
 	var state, captured, uploader, kind, pairing, paired, loc, hiddenBy, media sql.NullString
 	var dur sql.NullInt64
+	var playback sql.NullString
 	err := row.Scan(&a.ID, &a.SHA256, &a.Filename, &a.MimeType, &a.Bytes, &a.PreviewReady, &state, &a.UploadedAt, &captured, &dur, &uploader,
-		&kind, &pairing, &paired, &loc, &hiddenBy, &media)
+		&kind, &pairing, &paired, &loc, &hiddenBy, &media, &playback)
 	if errors.Is(err, sql.ErrNoRows) {
 		return meta.Asset{}, meta.ErrAssetNotFound
 	}
@@ -532,6 +539,9 @@ func scanAsset(row scanner) (meta.Asset, error) {
 		return meta.Asset{}, err
 	}
 	if err := setMedia(&a, media); err != nil {
+		return meta.Asset{}, err
+	}
+	if err := setPlayback(&a, playback); err != nil {
 		return meta.Asset{}, err
 	}
 	return a, setLocation(&a, loc)
@@ -836,7 +846,7 @@ func (s *Store) ListEvents(ctx context.Context, folderID string, cursor int64, l
 	rows, err := s.db.QueryContext(ctx, `SELECT c.seq, c.event_type, c.asset_id, COALESCE(c.uploader_device_label, ''), c.occurred_at, COALESCE(c.comment_id, ''),
 			a.original_sha256, a.original_filename, b.mime_type, b.bytes, a.preview_ready, a.preview_state, a.created_at,
 			b.captured_at, b.duration_ms, `+uploaderName+`, fa.asset_id IS NOT NULL AND fa.removed_at IS NULL, a.media_kind, a.pairing_state, `+pairedVideo+`,
-			`+blobLocation+`, `+locationHiddenBy+`, `+blobMedia+`
+			`+blobLocation+`, `+locationHiddenBy+`, `+blobMedia+`, `+blobPlayback+`
 		FROM folder_changes c
 		LEFT JOIN assets a ON a.asset_id = c.asset_id
 		LEFT JOIN blobs b ON b.sha256 = a.original_sha256
@@ -849,12 +859,12 @@ func (s *Store) ListEvents(ctx context.Context, folderID string, cursor int64, l
 	page := meta.EventPage{Events: []meta.Event{}, Assets: map[string]meta.Asset{}, NextCursor: cursor, State: state}
 	for rows.Next() {
 		e := meta.Event{FolderID: folderID}
-		var sha, filename, mime, uploadedAt, state, captured, uploader, kind, pairing, paired, loc, hiddenBy, media sql.NullString
+		var sha, filename, mime, uploadedAt, state, captured, uploader, kind, pairing, paired, loc, hiddenBy, media, playback sql.NullString
 		var size, dur sql.NullInt64
 		var preview sql.NullBool
 		var linked bool
 		if err := rows.Scan(&e.Seq, &e.Kind, &e.AssetID, &e.UploaderDeviceID, &e.OccurredAt, &e.CommentID,
-			&sha, &filename, &mime, &size, &preview, &state, &uploadedAt, &captured, &dur, &uploader, &linked, &kind, &pairing, &paired, &loc, &hiddenBy, &media); err != nil {
+			&sha, &filename, &mime, &size, &preview, &state, &uploadedAt, &captured, &dur, &uploader, &linked, &kind, &pairing, &paired, &loc, &hiddenBy, &media, &playback); err != nil {
 			return meta.EventPage{}, err
 		}
 		if !sha.Valid || !mime.Valid {
@@ -874,6 +884,9 @@ func (s *Store) ListEvents(ctx context.Context, folderID string, cursor int64, l
 				return meta.EventPage{}, err
 			}
 			if err := setMedia(&a, media); err != nil {
+				return meta.EventPage{}, err
+			}
+			if err := setPlayback(&a, playback); err != nil {
 				return meta.EventPage{}, err
 			}
 			page.Assets[e.AssetID] = a

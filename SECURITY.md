@@ -86,6 +86,49 @@ Keep the tools updated; decoder vulnerabilities in them are outside the
 server's control. Without the tools nothing is lost: the original is stored
 and its preview reported as "unsupported".
 
+## Playback copies of videos (M50)
+
+For each video asset the server makes a smaller MP4 for streaming
+(H.264 + AAC, at most 1920x1080, fast start) with macOS `avconvert`
+(AVFoundation) or, without it, `ffmpeg` with an H.264 encoder
+(`WITHALBUM_PLAYBACK=off|avconvert|ffmpeg`, `WITHALBUM_AVCONVERT`,
+`WITHALBUM_FFMPEG`). The video is untrusted input to these tools, so the
+rules of the preview tools apply, and:
+
+- the arguments are a fixed list built by the server (no shell, no
+  user-supplied text: the input is the pool path of the hash, or for
+  avconvert a symbolic link to it named `source.mov` in the scratch
+  directory, the output a fixed name in that directory, both absolute and
+  never taken for an option); minimal environment, no stdin, bounded
+  output, own process group, nice 10;
+- one conversion at a time, a pause between conversions, a time limit of
+  four times the video's length plus two minutes (5 minutes to 2 hours;
+  one hour when the length is unknown), videos over 3 hours are not
+  converted; the output is watched while the tool runs and the tool is
+  stopped when it grows past the original's size (plus 16 MiB); no
+  conversion starts unless the free space exceeds the upload reserve plus
+  the original's size;
+- `ffmpeg` gets `-protocol_whitelist file`, `-format_whitelist`, a 512 MiB
+  allocation cap, two threads, `-map_metadata -1`; `avconvert` keeps its
+  metadata filter on, so the copy carries no location;
+- the original (mode 0400) is compared before and after the run; a change
+  is logged as INTEGRITY and the copy is failed;
+- the output is accepted only if its top-level boxes are sane, it starts
+  with `ftyp`, has `moov` before `mdat`, an H.264 sample entry and a
+  displayed size within 1920x1920, and is at most 80% of the original
+  (otherwise nothing is kept and clients stream the original); then it is
+  fsynced, made read-only and renamed into `.system/playback/<sha[:2]>/<sha>.mp4`;
+- failures are retried twice with a backoff (10 and 40 minutes), then
+  recorded as failed; a shutdown kills the tool and leaves the video
+  pending; a missing or unavailable volume pauses the worker.
+
+The copy is served by `GET .../assets/{asset_id}/playback` under the same
+route policy as the original (readers only, UPLOADER 403, other albums
+404), as an attachment with the sandbox CSP. It is deleted when no video
+asset in use holds the original any more. Go cannot cap a child's total
+memory without cgo or a shell; on macOS RLIMIT_AS is not enforced either.
+Keep the tools updated.
+
 ## Live Photo bundles (M26): threat model
 
 A Live Photo is uploaded as two originals (a HEIC/JPEG still and a

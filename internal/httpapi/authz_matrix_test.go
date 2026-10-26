@@ -108,6 +108,7 @@ var matrixClasses = map[string]matrixClass{
 	"GET /api/v1/folders/{folderID}/assets/{assetID}/original":                classRead,
 	"GET /api/v1/folders/{folderID}/assets/{assetID}/preview":                 classRead,
 	"GET /api/v1/folders/{folderID}/assets/{assetID}/components/{role}":       classRead,
+	"GET /api/v1/folders/{folderID}/assets/{assetID}/playback":                classRead,
 	"GET /api/v1/folders/{folderID}/assets/{assetID}/likes":                   classRead,
 	"PUT /api/v1/folders/{folderID}/assets/{assetID}/likes/me":                classRead,
 	"DELETE /api/v1/folders/{folderID}/assets/{assetID}/likes/me":             classRead,

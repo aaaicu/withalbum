@@ -18,6 +18,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -252,6 +253,10 @@ type appOptions struct {
 	// Converters are the external preview tools (blobstore.FindConverters;
 	// nil: none, HEIC and video previews are unsupported).
 	Converters []blobstore.Converter
+	// Transcoder makes the playback copies of videos
+	// (blobstore.FindTranscoder; nil: none, videos are streamed as they
+	// are).
+	Transcoder blobstore.Transcoder
 }
 
 // app is a started server: a verified volume, its instance lock, the
@@ -327,6 +332,7 @@ func openApp(ctx context.Context, root string, opt appOptions) (*app, error) {
 	}
 	logReconcile(a.report)
 	a.blobs.SetConverters(opt.Converters)
+	a.blobs.SetTranscoder(opt.Transcoder)
 	dbm, ok := a.meta.(interface{ DB() *sql.DB })
 	if !ok {
 		return fail(fmt.Errorf("metadata store %T has no account database", a.meta))
@@ -464,7 +470,13 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	opts := appOptions{VolumeID: target.VolumeID, MinFreeBytes: minFree, Converters: converters, Faults: chaosFaults()}
+	transcoder := blobstore.FindTranscoder(ctx, os.Getenv)
+	if transcoder != nil {
+		log.Printf("playback copies: %s", transcoder.Name())
+	} else {
+		log.Printf("playback copies: no tool (avconvert, ffmpeg with an H.264 encoder) or WITHALBUM_PLAYBACK=off; videos are streamed as they are")
+	}
+	opts := appOptions{VolumeID: target.VolumeID, MinFreeBytes: minFree, Converters: converters, Transcoder: transcoder, Faults: chaosFaults()}
 	a, err := openApp(ctx, root, opts)
 	// Setup mode (server/setup.go) when the storage can still be chosen, or
 	// when it has no administrator, and only on the plain loopback listener.
@@ -498,11 +510,32 @@ func main() {
 			}
 		}
 	}
-	// normal starts the background work of an opened storage.
+	// normal starts the background work of an opened storage. The
+	// playback worker runs an external tool for minutes; it is waited for
+	// at shutdown (playbackDone) so that the tool is killed before the
+	// process exits and never outlives it.
+	playbackDone := make(chan struct{})
+	var playbackStarted atomic.Bool
 	normal := func(a *app) {
 		go a.maintain(ctx, maintenanceInterval)
 		go a.api.RunPreviews(ctx)
 		go a.api.RunCaptures(ctx)
+		if playbackStarted.CompareAndSwap(false, true) {
+			go func() {
+				defer close(playbackDone)
+				a.api.RunPlayback(ctx)
+			}()
+		}
+	}
+	waitPlayback := func() {
+		if !playbackStarted.Load() {
+			return
+		}
+		select {
+		case <-playbackDone:
+		case <-time.After(15 * time.Second):
+			log.Printf("shutdown: the playback worker did not stop in time")
+		}
 	}
 	var (
 		handler   http.Handler
@@ -575,6 +608,9 @@ func main() {
 			a = setup.current()
 		}
 		if a != nil {
+			if ctx.Err() != nil {
+				waitPlayback() // shutting down
+			}
 			a.Close()
 		}
 	}
