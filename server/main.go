@@ -282,9 +282,11 @@ func (a *app) Close() error {
 //  1. verify the volume (marker, device),
 //  2. take the instance lock, so no other server or import runs on it,
 //  3. open the metadata (refusing unmigrated legacy data),
-//  4. reconcile .system with the metadata after a possible crash: remove
-//     unfinished uploads, quarantine unreferenced pool files to
-//     .system/orphans, report missing or damaged originals,
+//  4. reconcile .system with the metadata after a possible crash: settle
+//     the originals of an interrupted album purge (.system/purge: put back
+//     those whose rows survived, delete the others), remove unfinished
+//     uploads, quarantine unreferenced pool files to .system/orphans,
+//     report missing or damaged originals,
 //  5. build the HTTP API with its login and session services.
 func openApp(ctx context.Context, root string, opt appOptions) (*app, error) {
 	vol, err := storage.Open(root, storage.OpenOptions{ExpectedVolumeID: opt.VolumeID})
@@ -326,6 +328,19 @@ func openApp(ctx context.Context, root string, opt appOptions) (*app, error) {
 	index, ok := a.meta.(blobstore.BlobIndex)
 	if !ok {
 		return fail(fmt.Errorf("metadata store %T cannot list blobs", a.meta))
+	}
+	blobRows, ok := a.meta.(interface {
+		HasBlob(ctx context.Context, sha string) (bool, error)
+	})
+	if !ok {
+		return fail(fmt.Errorf("metadata store %T cannot look up blobs", a.meta))
+	}
+	pr, err := a.blobs.RecoverPurged(ctx, func(sha string) (bool, error) { return blobRows.HasBlob(ctx, sha) })
+	if err != nil {
+		return fail(fmt.Errorf("RECOVERY: interrupted album purge; refusing to start: %w", err))
+	}
+	if pr.Restored+pr.Removed+pr.Unexpected > 0 {
+		log.Printf("recovery: album purge: originals_put_back=%d originals_deleted=%d unexpected=%d", pr.Restored, pr.Removed, pr.Unexpected)
 	}
 	if a.report, err = a.blobs.Reconcile(ctx, index); err != nil {
 		return fail(fmt.Errorf("RECOVERY: startup reconciliation failed; refusing to start: %w", err))

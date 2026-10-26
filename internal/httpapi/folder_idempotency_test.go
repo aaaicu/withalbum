@@ -75,7 +75,7 @@ func TestFolderCreateIdempotency(t *testing.T) {
 		t.Fatalf("replay after transfer %v", r)
 	}
 	// Archived: the folder is gone for everyone; the key still names it.
-	wantStatusReply(t, "archive", e.as(t, "viewer", "DELETE", "/api/v1/folders/"+id, nil, nil), 204)
+	wantStatusReply(t, "archive", e.as(t, "viewer", "POST", "/api/v1/folders/"+id+"/archive", nil, nil), 204)
 	wantError(t, "replay archived", e.createFolderKeyed(t, "owner", "Trip", "create-1"), 404, "folder_not_found")
 	if folders() != n+2 {
 		t.Fatal("a replay created a folder")

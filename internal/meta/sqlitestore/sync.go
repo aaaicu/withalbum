@@ -15,16 +15,24 @@ import (
 // Sync feed state, snapshots, removals, cursor acknowledgements and upload
 // receipts (sync API v2, migration 0007).
 
-// folderEpoch derives a folder's feed epoch from the database epoch: 16 hex
-// digits that differ between folders and change with the database epoch,
-// which a restore rotates (internal/backup).
-func (s *Store) folderEpoch(folderID string) string {
-	sum := sha256.Sum256([]byte(s.epoch + "/" + folderID))
+// folderEpoch derives a folder's feed epoch for one view from the database
+// epoch: 16 hex digits that differ between folders and views and change
+// with the database epoch, which a restore rotates (internal/backup). The
+// ViewVisible epoch is the one every feed had before views existed; a
+// ViewAll cursor is refused in a ViewVisible feed and the other way round,
+// so a reader whose role changes reloads the snapshot (and drops or gets
+// the hidden assets).
+func (s *Store) folderEpoch(folderID string, view meta.View) string {
+	key := s.epoch + "/" + folderID
+	if view == meta.ViewAll {
+		key += "/all"
+	}
+	sum := sha256.Sum256([]byte(key))
 	return hex.EncodeToString(sum[:8])
 }
 
-func (s *Store) feedState(ctx context.Context, q queryer, folderID string) (meta.FeedState, error) {
-	st := meta.FeedState{Epoch: s.folderEpoch(folderID)}
+func (s *Store) feedState(ctx context.Context, q queryer, folderID string, view meta.View) (meta.FeedState, error) {
+	st := meta.FeedState{Epoch: s.folderEpoch(folderID, view)}
 	err := q.QueryRowContext(ctx, `SELECT s.last_seq, s.pruned_seq FROM folders f JOIN folder_sequences s ON s.folder_id = f.folder_id
 		WHERE f.folder_id = ?`, folderID).Scan(&st.LastSeq, &st.PrunedSeq)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -37,31 +45,39 @@ func (s *Store) feedState(ctx context.Context, q queryer, folderID string) (meta
 }
 
 // FeedState implements meta.MetadataStore.
-func (s *Store) FeedState(ctx context.Context, folderID string) (meta.FeedState, error) {
-	return s.feedState(ctx, s.db, folderID)
+func (s *Store) FeedState(ctx context.Context, folderID string, view meta.View) (meta.FeedState, error) {
+	return s.feedState(ctx, s.db, folderID, view)
 }
 
 // ListFolderAssets implements meta.MetadataStore. The feed state is read
 // before the assets, so applying the feed from State afterwards covers
 // every change made while the snapshot is paged through.
-func (s *Store) ListFolderAssets(ctx context.Context, folderID, after string, limit int) (meta.AssetPage, error) {
+func (s *Store) ListFolderAssets(ctx context.Context, folderID, after string, limit int, q meta.AssetQuery) (meta.AssetPage, error) {
 	if limit <= 0 {
 		return meta.AssetPage{}, meta.ErrInvalidLimit
 	}
-	state, err := s.FeedState(ctx, folderID)
+	state, err := s.FeedState(ctx, folderID, q.View)
 	if err != nil {
 		return meta.AssetPage{}, err
 	}
-	rows, err := s.db.QueryContext(ctx, "SELECT "+assetColumns+` FROM folder_assets fa
+	liked := ""
+	args := []any{folderID, after}
+	if q.LikedBy != "" {
+		liked = " AND EXISTS(SELECT 1 FROM asset_likes l WHERE l.folder_id = fa.folder_id AND l.asset_id = fa.asset_id AND l.user_id = ?)"
+		args = append(args, q.LikedBy)
+	}
+	// #nosec G202 -- visibleIn and the liked condition are constant SQL; values are arguments
+	rows, err := s.db.QueryContext(ctx, "SELECT "+linkedAssetColumns+` FROM folder_assets fa
 		JOIN assets a ON a.asset_id = fa.asset_id JOIN blobs b ON b.sha256 = a.original_sha256
-		WHERE fa.folder_id = ? AND fa.removed_at IS NULL AND fa.asset_id > ? ORDER BY fa.asset_id LIMIT ?`, folderID, after, limit+1)
+		WHERE fa.folder_id = ? AND fa.removed_at IS NULL AND fa.asset_id > ? AND `+visibleIn(q.View)+liked+` ORDER BY fa.asset_id LIMIT ?`,
+		append(args, limit+1)...)
 	if err != nil {
 		return meta.AssetPage{}, err
 	}
 	defer rows.Close()
 	page := meta.AssetPage{Assets: []meta.Asset{}, State: state}
 	for rows.Next() {
-		a, err := scanAsset(rows)
+		a, err := scanLinkedAsset(rows)
 		if err != nil {
 			return meta.AssetPage{}, err
 		}
@@ -78,7 +94,7 @@ func (s *Store) ListFolderAssets(ctx context.Context, folderID, after string, li
 const maxFindHashes = 500
 
 // FindFolderAssets implements meta.MetadataStore.
-func (s *Store) FindFolderAssets(ctx context.Context, folderID string, shas []string) (map[string]meta.FolderMatch, error) {
+func (s *Store) FindFolderAssets(ctx context.Context, folderID string, shas []string, view meta.View) (map[string]meta.FolderMatch, error) {
 	out := map[string]meta.FolderMatch{}
 	if len(shas) == 0 {
 		return out, nil
@@ -90,11 +106,11 @@ func (s *Store) FindFolderAssets(ctx context.Context, folderID string, shas []st
 	for _, h := range shas {
 		args = append(args, h)
 	}
-	// #nosec G202 -- only "?" placeholders are concatenated; the hashes are arguments
+	// #nosec G202 -- only "?" placeholders and constant SQL (visibleIn) are concatenated; the hashes are arguments
 	rows, err := s.db.QueryContext(ctx, `SELECT m.sha, m.id,
 			COALESCE((SELECT c.sha256 FROM asset_components c WHERE c.asset_id = m.id AND c.role = 'paired_video'), '')
 		FROM (SELECT a.original_sha256 AS sha, MIN(a.asset_id) AS id FROM folder_assets fa JOIN assets a ON a.asset_id = fa.asset_id
-			WHERE fa.folder_id = ? AND fa.removed_at IS NULL AND a.original_sha256 IN (?`+strings.Repeat(",?", len(shas)-1)+`)
+			WHERE fa.folder_id = ? AND fa.removed_at IS NULL AND `+visibleIn(view)+` AND a.original_sha256 IN (?`+strings.Repeat(",?", len(shas)-1)+`)
 			GROUP BY a.original_sha256) m`, args...)
 	if err != nil {
 		return nil, err
@@ -120,15 +136,18 @@ func nextSeq(ctx context.Context, tx *sql.Tx, folderID string) (int64, error) {
 }
 
 // RemoveAsset implements meta.MetadataStore: one transaction re-checks the
-// caller, sets folder_assets.removed_at, appends the asset_removed event and
-// writes the audit row. The asset's likes and comments in this folder are
-// deleted with it. Nothing else is deleted: the asset row stays (old events
-// still reference it) and the original stays in the pool.
+// caller, moves the link to the trash (folder_assets.removed_at and
+// removed_by_user_id), appends the asset_removed event and writes the audit
+// row. Nothing is deleted: the asset's likes and comments stay until the
+// trash is purged (PurgeTrash), the asset row stays (old events still
+// reference it) and the original stays in the pool. A caller who may not
+// see hidden assets cannot remove one (ErrAssetNotFound).
 func (s *Store) RemoveAsset(ctx context.Context, c meta.AlbumChange) error {
-	return s.changeTx(ctx, c, c.FolderID, func(tx *sql.Tx, fa meta.FolderAccess) error {
+	return s.changeTxView(ctx, c, c.FolderID, func(tx *sql.Tx, fa meta.FolderAccess, view meta.View) error {
 		ts := now()
-		res, err := tx.ExecContext(ctx, "UPDATE folder_assets SET removed_at = ? WHERE folder_id = ? AND asset_id = ? AND removed_at IS NULL",
-			ts, c.FolderID, c.TargetID)
+		// #nosec G202 -- visibleIn is constant SQL
+		res, err := tx.ExecContext(ctx, `UPDATE folder_assets AS fa SET removed_at = ?, removed_by_user_id = ?
+			WHERE fa.folder_id = ? AND fa.asset_id = ? AND fa.removed_at IS NULL AND `+visibleIn(view), ts, c.ActorID, c.FolderID, c.TargetID)
 		if err != nil {
 			return err
 		}
@@ -145,20 +164,15 @@ func (s *Store) RemoveAsset(ctx context.Context, c meta.AlbumChange) error {
 			VALUES (?, ?, ?, ?, ?, NULL)`, c.FolderID, seq, meta.EventAssetRemoved, c.TargetID, ts); err != nil {
 			return err
 		}
-		// Likes and comments leave with the asset (migration 0014).
-		likes, comments, err := dropAssetSocial(ctx, tx, c.FolderID, c.TargetID)
-		if err != nil {
-			return err
-		}
 		return recordAlbum(ctx, tx, c.ActorID, "asset.remove", "asset", c.TargetID,
-			map[string]any{"folder_id": c.FolderID, "seq": seq, "likes_removed": likes, "comments_removed": comments})
+			map[string]any{"folder_id": c.FolderID, "seq": seq, "to_trash": true})
 	})
 }
 
 // AckSyncCursor implements meta.MetadataStore.
 func (s *Store) AckSyncCursor(ctx context.Context, c meta.AlbumChange, deviceID string, seq int64) error {
 	return s.changeTx(ctx, c, c.FolderID, func(tx *sql.Tx, fa meta.FolderAccess) error {
-		st, err := s.feedState(ctx, tx, c.FolderID)
+		st, err := s.feedState(ctx, tx, c.FolderID, meta.ViewVisible)
 		if err != nil {
 			return err
 		}

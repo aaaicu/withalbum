@@ -67,14 +67,19 @@ func TestMembershipRouteMatrix(t *testing.T) {
 		owner                    int
 		ownerCode                string
 	}{
-		{"list members", "GET", f + "/members", "", 200, ""},
 		{"list invitations", "GET", f + "/invitations", "", 200, ""},
 		{"invite", "POST", f + "/invitations", `{"invited_user_id":"` + e.ids["viewer"] + `","role":"VIEWER"}`, 409, "already_member"},
 		{"revoke invitation", "DELETE", f + "/invitations/0123456789abcdef0123456789abcdef", "", 404, "invitation_not_found"},
 		{"change role", "PATCH", f + "/members/" + e.ids["owner"], `{"role":"VIEWER"}`, 409, "target_is_owner"},
 		{"remove member", "DELETE", f + "/members/" + e.ids["owner"], "", 409, "target_is_owner"},
 		{"transfer", "POST", f + "/owner", `{"new_owner_user_id":"` + e.ids["outsider"] + `"}`, 404, "member_not_found"},
-		{"archive", "DELETE", f, "", 204, ""},
+		{"archive", "POST", f + "/archive", "", 204, ""},
+	}
+	// M51: every reader lists the members; an UPLOADER does not.
+	for login, want := range map[string]int{"owner": 200, "contributor": 200, "viewer": 200, "uploader": 403, "outsider": 404, "root": 404} {
+		if r := e.as(t, login, "GET", f+"/members", nil, nil); r.Status != want {
+			t.Fatalf("list members as %s: %d %s, want %d", login, r.Status, r.Body, want)
+		}
 	}
 	for _, o := range ops {
 		for _, login := range []string{"contributor", "viewer", "uploader", "outsider", "root", "owner"} {
@@ -236,7 +241,7 @@ func TestRoleChangeAndRemovalOverHTTP(t *testing.T) {
 	if len(list) != 4 || list[0].(map[string]any)["role"] != "OWNER" || list[0].(map[string]any)["user_id"] != e.ids["owner"] {
 		t.Fatalf("members %v", list)
 	}
-	wantKeys(t, "member", list[1].(map[string]any), "user_id", "display_name", "role", "active", "joined_at")
+	wantKeys(t, "member", list[1].(map[string]any), "user_id", "display_name", "role", "active", "joined_at", "is_me", "is_owner")
 	if r := e.as(t, "viewer", "GET", f+"/sync", nil, nil); r.Status != 200 {
 		t.Fatalf("viewer sync %d", r.Status)
 	}
@@ -315,11 +320,11 @@ func TestOwnershipTransfer(t *testing.T) {
 		t.Fatalf("previous owner download %d", r.Status)
 	}
 	for name, req := range map[string][3]string{
-		"invite":   {"POST", f + "/invitations", `{"invited_user_id":"` + e.ids["root"] + `","role":"VIEWER"}`},
-		"members":  {"GET", f + "/members", ""},
-		"remove":   {"DELETE", f + "/members/" + e.ids["contributor"], ""},
-		"transfer": {"POST", f + "/owner", `{"new_owner_user_id":"` + e.ids["contributor"] + `"}`},
-		"archive":  {"DELETE", f, ""},
+		"invite":      {"POST", f + "/invitations", `{"invited_user_id":"` + e.ids["root"] + `","role":"VIEWER"}`},
+		"invitations": {"GET", f + "/invitations", ""},
+		"remove":      {"DELETE", f + "/members/" + e.ids["contributor"], ""},
+		"transfer":    {"POST", f + "/owner", `{"new_owner_user_id":"` + e.ids["contributor"] + `"}`},
+		"archive":     {"DELETE", f, ""},
 	} {
 		wantError(t, "previous owner "+name, e.asJSON(t, "owner", req[0], req[1], req[2]), 403, "forbidden")
 	}

@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aaaicu/withalbum/internal/auth/password"
 	"github.com/aaaicu/withalbum/internal/httpapi"
@@ -36,21 +37,27 @@ import (
 type matrixClass struct {
 	pass   []string // callers that reach the handler
 	remote bool     // also served over the relay and the funnel
+	// deleted: the route is probed against a deleted folder of "owner"
+	// (with the same members as the family folder) and every other
+	// authenticated caller, members included, gets "hidden".
+	deleted bool
 }
 
 var (
 	everyone      = []string{"anonymous", "owner", "contributor", "viewer", "uploader", "outsider", "admin", "archived", "inactive", "revoked"}
 	authenticated = []string{"owner", "contributor", "viewer", "uploader", "outsider", "admin", "archived"}
-	classPublic   = matrixClass{everyone, true}
-	classSession  = matrixClass{authenticated, true}
-	classCatchAll = matrixClass{authenticated, false} // unknown /api/v1/ paths: 404 with a session, never remote
-	classAdmin    = matrixClass{[]string{"admin"}, false}
-	classCreate   = matrixClass{[]string{"owner", "admin", "archived"}, true} // can_create_albums or SERVER_ADMIN
-	classMeta     = matrixClass{[]string{"owner", "contributor", "viewer", "uploader"}, true}
-	classRead     = matrixClass{[]string{"owner", "contributor", "viewer"}, true}
-	classUpload   = matrixClass{[]string{"owner", "contributor", "uploader"}, true}
-	classOwner    = matrixClass{[]string{"owner"}, true}
-	classPage     = matrixClass{everyone, false} // the dashboard page: static, never remote
+	classPublic   = matrixClass{pass: everyone, remote: true}
+	classSession  = matrixClass{pass: authenticated, remote: true}
+	classCatchAll = matrixClass{pass: authenticated, remote: false} // unknown /api/v1/ paths: 404 with a session, never remote
+	classAdmin    = matrixClass{pass: []string{"admin"}, remote: false}
+	classCreate   = matrixClass{pass: []string{"owner", "admin", "archived"}, remote: true} // can_create_albums or SERVER_ADMIN
+	classMeta     = matrixClass{pass: []string{"owner", "contributor", "viewer", "uploader"}, remote: true}
+	classRead     = matrixClass{pass: []string{"owner", "contributor", "viewer"}, remote: true}
+	classUpload   = matrixClass{pass: []string{"owner", "contributor", "uploader"}, remote: true}
+	classOwner    = matrixClass{pass: []string{"owner"}, remote: true}
+	classManage   = matrixClass{pass: []string{"owner", "contributor"}, remote: true} // remove, restore, hide assets; the trash
+	classPage     = matrixClass{pass: everyone, remote: false}                        // the dashboard page: static, never remote
+	classRestore  = matrixClass{pass: []string{"owner"}, remote: true, deleted: true} // restore a deleted folder
 )
 
 // matrixClasses classifies every route of the policy table.
@@ -67,6 +74,7 @@ var matrixClasses = map[string]matrixClass{
 	"GET /api/v1/me/devices":           classSession,
 	"GET /api/v1/me/activity":          classSession,
 	"GET /api/v1/folders":              classSession,
+	"GET /api/v1/folders/deleted":      classSession,
 	"GET /api/v1/invitations":          classSession,
 	"POST /api/v1/folders":             classCreate,
 	"GET /api/v1/admin/users":          classAdmin,
@@ -90,6 +98,8 @@ var matrixClasses = map[string]matrixClass{
 	"GET /api/v1/folders/{folderID}":                                          classMeta,
 	"PATCH /api/v1/folders/{folderID}":                                        classOwner,
 	"DELETE /api/v1/folders/{folderID}":                                       classOwner,
+	"POST /api/v1/folders/{folderID}/archive":                                 classOwner,
+	"POST /api/v1/folders/{folderID}/restore":                                 classRestore,
 	"POST /api/v1/folders/{folderID}/assets":                                  classUpload,
 	"POST /api/v1/folders/{folderID}/uploads":                                 classUpload,
 	"GET /api/v1/folders/{folderID}/uploads/{uploadID}":                       classUpload,
@@ -102,7 +112,11 @@ var matrixClasses = map[string]matrixClass{
 	"POST /api/v1/folders/{folderID}/bundles/{bundleID}/complete":             classUpload,
 	"GET /api/v1/folders/{folderID}/assets":                                   classRead,
 	"POST /api/v1/folders/{folderID}/assets/check":                            classRead,
-	"DELETE /api/v1/folders/{folderID}/assets/{assetID}":                      classOwner,
+	"DELETE /api/v1/folders/{folderID}/assets/{assetID}":                      classManage,
+	"PATCH /api/v1/folders/{folderID}/assets/{assetID}":                       classManage,
+	"GET /api/v1/folders/{folderID}/trash":                                    classManage,
+	"GET /api/v1/folders/{folderID}/trash/{assetID}/preview":                  classManage,
+	"POST /api/v1/folders/{folderID}/trash/{assetID}/restore":                 classManage,
 	"GET /api/v1/folders/{folderID}/sync":                                     classRead,
 	"PUT /api/v1/folders/{folderID}/sync/cursor":                              classRead,
 	"GET /api/v1/folders/{folderID}/assets/{assetID}/original":                classRead,
@@ -117,7 +131,7 @@ var matrixClasses = map[string]matrixClass{
 	"PATCH /api/v1/folders/{folderID}/assets/{assetID}/comments/{commentID}":  classRead,
 	"DELETE /api/v1/folders/{folderID}/assets/{assetID}/comments/{commentID}": classRead,
 	"GET /api/v1/folders/{folderID}/mentionable":                              classRead,
-	"GET /api/v1/folders/{folderID}/members":                                  classOwner,
+	"GET /api/v1/folders/{folderID}/members":                                  classRead,
 	"PATCH /api/v1/folders/{folderID}/members/{userID}":                       classOwner,
 	"DELETE /api/v1/folders/{folderID}/members/{userID}":                      classOwner,
 	"POST /api/v1/folders/{folderID}/owner":                                   classOwner,
@@ -141,12 +155,14 @@ func TestAuthzMatrixCoversEveryRoute(t *testing.T) {
 	}
 }
 
-// matrixEnv is aclEnv plus an archived folder owned by "owner", an
-// account that was a VIEWER and is now disabled ("inactive") and a VIEWER
-// whose device was revoked ("revoked").
+// matrixEnv is aclEnv plus an archived folder owned by "owner", a deleted
+// folder owned by "owner" with the family folder's members, an account
+// that was a VIEWER and is now disabled ("inactive") and a VIEWER whose
+// device was revoked ("revoked").
 type matrixEnv struct {
 	*aclEnv
 	archived string
+	deleted  string
 	logins   int
 }
 
@@ -181,7 +197,7 @@ func newMatrixEnv(t *testing.T) *matrixEnv {
 	t.Helper()
 	e := &matrixEnv{aclEnv: newACLEnv(t)}
 	e.archived = wantJSON(t, "create archived", e.as(t, "owner", "POST", "/api/v1/folders", []byte(`{"name":"archived"}`), nil), 201)["id"].(string)
-	if r := e.as(t, "owner", "DELETE", "/api/v1/folders/"+e.archived, nil, nil); r.Status != 204 {
+	if r := e.as(t, "owner", "POST", "/api/v1/folders/"+e.archived+"/archive", nil, nil); r.Status != 204 {
 		t.Fatalf("archive: %d %s", r.Status, r.Body)
 	}
 	us := users.New(e.Meta.DB())
@@ -204,6 +220,14 @@ func newMatrixEnv(t *testing.T) *matrixEnv {
 		}
 	}
 	e.tokens["admin"] = e.tokens["root"]
+	e.deleted = wantJSON(t, "create deleted", e.as(t, "owner", "POST", "/api/v1/folders", []byte(`{"name":"deleted"}`), nil), 201)["id"].(string)
+	if _, err := e.Meta.DB().Exec(`INSERT INTO folder_members (folder_id, user_id, role, joined_at)
+		SELECT ?, user_id, role, joined_at FROM folder_members WHERE folder_id = ?`, e.deleted, e.family); err != nil {
+		t.Fatal(err)
+	}
+	if r := e.as(t, "owner", "DELETE", "/api/v1/folders/"+e.deleted, nil, nil); r.Status != 204 {
+		t.Fatalf("delete: %d %s", r.Status, r.Body)
+	}
 	return e
 }
 
@@ -254,7 +278,7 @@ func expected(c matrixClass, album bool, caller string, route httpapi.Route) str
 	switch {
 	case caller == "anonymous" || caller == "inactive" || caller == "revoked":
 		return "401"
-	case album && (caller == "outsider" || caller == "admin" || caller == "archived"):
+	case album && (c.deleted || caller == "outsider" || caller == "admin" || caller == "archived"):
 		return "hidden"
 	}
 	return "403 forbidden"
@@ -286,6 +310,9 @@ func TestAuthzMatrix(t *testing.T) {
 		for _, route := range []httpapi.Route{httpapi.RouteDirect, httpapi.RouteRelay, httpapi.RouteFunnel} {
 			for _, caller := range everyone {
 				folder, login := e.family, caller
+				if c.deleted {
+					folder = e.deleted
+				}
 				if caller == "archived" {
 					folder, login = e.archived, "owner"
 				}
@@ -308,7 +335,15 @@ func TestAuthzMatrix(t *testing.T) {
 				// Undo what a probe that reached its handler changed.
 				switch rp.Pattern {
 				case "DELETE /api/v1/folders/{folderID}":
+					if _, err := e.Meta.DB().Exec("UPDATE folders SET deleted_at = NULL WHERE folder_id = ?", e.family); err != nil {
+						t.Fatal(err)
+					}
+				case "POST /api/v1/folders/{folderID}/archive":
 					if _, err := e.Meta.DB().Exec("UPDATE folders SET archived_at = NULL WHERE folder_id = ?", e.family); err != nil {
+						t.Fatal(err)
+					}
+				case "POST /api/v1/folders/{folderID}/restore":
+					if _, err := e.Meta.DB().Exec("UPDATE folders SET deleted_at = ? WHERE folder_id = ?", time.Now().UTC().Format(time.RFC3339Nano), e.deleted); err != nil {
 						t.Fatal(err)
 					}
 				case "POST /api/v1/auth/logout":
@@ -352,7 +387,7 @@ func TestAuthzMatrixCrossFolderIDs(t *testing.T) {
 		var body []byte
 		hdr := map[string]string{}
 		if method != "GET" && method != "DELETE" {
-			body, hdr["Content-Type"] = []byte(`{"body":"x","mentions":[]}`), "application/json"
+			body, hdr["Content-Type"] = []byte(`{"body":"x","mentions":[],"hidden":true}`), "application/json"
 		}
 		r := e.as(t, "owner", method, path, body, hdr)
 		var m struct {

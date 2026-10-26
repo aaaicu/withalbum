@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/aaaicu/withalbum/internal/httpapi"
+	"github.com/aaaicu/withalbum/internal/meta"
 )
 
 // Likes, comments and mentions (social.go) on the aclEnv folder "family":
@@ -524,10 +525,20 @@ func TestSocialCleanup(t *testing.T) {
 	wantJSON(t, "transfer", e.asJSON(t, "owner", "POST", f+"/owner", `{"new_owner_user_id":"`+e.ids["contributor"]+`"}`), 200)
 	wantError(t, "old owner deletes", e.as(t, "owner", "DELETE", a+"/comments/"+byViewer, nil, nil), 403, "forbidden")
 	wantStatusReply(t, "new owner deletes", e.as(t, "contributor", "DELETE", a+"/comments/"+byViewer, nil, nil), 204)
-	// The photo leaves the album: its likes and comments are deleted.
+	// The photo leaves the album to its trash: its likes and comments stay
+	// (a restore brings them back) until the trash is purged (M51).
 	wantStatusReply(t, "remove photo", e.as(t, "contributor", "DELETE", a, nil, nil), 204)
-	if n := e.rows(t, "SELECT count(*) FROM asset_likes WHERE asset_id = ?", e.photo) + e.rows(t, "SELECT count(*) FROM asset_comments WHERE asset_id = ?", e.photo); n != 0 {
-		t.Fatalf("%d social rows of a removed photo", n)
+	social := func() int {
+		return e.rows(t, "SELECT count(*) FROM asset_likes WHERE asset_id = ?", e.photo) + e.rows(t, "SELECT count(*) FROM asset_comments WHERE asset_id = ?", e.photo)
+	}
+	if n := social(); n != 2 {
+		t.Fatalf("%d social rows of a photo in the trash, want 2", n)
+	}
+	if p, err := e.API.PurgeExpired(t.Context(), time.Now().Add(meta.TrashRetention+time.Minute)); err != nil || p.TrashPurged != 1 {
+		t.Fatalf("purge %+v %v", p, err)
+	}
+	if n := social(); n != 0 {
+		t.Fatalf("%d social rows of a purged photo", n)
 	}
 	if e.rows(t, "SELECT count(*) FROM comment_mentions") != 0 {
 		t.Fatal("mentions of deleted comments kept")

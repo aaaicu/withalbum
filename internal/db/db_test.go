@@ -38,8 +38,8 @@ func TestEmbeddedMigrationsAreContiguous(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ms) != 16 || LatestVersion() != 16 {
-		t.Fatalf("got %d migrations, LatestVersion %d; want 16", len(ms), LatestVersion())
+	if len(ms) != 17 || LatestVersion() != 17 {
+		t.Fatalf("got %d migrations, LatestVersion %d; want 17", len(ms), LatestVersion())
 	}
 }
 
@@ -715,7 +715,6 @@ func TestMigration0015MediaInfo(t *testing.T) {
 // idle copy but no other state, and the columns accept only what the
 // worker writes.
 func TestMigration0016VideoPlayback(t *testing.T) {
-	ctx := context.Background()
 	sqlDB, _ := openTemp(t)
 	migrateTo(t, sqlDB, 15)
 	addUser(t, sqlDB, "owner", "active")
@@ -739,9 +738,7 @@ func TestMigration0016VideoPlayback(t *testing.T) {
 	asset("p1", photo, "image", false)
 	asset("l1", live, "live_photo", false)
 	asset("g1", gone, "video", true)
-	if err := Migrate(ctx, sqlDB); err != nil {
-		t.Fatal(err)
-	}
+	migrateTo(t, sqlDB, 16) // 0017 makes the old removals final
 	rows := func() string {
 		t.Helper()
 		var s sql.NullString
@@ -781,4 +778,43 @@ func TestMigration0016VideoPlayback(t *testing.T) {
 	if err := sqlDB.QueryRow("SELECT count(*) FROM sqlite_schema WHERE name IN ('idx_blob_playback_pending', 'blob_playback_on_link', 'blob_playback_on_relink')").Scan(&idx); err != nil || idx != 3 {
 		t.Fatalf("index and triggers %d, %v", idx, err)
 	}
+}
+
+// TestMigration0017AlbumManagement: earlier removals become final (their
+// likes and comments were already dropped), the feed keeps every row and
+// takes the hidden kinds, a purged removal cannot be undone, and an owner
+// of only deleted albums can be disabled.
+func TestMigration0017AlbumManagement(t *testing.T) {
+	ctx := context.Background()
+	sqlDB, _ := openTemp(t)
+	migrateTo(t, sqlDB, 16)
+	addUser(t, sqlDB, "owner", "active")
+	mustExec(t, sqlDB, "INSERT INTO folders(folder_id, folder_name, owner_user_id) VALUES ('f1', 'Trip', 'owner')")
+	mustExec(t, sqlDB, "INSERT INTO blobs(sha256, bytes, mime_type, relative_path, verified_at) VALUES (?, 10, 'image/jpeg', 'pool/a', 'v')", strings.Repeat("a", 64))
+	for _, id := range []string{"kept", "gone"} {
+		mustExec(t, sqlDB, "INSERT INTO assets(asset_id, original_sha256, original_filename, media_kind) VALUES (?, ?, 'x', 'image')", id, strings.Repeat("a", 64))
+	}
+	mustExec(t, sqlDB, "INSERT INTO folder_assets(folder_id, asset_id) VALUES ('f1', 'kept')")
+	mustExec(t, sqlDB, "INSERT INTO folder_assets(folder_id, asset_id, removed_at) VALUES ('f1', 'gone', '2026-01-01T00:00:00Z')")
+	mustExec(t, sqlDB, "INSERT INTO folder_changes(folder_id, seq, event_type, asset_id, occurred_at) VALUES ('f1', 1, 'asset_added', 'kept', 't'), ('f1', 2, 'asset_removed', 'gone', 't')")
+	if err := Migrate(ctx, sqlDB); err != nil {
+		t.Fatal(err)
+	}
+	var purged, events int
+	if err := sqlDB.QueryRow("SELECT count(*) FROM folder_assets WHERE purged_at = removed_at").Scan(&purged); err != nil || purged != 1 {
+		t.Fatalf("purged %d, %v", purged, err)
+	}
+	if err := sqlDB.QueryRow("SELECT count(*) FROM folder_changes").Scan(&events); err != nil || events != 2 {
+		t.Fatalf("events %d, %v", events, err)
+	}
+	expectReject(t, sqlDB, "a purged removal is final", "UPDATE folder_assets SET removed_at = NULL WHERE asset_id = 'gone'")
+	expectReject(t, sqlDB, "only a removed asset can be purged", "UPDATE folder_assets SET purged_at = 't' WHERE asset_id = 'kept'")
+	mustExec(t, sqlDB, "INSERT INTO folder_changes(folder_id, seq, event_type, asset_id) VALUES ('f1', 3, 'asset_hidden', 'kept'), ('f1', 4, 'asset_unhidden', 'kept')")
+	expectReject(t, sqlDB, "CHECK constraint", "INSERT INTO folder_changes(folder_id, seq, event_type, asset_id) VALUES ('f1', 5, 'asset_vanished', 'kept')")
+	mustExec(t, sqlDB, "UPDATE folder_assets SET hidden_at = 't', hidden_by_user_id = 'owner' WHERE asset_id = 'kept'")
+	mustExec(t, sqlDB, "UPDATE folder_assets SET removed_at = 't2', removed_by_user_id = 'owner' WHERE asset_id = 'kept'")
+	mustExec(t, sqlDB, "UPDATE folder_assets SET removed_at = NULL, removed_by_user_id = NULL WHERE asset_id = 'kept'") // a restore
+	expectReject(t, sqlDB, "transfer owned albums before disabling account", "UPDATE users SET status = 'disabled' WHERE user_id = 'owner'")
+	mustExec(t, sqlDB, "UPDATE folders SET deleted_at = 't' WHERE folder_id = 'f1'")
+	mustExec(t, sqlDB, "UPDATE users SET status = 'disabled' WHERE user_id = 'owner'")
 }

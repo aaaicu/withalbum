@@ -21,7 +21,6 @@ import (
 // not reveal an account's state.
 
 func (s *Server) memberRoutes(rt *router) {
-	rt.handleAlbum("DELETE /api/v1/folders/{folderID}", s.archiveFolder)
 	rt.handleAlbum("GET /api/v1/folders/{folderID}/members", s.listMembers)
 	rt.handleAlbum("PATCH /api/v1/folders/{folderID}/members/{userID}", s.setMemberRole)
 	rt.handleAlbum("DELETE /api/v1/folders/{folderID}/members/{userID}", s.removeMember)
@@ -68,6 +67,8 @@ type memberJSON struct {
 	Role        string `json:"role"`
 	Active      bool   `json:"active"`
 	JoinedAt    string `json:"joined_at"`
+	IsMe        bool   `json:"is_me"`
+	IsOwner     bool   `json:"is_owner"`
 }
 
 func memberView(m meta.Member) memberJSON {
@@ -113,19 +114,11 @@ func membershipError(w http.ResponseWriter, what string, err error) {
 	}
 }
 
-// archiveFolder: DELETE /folders/{id} keeps every file and row but hides the
-// folder from everyone, owner included (no restore API yet).
-func (s *Server) archiveFolder(w http.ResponseWriter, r *http.Request, a albumRequest) {
-	if !s.storageReady(w) {
-		return
-	}
-	if err := s.members.ArchiveFolder(r.Context(), s.change(a, authz.DeleteAlbum, "")); err != nil {
-		membershipError(w, "archive folder", err)
-		return
-	}
-	w.WriteHeader(204)
-}
-
+// listMembers: GET /folders/{id}/members, every reader of the folder
+// (OWNER, CONTRIBUTOR, VIEWER; never an UPLOADER): the owner first, then
+// the members by join time, each with is_me and is_owner. The owner also
+// gets members whose accounts cannot log in (active false) and the pending
+// invitations; the others only see members who can log in.
 func (s *Server) listMembers(w http.ResponseWriter, r *http.Request, a albumRequest) {
 	list, err := s.members.ListMembers(r.Context(), a.Folder.Folder.ID)
 	if errors.Is(err, meta.ErrFolderNotFound) {
@@ -136,11 +129,26 @@ func (s *Server) listMembers(w http.ResponseWriter, r *http.Request, a albumRequ
 		metaReadFailed(w, err)
 		return
 	}
+	owner := a.allowed(authz.ListInvitations)
 	out := make([]memberJSON, 0, len(list))
 	for _, m := range list {
-		out = append(out, memberView(m))
+		if !m.Active && !owner {
+			continue
+		}
+		v := memberView(m)
+		v.IsMe, v.IsOwner = m.UserID == a.P.UserID, m.Role == "OWNER"
+		out = append(out, v)
 	}
-	jsonReply(w, 200, map[string]any{"folder_id": a.Folder.Folder.ID, "members": out})
+	body := map[string]any{"folder_id": a.Folder.Folder.ID, "members": out}
+	if owner {
+		inv, err := s.members.ListFolderInvitations(r.Context(), a.Folder.Folder.ID)
+		if err != nil {
+			metaReadFailed(w, err)
+			return
+		}
+		body["invitations"] = invitationsView(inv)
+	}
+	jsonReply(w, 200, body)
 }
 
 // setMemberRole: {"role": "VIEWER"|"UPLOADER"|"CONTRIBUTOR"}. The member's

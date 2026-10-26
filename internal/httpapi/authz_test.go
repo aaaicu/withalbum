@@ -14,6 +14,7 @@ import (
 	"github.com/aaaicu/withalbum/internal/auth/password"
 	"github.com/aaaicu/withalbum/internal/blobstore"
 	"github.com/aaaicu/withalbum/internal/httpapi"
+	"github.com/aaaicu/withalbum/internal/meta"
 	"github.com/aaaicu/withalbum/internal/storage"
 	"github.com/aaaicu/withalbum/internal/users"
 )
@@ -103,7 +104,7 @@ func (e *aclEnv) setMember(t *testing.T, login, role string) {
 
 func (e *aclEnv) events(t *testing.T, folder string) int {
 	t.Helper()
-	p, err := e.Meta.ListEvents(t.Context(), folder, 0, 1000)
+	p, err := e.Meta.ListEvents(t.Context(), folder, 0, 1000, meta.ViewAll)
 	if err != nil {
 		t.Fatal(err)
 	}

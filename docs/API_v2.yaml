@@ -68,9 +68,11 @@ info:
     404 folder_not_found, exactly like a folder that does not exist (a
     SERVER_ADMIN is no exception: administrators do not see other people's
     albums); a folder the caller belongs to but whose role does not allow the
-    operation is 403 forbidden. Roles: OWNER (everything), CONTRIBUTOR (read
-    and upload), VIEWER (read), UPLOADER (upload only: metadata of the
-    folder, never its contents, events or hashes). Asset IDs are random and
+    operation is 403 forbidden. Roles: OWNER (everything), CONTRIBUTOR (read,
+    upload, and manage the album's assets: remove any of them to the trash,
+    restore, hide), VIEWER (read; never sees hidden assets), UPLOADER
+    (upload only: metadata of the folder, never its contents, events or
+    hashes). Asset IDs are random and
     belong to one folder: an asset ID used under another folder is 404
     asset_not_found. Writes re-check the permission inside the database
     transaction right before the commit. Denials (403/404 of these checks)
@@ -302,6 +304,52 @@ info:
     and writes none of it. Likes are a burst of 60 then one per second,
     comment writes a burst of 20 then one per 3 seconds (429
     rate_limited).
+
+
+    Album management ("album_management"). Deleting an album (DELETE
+    /api/v1/folders/{folder_id}, OWNER) hides it from everyone at once: it
+    leaves GET /folders and every folder route answers 404
+    folder_not_found, exactly like a folder the caller was removed from,
+    so a client that gets that 404 for a folder it had drops the folder
+    and its local index. Its owner lists it in GET /folders/deleted and
+    can bring it back for 30 days (POST /folders/{folder_id}/restore;
+    members' cursors stay valid). After 30 days the server deletes its
+    rows and the originals that no other album holds; originals other
+    albums hold stay. Archiving (POST .../archive) is unchanged: hidden
+    from everyone, kept, never purged, no restore.
+
+    Removing an asset (DELETE .../assets/{asset_id}, OWNER or CONTRIBUTOR,
+    any asset of the album) moves it to the album's trash: it leaves the
+    album for everyone (asset_removed) but keeps its likes and comments;
+    the OWNER and CONTRIBUTORs list the trash (GET .../trash, with
+    previews) and restore from it for 30 days (asset_added, the same
+    asset id, likes and comments back). Then the removal is final: the
+    likes and comments are deleted; the original stays on disk (other
+    albums may hold it).
+
+    Hidden assets. The OWNER and CONTRIBUTORs may hide an asset (PATCH
+    .../assets/{asset_id} {"hidden": true}). They keep seeing it, marked
+    "hidden": true. Everyone else who reads the album (VIEWER) gets every
+    read as if it were not in the album: snapshot, feed, check,
+    downloads (original, preview, components, playback: 404
+    asset_not_found), likes and comments (404), activity, and the counts
+    derived from them. In the feed a VIEWER gets hiding as asset_removed,
+    showing again as asset_added (with the asset in "assets"), and every
+    event of an asset that is hidden now as asset_removed, so applying
+    the feed from any cursor ends with exactly the visible assets; seq
+    numbers are the same for everyone. The OWNER and CONTRIBUTORs get
+    hiding and showing as asset_updated. Cursors of the two views carry
+    different epochs: when a reader's role changes between VIEWER and
+    CONTRIBUTOR/OWNER its stored cursor is 409 cursor_invalid and it
+    reloads the snapshot (this also happens once for OWNER and CONTRIBUTOR
+    devices after upgrading to a server with "album_management"). Hiding
+    is an app-level visibility: the original is not changed, moved or
+    encrypted, and copies members already downloaded stay with them.
+
+    Members. Every reader of an album (OWNER, CONTRIBUTOR, VIEWER) lists
+    its owner and members (GET .../members, with is_me and is_owner); only
+    the OWNER also sees members whose accounts cannot log in and the
+    pending invitations. An UPLOADER gets 403.
 
 
     Errors are {"error": "<code>"}. 401 responses carry
@@ -763,10 +811,13 @@ paths:
       tags: [Server Admin]
       summary: Folders an account owns, as far as account administration needs (SERVER_ADMIN only)
       description: >-
-        An account that owns folders cannot be disabled (409 owns_albums).
-        This tells how many folders in use it owns (only their owner can
-        transfer or archive those) and lists its archived folders by ID and
-        dates, which an administrator may reassign
+        An account that owns folders in use or archived cannot be disabled
+        (409 owns_albums); deleted folders do not count (they are purged 30
+        days after deletion; their owner can restore them only while the
+        account can log in). This tells how many folders in use it owns
+        (only their owner can transfer, archive or delete those), how many
+        deleted ones, and lists its archived folders by ID and dates, which
+        an administrator may reassign
         (POST /api/v1/admin/folders/{folder_id}/owner). Never folder names,
         members or contents.
       parameters:
@@ -778,10 +829,11 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [user_id, active_owned, archived]
+                required: [user_id, active_owned, deleted_owned, archived]
                 properties:
                   user_id: {type: string}
-                  active_owned: {type: integer, minimum: 0, description: Folders in use (not archived) owned by the account}
+                  active_owned: {type: integer, minimum: 0, description: Folders in use (not archived or deleted) owned by the account}
+                  deleted_owned: {type: integer, minimum: 0, description: 'Deleted folders owned by the account, not purged yet ("album_management" servers)'}
                   archived:
                     type: array
                     items:
@@ -891,6 +943,14 @@ paths:
                       failed: {type: integer}
                       unsupported: {type: integer, description: 'No tool, too long, or the copy would not be smaller than the original'}
                       ready_bytes: {type: integer, description: 'Bytes of the ready copies (not part of stored_bytes)'}
+                  deleted_albums:
+                    type: integer
+                    minimum: 0
+                    description: >-
+                      Albums deleted by their owners and not purged yet (a
+                      number only; administrators never see which albums or
+                      their contents). "album_management" servers; absent
+                      when it could not be read.
                   startup_check:
                     type: object
                     properties:
@@ -1058,23 +1118,99 @@ paths:
         '503': {description: 'storage_unavailable, storage_io_error, busy'}
     delete:
       tags: [Albums]
+      summary: Delete the album, restorable by its owner for 30 days (OWNER only)
+      description: >-
+        Sets deleted_at and revokes pending invitations in one audited
+        transaction (folder.delete). From then on the folder is hidden from
+        everyone, the owner included: it leaves GET /folders and every
+        folder route answers 404 folder_not_found. Members' clients drop it
+        on that 404. The owner finds it in GET /api/v1/folders/deleted and
+        may restore it (POST .../restore) until purge_after, 30 days later;
+        then the server deletes the album's rows (members, feed, assets,
+        likes, comments) and the originals no other album holds. Before
+        "album_management" this route archived the album (now POST
+        .../archive). Cookie sessions need X-CSRF-Token.
+      responses:
+        '204': {description: Deleted}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (member, not owner) or csrf_failed'}
+        '404': {description: folder_not_found}
+        '503': {description: 'storage_unavailable, storage_io_error, busy'}
+  /api/v1/folders/{folder_id}/archive:
+    post:
+      tags: [Albums]
       summary: Archive the album (OWNER only)
       description: >-
         Sets archived_at and revokes pending invitations in one audited
-        transaction. Files, assets and memberships are kept, but every route
-        answers 404 folder_not_found for the folder from then on, for the
-        owner too (there is no restore API yet). Cookie sessions need
-        X-CSRF-Token.
+        transaction (folder.archive). Files, assets and memberships are
+        kept and never purged, but every route answers 404 folder_not_found
+        for the folder from then on, for the owner too (there is no
+        restore; a SERVER_ADMIN may reassign its owner so that the owner's
+        account can be disabled). Cookie sessions need X-CSRF-Token.
+      parameters:
+        - $ref: '#/components/parameters/FolderID'
       responses:
         '204': {description: Archived}
         '401': {description: unauthorized}
         '403': {description: 'forbidden (member, not owner) or csrf_failed'}
         '404': {description: folder_not_found}
         '503': {description: 'storage_unavailable, storage_io_error, busy'}
+  /api/v1/folders/deleted:
+    get:
+      tags: [Albums]
+      summary: The caller's own deleted albums that can still be restored
+      description: >-
+        Only folders the caller owns, deleted less than 30 days ago, most
+        recently deleted first. Never other people's folders.
+      responses:
+        '200':
+          description: Deleted folders
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [folders]
+                properties:
+                  folders:
+                    type: array
+                    items: {$ref: '#/components/schemas/DeletedFolder'}
+        '401': {description: unauthorized}
+  /api/v1/folders/{folder_id}/restore:
+    post:
+      tags: [Albums]
+      summary: Restore a deleted album (its OWNER only)
+      description: >-
+        Clears deleted_at in one audited transaction (folder.restore) that
+        re-checks the caller and the owner as stored then. Members and their
+        roles, assets, likes, comments and the feed are as they were;
+        members' cursors stay valid. Anyone but the owner, and any folder
+        that is not deleted, was purged or is past purge_after, gets 404
+        folder_not_found (a deleted folder is hidden from everyone else,
+        members included). Pending invitations revoked by the deletion stay
+        revoked. Cookie sessions need X-CSRF-Token.
+      parameters:
+        - $ref: '#/components/parameters/FolderID'
+      responses:
+        '200':
+          description: The folder as the owner sees it now
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Folder'}
+        '401': {description: unauthorized}
+        '403': {description: csrf_failed}
+        '404': {description: 'folder_not_found (unknown, not deleted, not the caller''s, purged or past purge_after)'}
+        '409': {description: 'folder_not_deleted (restored meanwhile)'}
+        '503': {description: 'storage_unavailable, storage_io_error, busy'}
   /api/v1/folders/{folder_id}/members:
     get:
       tags: [Albums]
-      summary: Owner and members of the album (OWNER only)
+      summary: Owner and members of the album (OWNER, CONTRIBUTOR, VIEWER)
+      description: >-
+        Every role that can read the album; an UPLOADER gets 403. The owner
+        gets every member (active false for an account that cannot log in)
+        and the pending invitations; the others get only the members who can
+        log in and no "invitations". Before "album_management" this route
+        was OWNER only.
       parameters:
         - $ref: '#/components/parameters/FolderID'
       responses:
@@ -1090,8 +1226,12 @@ paths:
                   members:
                     type: array
                     items: {$ref: '#/components/schemas/Member'}
+                  invitations:
+                    type: array
+                    description: OWNER only (as GET .../invitations)
+                    items: {$ref: '#/components/schemas/Invitation'}
         '401': {description: unauthorized}
-        '403': {description: forbidden (member, not owner)}
+        '403': {description: forbidden (UPLOADER)}
         '404': {description: folder_not_found}
   /api/v1/folders/{folder_id}/invitations:
     parameters:
@@ -1318,13 +1458,22 @@ paths:
         the last page, continue with GET .../sync?cursor=<that cursor>: it
         replays every change made while paging (an asset may then arrive
         both in the snapshot and as an event; apply by asset id). Use it for
-        the first load and after a 409 from /sync.
+        the first load and after a 409 from /sync. A VIEWER never gets a
+        hidden asset (and its cursor belongs to the VIEWER view of the
+        feed). With liked_by_me=true only the assets the caller likes are
+        listed (the album's "my likes" view), paged the same way and
+        without "cursor": it is a filtered list, not a snapshot to sync
+        from.
       parameters:
         - in: query
           name: after
           schema: {type: string, pattern: '^[0-9a-f]{32}$'}
           description: next_after of the previous page
         - $ref: '#/components/parameters/Limit'
+        - in: query
+          name: liked_by_me
+          schema: {type: string, enum: ['true', 'false']}
+          description: 'true: only the assets the caller likes ("album_management" servers)'
       responses:
         '200':
           description: One page of the snapshot
@@ -1340,8 +1489,8 @@ paths:
                     items: {$ref: '#/components/schemas/Asset'}
                   has_more: {type: boolean}
                   next_after: {type: string, description: 'pass as "after" for the next page; "" on the last page'}
-                  cursor: {type: string, description: 'first page only: continue the feed from here after the snapshot'}
-        '400': {description: 'invalid_after, invalid_limit'}
+                  cursor: {type: string, description: 'first page only, not with liked_by_me: continue the feed from here after the snapshot'}
+        '400': {description: 'invalid_after, invalid_limit, invalid_filter (liked_by_me other than true or false)'}
         '401': {description: unauthorized}
         '403': {description: forbidden (UPLOADER)}
         '404': {description: folder_not_found}
@@ -1848,7 +1997,8 @@ paths:
         Advisory pre-check before uploading; the upload itself decides.
         Looks at this folder only, never at other folders or the server as a
         whole, and is refused to an UPLOADER (403), so it reveals nothing a
-        reader could not already see in the feed. Hashes are compared
+        reader could not already see in the feed (a VIEWER never matches a
+        hidden asset). Hashes are compared
         case-insensitively; duplicates in the request are ignored. A hash
         matches an asset's own original (a live photo's still), never a
         paired video.
@@ -1894,29 +2044,141 @@ paths:
   /api/v1/folders/{folder_id}/assets/{asset_id}:
     delete:
       tags: [Assets]
-      summary: Remove a photo from the album (OWNER only)
+      summary: Move an asset to the album's trash (OWNER, CONTRIBUTOR)
       description: >-
-        One audited transaction (asset.remove) that re-checks the caller:
-        the asset leaves the folder and an asset_removed event is appended.
-        CONTRIBUTOR, VIEWER and UPLOADER get 403, also for photos they
-        uploaded themselves. The original file is not deleted (other folders
-        may hold the same bytes; there is no garbage collection yet), and
-        copies already downloaded by members cannot be recalled. The
-        photo's likes and comments in this album are deleted with it (no
-        comment_removed events; the asset_removed tombstone covers them).
-        Removing
-        again is 404 asset_not_found; uploading the same bytes again creates
-        a new asset with a new id. Cookie sessions need X-CSRF-Token.
+        Any asset of the album, whoever uploaded it. One audited transaction
+        (asset.remove) that re-checks the caller: the asset leaves the
+        folder for everyone and an asset_removed event is appended. It goes
+        to the album's trash with its likes and comments, and the OWNER or a
+        CONTRIBUTOR may restore it (POST .../trash/{asset_id}/restore) for
+        30 days; then its likes and comments are deleted and the removal is
+        final. VIEWER and UPLOADER get 403, also for photos they uploaded
+        themselves (before "album_management" a CONTRIBUTOR got 403 too).
+        The original file is not deleted (other folders may hold the same
+        bytes), and copies already downloaded by members cannot be
+        recalled. Removing again is 404 asset_not_found; uploading the same
+        bytes again creates a new asset with a new id (and the removed one
+        can then not be restored: 409 asset_conflict). Cookie sessions need
+        X-CSRF-Token.
       parameters:
         - $ref: '#/components/parameters/FolderID'
         - $ref: '#/components/parameters/AssetID'
       responses:
-        '204': {description: Removed}
+        '204': {description: Moved to the trash}
         '401': {description: unauthorized}
-        '403': {description: 'forbidden (not the owner) or csrf_failed'}
+        '403': {description: 'forbidden (VIEWER, UPLOADER) or csrf_failed'}
         '404': {description: 'folder_not_found, asset_not_found (unknown, already removed, or an asset of another folder)'}
         '503': {description: 'storage_unavailable, storage_io_error, busy'}
         '507': {description: insufficient_storage}
+    patch:
+      tags: [Assets]
+      summary: Hide an asset from VIEWERs, or show it again (OWNER, CONTRIBUTOR)
+      description: >-
+        {"hidden": true|false}, in one audited transaction (asset.hide,
+        asset.unhide) that re-checks the caller. A change appends one feed
+        event: asset_updated for the OWNER and CONTRIBUTORs, asset_removed
+        (hiding) or asset_added (showing) for VIEWERs (see "Hidden assets"
+        at the top). The current value changes nothing. Hiding never
+        changes the original. Cookie sessions need X-CSRF-Token.
+      parameters:
+        - $ref: '#/components/parameters/FolderID'
+        - $ref: '#/components/parameters/AssetID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [hidden]
+              properties:
+                hidden: {type: boolean}
+      responses:
+        '200':
+          description: The asset as the caller sees it now
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Asset'}
+        '400': {description: 'invalid_json, invalid_request (hidden missing or not a boolean)'}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (VIEWER, UPLOADER) or csrf_failed'}
+        '404': {description: 'folder_not_found, asset_not_found (unknown, removed, or an asset of another folder)'}
+        '415': {description: json_required}
+        '503': {description: 'storage_unavailable, storage_io_error, busy'}
+  /api/v1/folders/{folder_id}/trash:
+    get:
+      tags: [Assets]
+      summary: The album's trash (OWNER, CONTRIBUTOR)
+      description: >-
+        Assets removed from the album less than 30 days ago that can still
+        be restored, most recently removed first, hidden ones included
+        (marked). Each is an Asset as in the album, with its retained
+        like_count and comment_count, plus removed_at, removed_by_name and
+        purge_after. Its preview is GET .../trash/{asset_id}/preview; other
+        downloads, likes and comments are 404 while it is in the trash.
+      parameters:
+        - $ref: '#/components/parameters/FolderID'
+        - $ref: '#/components/parameters/SocialCursor'
+        - $ref: '#/components/parameters/SocialLimit'
+      responses:
+        '200':
+          description: One page of the trash
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [folder_id, assets, next_cursor, has_more]
+                properties:
+                  folder_id: {type: string}
+                  assets:
+                    type: array
+                    items: {$ref: '#/components/schemas/TrashedAsset'}
+                  next_cursor: {type: string, description: 'opaque; "" on the last page'}
+                  has_more: {type: boolean}
+        '400': {description: 'invalid_cursor, invalid_limit'}
+        '401': {description: unauthorized}
+        '403': {description: forbidden (VIEWER, UPLOADER)}
+        '404': {description: folder_not_found}
+  /api/v1/folders/{folder_id}/trash/{asset_id}/preview:
+    get:
+      tags: [Assets]
+      summary: Preview of an asset in the album's trash (OWNER, CONTRIBUTOR)
+      parameters:
+        - $ref: '#/components/parameters/FolderID'
+        - $ref: '#/components/parameters/AssetID'
+      responses:
+        '200':
+          description: JPEG preview
+          content:
+            image/jpeg:
+              schema: {type: string, format: binary}
+        '401': {description: unauthorized}
+        '403': {description: forbidden (VIEWER, UPLOADER)}
+        '404': {description: 'folder_not_found, asset_not_found (not in the trash), preview_not_ready'}
+  /api/v1/folders/{folder_id}/trash/{asset_id}/restore:
+    post:
+      tags: [Assets]
+      summary: Restore an asset from the album's trash (OWNER, CONTRIBUTOR)
+      description: >-
+        One audited transaction (asset.restore) that re-checks the caller:
+        the asset is back in the album with the same id, its likes,
+        comments and hidden state, and an asset_added event is appended (a
+        VIEWER gets asset_removed instead while it is hidden). A video's
+        playback copy is made again if it had been released. Cookie
+        sessions need X-CSRF-Token.
+      parameters:
+        - $ref: '#/components/parameters/FolderID'
+        - $ref: '#/components/parameters/AssetID'
+      responses:
+        '200':
+          description: The restored asset
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Asset'}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (VIEWER, UPLOADER) or csrf_failed'}
+        '404': {description: 'folder_not_found, asset_not_found (not in the trash: unknown, not removed, purged or removed more than 30 days ago)'}
+        '409': {description: 'asset_conflict (the album holds the same original again, uploaded since the removal)'}
+        '503': {description: 'storage_unavailable, storage_io_error, busy'}
   /api/v1/folders/{folder_id}/sync:
     get:
       tags: [Sync]
@@ -1929,7 +2191,9 @@ paths:
         like and comment summary; an asset_added whose asset is missing from
         "assets" was removed later, and its asset_removed event follows.
         Without a cursor the feed starts at the beginning. The latest cursor
-        returns an empty page with the same next_cursor.
+        returns an empty page with the same next_cursor. A VIEWER reads the
+        feed without hidden assets (see "Hidden assets" at the top: the same
+        seq numbers, other kinds), with cursors of its own epoch.
       parameters:
         - $ref: '#/components/parameters/FolderID'
         - in: query
@@ -1960,7 +2224,7 @@ paths:
         '401': {description: unauthorized}
         '403': {description: forbidden (UPLOADER)}
         '404': {description: folder_not_found}
-        '409': {description: 'cursor_invalid (another folder, a restored server, or ahead of the feed), cursor_expired (older than the retained events): reload the snapshot'}
+        '409': {description: 'cursor_invalid (another folder, a restored server, ahead of the feed, or issued for the other view: the caller''s role changed between VIEWER and CONTRIBUTOR/OWNER), cursor_expired (older than the retained events): reload the snapshot'}
   /api/v1/folders/{folder_id}/sync/cursor:
     put:
       tags: [Sync]
@@ -2478,7 +2742,7 @@ components:
             Present exactly when can_read is true (absent for an UPLOADER).
             The owner plus the members of every role whose accounts are
             active and can log in; pending invitations are not counted (the
-            member list and the invitations stay owner-only).
+            invitations stay owner-only).
         hide_location:
           type: boolean
           description: >-
@@ -2486,6 +2750,30 @@ components:
             location of the album's assets from members (PATCH
             /api/v1/folders/{folder_id}). Servers before "asset_location"
             omit it.
+        can_manage_assets:
+          type: boolean
+          description: >-
+            Present exactly when can_read is true: the caller may remove and
+            restore any asset, see the trash and hide assets (OWNER,
+            CONTRIBUTOR). Servers before "album_management" omit it.
+    DeletedFolder:
+      type: object
+      required: [id, name, created_at, deleted_at, purge_after]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        created_at: {type: string}
+        deleted_at: {type: string}
+        purge_after: {type: string, description: 'deleted_at + 30 days: after this the server purges the album; restoring is no longer possible'}
+    TrashedAsset:
+      allOf:
+        - $ref: '#/components/schemas/Asset'
+        - type: object
+          required: [removed_at, removed_by_name, purge_after]
+          properties:
+            removed_at: {type: string}
+            removed_by_name: {type: [string, 'null'], description: 'display name of who removed it; null when that account cannot log in'}
+            purge_after: {type: string, description: 'removed_at + 30 days: then the removal is final'}
     MySettings:
       type: object
       required: [hide_my_location]
@@ -2637,6 +2925,13 @@ components:
             likes_updated events with the asset in "assets".
         liked_by_me: {type: boolean, description: the caller's own like}
         comment_count: {type: integer, minimum: 0, description: 'comments on the asset in this folder (comment_* events)'}
+        hidden:
+          type: boolean
+          description: >-
+            The OWNER or a CONTRIBUTOR hid the asset (PATCH
+            .../assets/{asset_id}); only they get hidden assets, so it is
+            always false for a VIEWER. Servers before "album_management"
+            omit the key.
     Playback:
       type: object
       required: [status, bytes, width, height, mime_type]
@@ -2735,6 +3030,10 @@ components:
             names). comment_added, comment_updated, comment_removed: a
             comment (comment_id) was written, edited or deleted (new
             comment_count in "assets"; GET .../comments for the thread).
+            Hiding or showing an asset is asset_updated for the OWNER and
+            CONTRIBUTORs; for a VIEWER it is asset_removed or asset_added,
+            and every event of an asset that is hidden now is asset_removed
+            (no comment_id). Restoring from the trash is asset_added.
             Clients must skip kinds they do not know.
         asset_id: {type: string}
         folder_id: {type: string}
@@ -2915,8 +3214,10 @@ components:
         user_id: {type: string}
         display_name: {type: string}
         role: {type: string, enum: [OWNER, CONTRIBUTOR, VIEWER, UPLOADER]}
-        active: {type: boolean, description: the account can log in}
+        active: {type: boolean, description: 'the account can log in (only the OWNER is shown members for whom it is false)'}
         joined_at: {type: string, description: 'album creation time for the owner'}
+        is_me: {type: boolean, description: 'the caller ("album_management" servers)'}
+        is_owner: {type: boolean, description: 'the album''s owner, role OWNER ("album_management" servers)'}
     Device:
       type: object
       required: [device_id, device_name, platform, created_at, last_used_at, expires_at, current]

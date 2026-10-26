@@ -342,7 +342,7 @@ func playbackView(as meta.Asset) *playbackJSON {
 // If-Range, attachment, sandbox CSP), as video/mp4. 404 playback_not_ready
 // while there is none.
 func (s *Server) getPlayback(w http.ResponseWriter, r *http.Request, a albumRequest) {
-	asset, err := s.meta.GetFolderAsset(r.Context(), a.Folder.Folder.ID, r.PathValue("assetID"))
+	asset, err := s.meta.GetFolderAsset(r.Context(), a.Folder.Folder.ID, r.PathValue("assetID"), a.view())
 	if errors.Is(err, meta.ErrAssetNotFound) {
 		errorReply(w, 404, "asset_not_found")
 		return

@@ -243,8 +243,9 @@ as sensitive personal data.
   an asset linked to several folders (PoC imports) does not share them.
 - **Cleanup.** A member removed from the album, or changed to UPLOADER,
   loses its likes in that album (with likes_updated events); its comments
-  stay, without author. A photo removed from the album loses its likes and
-  comments. A deleted comment is deleted with its mentions (no
+  stay, without author. A photo removed from the album keeps its likes and
+  comments in the album trash and loses them when the removal becomes
+  final, 30 days later (M51). A deleted comment is deleted with its mentions (no
   tombstone); SQLite may keep the bytes in free pages until they are
   reused (no secure_delete). An archived album keeps everything and is
   unreachable like the rest of its data.
@@ -259,6 +260,45 @@ as sensitive personal data.
   names, readable by whoever can read the disk.
 - **Rendering.** The server returns plain text segments; clients must
   render them as text, never as markup.
+
+## Album management (M51): deleted albums, trash, hidden photos
+
+- **Hidden photos are an app-level visibility, not a protection of the
+  bytes.** An OWNER or CONTRIBUTOR may hide an asset; a VIEWER then gets
+  it on no read path (snapshot, feed, duplicate check, original, preview,
+  Live Photo component, playback copy, likes, comments, activity, "my
+  likes"; 404 asset_not_found for direct requests). The original stays on
+  the server disk unchanged and unencrypted, server backups contain it,
+  anyone who can read the disk can read it, and copies a VIEWER downloaded
+  before it was hidden stay on that VIEWER's devices. Do not present it to
+  users as deletion or as protection from people who already saw it.
+- **What a VIEWER still learns.** The feed keeps one sequence for
+  everyone, so a VIEWER sees that an event happened (its seq, time and an
+  opaque asset id turned into asset_removed) when a hidden photo is
+  hidden, commented on or liked, but never its data, hash, uploader or
+  comment. Event kinds are rewritten from the current hidden state at
+  read time, and the two views carry different cursor epochs, so a role
+  change between VIEWER and CONTRIBUTOR forces a snapshot reload instead
+  of leaving hidden data on a demoted device's index.
+- **Deleted albums are hidden from everyone at once** (every route 404,
+  invitations revoked) and only their owner can list and restore them,
+  for 30 days; the restore re-checks the stored owner inside its
+  transaction and answers 404 to everyone else, members included. A
+  server administrator sees only how many albums are deleted, never which.
+- **Purge (the only code that deletes originals).** 30 days after
+  deletion the maintenance loop deletes the album's rows and then only
+  the blobs no remaining asset holds (as original, preview or Live Photo
+  component). Their pool files are renamed to `.system/purge` inside the
+  purge transaction, under the same per-prefix lock as uploads, right
+  before COMMIT, and deleted after it; startup recovery (before the
+  reconciliation) puts back files whose rows survived a crash and deletes
+  the rest. An upload of the same bytes racing a purge either commits
+  first (the blob is then held and kept) or finds the pool file gone in
+  its pre-commit check and fails without a success reply (tested). A
+  backup taken while a purge runs may report the purged originals as
+  missing; run it again. Removed photos (the album trash) are never
+  deleted from disk: their removal becomes final after 30 days (likes and
+  comments deleted) and the original stays, as before.
 
 ## Setup screen (M24): threat model
 

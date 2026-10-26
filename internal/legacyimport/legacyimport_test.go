@@ -165,6 +165,13 @@ type view interface {
 	GetAssetBySHA(ctx context.Context, sha string) (meta.Asset, error)
 }
 
+// viewAll shows a SQLite store through view, with every asset (ViewAll).
+type viewAll struct{ *sqlitestore.Store }
+
+func (v viewAll) ListEvents(ctx context.Context, folderID string, cursor int64, limit int) (meta.EventPage, error) {
+	return v.Store.ListEvents(ctx, folderID, cursor, limit, meta.ViewAll)
+}
+
 // observe records everything the stores expose about the legacy data, with
 // asset identifiers replaced by the hash of their bytes (the PoC used the
 // hash as ID; the import assigns random IDs), plus the blob files.
@@ -359,7 +366,7 @@ func TestGoldenImport(t *testing.T) {
 	}
 
 	store := openImported(t, l)
-	sameObservation(t, before, observe(t, store, l))
+	sameObservation(t, before, observe(t, viewAll{store}, l))
 	ok, err := store.HasLegacyImport(t.Context(), shaOf(src))
 	if err != nil || !ok {
 		t.Fatalf("legacy_imports row missing: %v", err)
@@ -376,14 +383,14 @@ func TestGoldenImport(t *testing.T) {
 		}
 	}
 	// Legacy assets are reachable only through their folders.
-	page, err := store.ListEvents(t.Context(), l.folders[1], 0, 10)
+	page, err := store.ListEvents(t.Context(), l.folders[1], 0, 10, meta.ViewAll)
 	if err != nil || len(page.Events) != 2 {
 		t.Fatalf("trip events %+v %v", page, err)
 	}
-	if _, err := store.GetFolderAsset(t.Context(), l.folders[1], page.Events[0].AssetID); err != nil {
+	if _, err := store.GetFolderAsset(t.Context(), l.folders[1], page.Events[0].AssetID, meta.ViewAll); err != nil {
 		t.Fatalf("legacy asset in its folder: %v", err)
 	}
-	if _, err := store.GetFolderAsset(t.Context(), l.folders[2], page.Events[0].AssetID); !errors.Is(err, meta.ErrAssetNotFound) {
+	if _, err := store.GetFolderAsset(t.Context(), l.folders[2], page.Events[0].AssetID, meta.ViewAll); !errors.Is(err, meta.ErrAssetNotFound) {
 		t.Fatalf("legacy asset through another folder: %v", err)
 	}
 	// Sequences continue where state.json left them.
@@ -392,7 +399,7 @@ func TestGoldenImport(t *testing.T) {
 		Asset: meta.Asset{SHA256: shaOf(next), Filename: "n.jpg", MimeType: "image/jpeg", Bytes: int64(len(next))}}); err != nil {
 		t.Fatalf("upload after import: %v", err)
 	}
-	page, err = store.ListEvents(t.Context(), l.folders[0], 3, 10)
+	page, err = store.ListEvents(t.Context(), l.folders[0], 3, 10, meta.ViewAll)
 	if err != nil || len(page.Events) != 1 || page.Events[0].Seq != 4 {
 		t.Fatalf("event after import: %+v %v", page, err)
 	}
@@ -718,7 +725,7 @@ func TestCrashAtEveryPointIsRecoverable(t *testing.T) {
 				t.Fatal("migrated state.json differs from the original")
 			}
 			store := openImported(t, l)
-			sameObservation(t, before, observe(t, store, l))
+			sameObservation(t, before, observe(t, viewAll{store}, l))
 			ok, err := store.HasLegacyImport(t.Context(), shaOf(src))
 			if err != nil || !ok {
 				t.Fatalf("legacy import row: %v %v", ok, err)
@@ -801,7 +808,7 @@ func TestFailuresDiscardTemporaryDatabase(t *testing.T) {
 			if r, err := apply(t, l.vol, nil); err != nil {
 				t.Fatalf("re-run: %v (%v)", err, r.Problems)
 			}
-			sameObservation(t, before, observe(t, openImported(t, l), l))
+			sameObservation(t, before, observe(t, viewAll{openImported(t, l)}, l))
 		})
 	}
 }

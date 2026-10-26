@@ -343,7 +343,7 @@ func contractFolders(t *testing.T, env contractEnv) {
 	wantError(t, "unknown folder", do(t, h, "GET", "/api/v1/folders/"+strings.Repeat("0", 32), nil, nil), 404, "folder_not_found")
 }
 
-var folderKeys = []string{"id", "name", "created_at", "role", "can_read", "can_upload", "member_count", "hide_location"}
+var folderKeys = []string{"id", "name", "created_at", "role", "can_read", "can_upload", "member_count", "hide_location", "can_manage_assets"}
 
 func contractUpload(t *testing.T, env contractEnv) {
 	h := env.Handler
@@ -496,7 +496,7 @@ func contractSync(t *testing.T, env contractEnv) {
 		t.Fatalf("assets %v", assets)
 	}
 	a := assets[picID].(map[string]any)
-	wantKeys(t, "asset", a, "id", "sha256", "filename", "mime_type", "bytes", "preview_ready", "preview_status", "uploaded_at", "captured_at", "duration_ms", "location", "camera", "width", "height", "uploaded_by_name", "media_kind", "playback", "like_count", "liked_by_me", "comment_count")
+	wantKeys(t, "asset", a, "id", "sha256", "filename", "mime_type", "bytes", "preview_ready", "preview_status", "uploaded_at", "captured_at", "duration_ms", "location", "camera", "width", "height", "uploaded_by_name", "media_kind", "playback", "like_count", "liked_by_me", "comment_count", "hidden")
 	if a["id"] != picID || a["sha256"] != shaHex(pic) || a["filename"] != "p.jpg" || a["mime_type"] != "image/jpeg" || a["bytes"] != float64(len(pic)) || a["preview_ready"] != true {
 		t.Fatalf("asset %v", a)
 	}

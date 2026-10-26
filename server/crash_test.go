@@ -198,7 +198,7 @@ func checkRecovered(t *testing.T, root string, f testFolder, body []byte, want r
 	}
 	h := a.api.Handler()
 	events := func() []meta.Event {
-		page, err := a.meta.ListEvents(t.Context(), folderID, 0, 10)
+		page, err := a.meta.ListEvents(t.Context(), folderID, 0, 10, meta.ViewAll)
 		if err != nil {
 			t.Fatal(err)
 		}

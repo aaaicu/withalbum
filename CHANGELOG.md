@@ -4,6 +4,15 @@
 
 아래 [0.1.0-alpha.1] 초안 이후의 변경을 여기에 적습니다.
 
+### Added (album management, M51)
+- 앨범 삭제 `DELETE /api/v1/folders/{folder_id}`(OWNER): 모두에게서 즉시 사라지고(목록에서 빠지고 모든 앨범 경로 404) 대기 초대 취소, 오너만 30일 동안 `GET /api/v1/folders/deleted`로 보고 `POST /api/v1/folders/{folder_id}/restore`로 되살림(그 밖의 호출자는 404). 30일 뒤 6시간 주기 정리가 앨범 행·다른 앨범이 쓰지 않는 원본을 삭제(다른 앨범이 가진 원본은 유지, 원본은 커밋 직전 `.system/purge`로 옮기고 커밋 뒤 삭제, 기동 시 복구). **바뀐 점:** 이전의 `DELETE`(보관)는 `POST /api/v1/folders/{folder_id}/archive`로 이동.
+- 사진 삭제 권한: OWNER·**CONTRIBUTOR**가 앨범의 모든 사진을 앨범 휴지통으로 옮김(이전: OWNER만). 휴지통 `GET .../trash`·`GET .../trash/{asset_id}/preview`·`POST .../trash/{asset_id}/restore`(같은 asset id, 좋아요·댓글·비공개 상태 복구, `asset_added`; 같은 원본이 다시 올라와 있으면 409 `asset_conflict`). 30일 뒤 좋아요·댓글 삭제로 확정(원본 파일은 이전처럼 유지). **바뀐 점:** 제거 시 좋아요·댓글을 바로 지우지 않음.
+- 비공개 사진 `PATCH .../assets/{asset_id}` `{"hidden": bool}`(OWNER·CONTRIBUTOR): VIEWER에게는 모든 읽기 경로에서 보이지 않음. 피드는 보기마다 변환(관리자: `asset_updated`, VIEWER: `asset_removed`/`asset_added`, 비공개 사진의 모든 이벤트는 `asset_removed`), seq 동일, 커서 epoch은 보기별(역할이 VIEWER↔CONTRIBUTOR로 바뀌면 409로 다시 받기, 업그레이드 후 OWNER·CONTRIBUTOR 기기는 한 번 다시 받음). 자산 JSON `hidden`, 폴더 JSON `can_manage_assets`.
+- 멤버 목록 `GET .../members`: 읽기 권한자 모두(이전: OWNER만), `is_me`·`is_owner`, 오너에게만 로그인 불가 계정과 `invitations`.
+- 내 좋아요 `GET .../assets?liked_by_me=true`(커서 없음, 비공개 규칙 적용, 그 밖의 값 400 `invalid_filter`).
+- 관리자: `GET /admin/server/storage` `deleted_albums`, `GET /admin/users/{user_id}/folders` `deleted_owned`(개수만). 삭제된 앨범만 가진 계정은 비활성화 가능. 대시보드: 앨범 삭제/보관 버튼, 삭제 대기 수.
+- `/me` `server_features`에 `album_management`. 마이그레이션 **0017**(`folders.deleted_at`, `folder_assets.removed_by_user_id`·`purged_at`·`hidden_at`·`hidden_by_user_id`, 확정 트리거, `cannot_disable_owner` 갱신, `folder_changes` 재구성 — 기존 제거는 확정으로 표시).
+
 ### Added (playback copies of videos, M50)
 - 동영상 자산마다 재생용 경량본을 백그라운드에서 만듦: MP4(H.264 + AAC), 보이는 방향 기준 최대 1280×720(회전 반영), moov가 mdat 앞(fast start), 위치 등 메타데이터 제거, HDR→SDR(도구가 할 수 있을 때). macOS는 `/usr/bin/avconvert`(`Preset1280x720`, 하드웨어 인코더) 우선, 없으면 `ffmpeg`(`h264_videotoolbox`/`libx264`, 약 2.5Mbit/s, AAC 128k, 최대 60fps). `WITHALBUM_PLAYBACK=off|avconvert|ffmpeg`, `WITHALBUM_AVCONVERT`.
 - 자산 JSON `playback`: 동영상이면 `{"status": "pending"|"ready"|"failed"|"unsupported", "bytes", "width", "height", "mime_type"}`(ready일 때만 값), 그 밖(라이브 포토 포함)은 null. 상태가 바뀌면 `asset_updated`. `GET /api/v1/folders/{folder_id}/assets/{asset_id}/playback`: 원본과 같은 권한(UPLOADER 403, 중계·Funnel 허용)·Range/If-Range·첨부·sandbox CSP, `video/mp4`, 준비 전 404 `playback_not_ready`. `/me` `server_features`에 `video_playback`.

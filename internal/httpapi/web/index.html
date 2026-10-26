@@ -1219,14 +1219,25 @@
           if (confirm('소유권을 넘기면 나는 참여(CONTRIBUTOR) 역할이 되고 대기 중인 초대는 취소됩니다. 계속할까요?'))
             albumAct(async () => { await api(base + '/owner', json('POST', {new_owner_user_id: transferSelect.value})); await reload(); }, '소유권을 이전했어요.');
         })),
+        el('h3', {className: 't-h3', text: '앨범 삭제'}),
+        el('p', {className: 'note', text: '삭제하면 모든 사람(나 포함)에게서 앨범이 바로 사라져요. 30일 동안은 앱에서 오너가 되살릴 수 있고, 그 뒤 서버가 앨범과 다른 앨범에 없는 원본을 지워요.'}),
+        el('div', {}, button('앨범 삭제', () => {
+          const typed = prompt('삭제하려면 앨범 이름을 그대로 입력하세요: ' + name);
+          if (typed === null) return;
+          if (typed !== name) { say('이름이 일치하지 않아 삭제하지 않았어요.', true); return; }
+          run(async () => {
+            try { await api(base, {method: 'DELETE'}); } catch (err) { if (gone(err)) { albumGone(err); return; } throw err; }
+            go('albums'); await reload();
+          }, '앨범을 삭제했어요. 30일 안에 되살릴 수 있어요.');
+        }, 'btn btn-danger')),
         el('h3', {className: 't-h3', text: '앨범 보관'}),
-        el('p', {className: 'note', text: '보관하면 모든 사람(나 포함)에게서 앨범이 숨겨져요. 파일은 삭제되지 않지만 지금은 화면에서 되돌릴 수 없어요.'}),
+        el('p', {className: 'note', text: '보관하면 모든 사람(나 포함)에게서 앨범이 숨겨져요. 파일은 지워지지 않지만 지금은 화면에서 되돌릴 수 없어요.'}),
         el('div', {}, button('앨범 보관', () => {
           const typed = prompt('보관하려면 앨범 이름을 그대로 입력하세요: ' + name);
           if (typed === null) return;
           if (typed !== name) { say('이름이 일치하지 않아 보관하지 않았어요.', true); return; }
           run(async () => {
-            try { await api(base, {method: 'DELETE'}); } catch (err) { if (gone(err)) { albumGone(err); return; } throw err; }
+            try { await api(base + '/archive', {method: 'POST'}); } catch (err) { if (gone(err)) { albumGone(err); return; } throw err; }
             go('albums'); await reload();
           }, '앨범을 보관했어요.');
         }, 'btn btn-danger')));
@@ -1542,7 +1553,8 @@
         await openUser(userID);
       }, '기기를 해지했어요.'));
       const archivedN = owned.archived.length;
-      const ownedInfo = el('p', {className: 'note', text: '소유 앨범: 사용 중 ' + owned.active_owned + '개 · 보관 앨범 ' + archivedN + '개 (이름·내용은 관리자에게 표시되지 않아요)'});
+      const ownedInfo = el('p', {className: 'note', text: '소유 앨범: 사용 중 ' + owned.active_owned + '개 · 보관 앨범 ' + archivedN + '개' +
+        (owned.deleted_owned ? ' · 삭제된 앨범 ' + owned.deleted_owned + '개(30일 뒤 정리, 비활성화를 막지 않아요)' : '') + ' (이름·내용은 관리자에게 표시되지 않아요)'});
       const statusArea = el('div', {className: 'form-row'});
       if (u.status === 'active') {
         statusArea.append(button('비활성화', () => {
@@ -1615,6 +1627,11 @@
           ? checkRow(pb.failed > 0 ? 'bad' : 'ok', '재생용 영상 ' + pb.ready.toLocaleString('ko-KR') + '개 · ' + fmtBytes(pb.ready_bytes),
             '만드는 중 ' + pb.pending.toLocaleString('ko-KR') + ' · 실패 ' + pb.failed.toLocaleString('ko-KR') + ' · 원본으로 재생 ' + pb.unsupported.toLocaleString('ko-KR') + ' · 변환 ' + pb.tool)
           : checkRow('off', '재생용 영상 · 변환 도구 없음', '동영상은 원본 그대로 재생해요'));
+      }
+      // Deleted albums: a number only (administrators never see which).
+      if (typeof s.deleted_albums === 'number' && s.deleted_albums > 0 && !brief) {
+        rows.push(checkRow('off', '삭제된 앨범 ' + s.deleted_albums.toLocaleString('ko-KR') + '개 · 정리 대기',
+          '오너가 30일 안에 되살릴 수 있어요. 그 뒤 다른 앨범에 없는 원본과 함께 지워져요'));
       }
       const c = s.startup_check;
       if (c) {

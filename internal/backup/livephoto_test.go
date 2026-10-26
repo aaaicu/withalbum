@@ -78,7 +78,7 @@ func TestBackupRestoreLivePhoto(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	page, err := st.ListFolderAssets(t.Context(), l.folder, "", 10)
+	page, err := st.ListFolderAssets(t.Context(), l.folder, "", 10, meta.AssetQuery{View: meta.ViewAll})
 	if err != nil {
 		t.Fatal(err)
 	}

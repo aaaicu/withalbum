@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"time"
 
 	"github.com/aaaicu/withalbum/internal/auth/session"
 	"github.com/aaaicu/withalbum/internal/authz"
@@ -98,7 +99,13 @@ var routePolicies = []RoutePolicy{
 	{"POST /api/v1/folders/{folderID}/bundles/{bundleID}/complete", AccessAlbum, authz.UploadAsset},
 	{"GET /api/v1/folders/{folderID}/assets", AccessAlbum, authz.ListAlbumAssets},
 	{"POST /api/v1/folders/{folderID}/assets/check", AccessAlbum, authz.ListAlbumAssets},
+	// Removal goes to the album's trash (albums.go): OWNER and CONTRIBUTOR
+	// remove, list, preview and restore; hiding likewise.
 	{"DELETE /api/v1/folders/{folderID}/assets/{assetID}", AccessAlbum, authz.DeleteAsset},
+	{"PATCH /api/v1/folders/{folderID}/assets/{assetID}", AccessAlbum, authz.HideAsset},
+	{"GET /api/v1/folders/{folderID}/trash", AccessAlbum, authz.DeleteAsset},
+	{"GET /api/v1/folders/{folderID}/trash/{assetID}/preview", AccessAlbum, authz.DeleteAsset},
+	{"POST /api/v1/folders/{folderID}/trash/{assetID}/restore", AccessAlbum, authz.DeleteAsset},
 	{"GET /api/v1/folders/{folderID}/sync", AccessAlbum, authz.ListAlbumAssets},
 	{"PUT /api/v1/folders/{folderID}/sync/cursor", AccessAlbum, authz.ListAlbumAssets},
 	{"GET /api/v1/folders/{folderID}/assets/{assetID}/original", AccessAlbum, authz.DownloadAsset},
@@ -120,12 +127,21 @@ var routePolicies = []RoutePolicy{
 	{"GET /api/v1/folders/{folderID}/mentionable", AccessAlbum, authz.ListAlbumAssets},
 	// Only the caller's own activity, in folders it can read now.
 	{"GET /api/v1/me/activity", AccessSession, ""},
+	// Deleting (restorable for 30 days) and archiving (albums.go): OWNER.
 	{"DELETE /api/v1/folders/{folderID}", AccessAlbum, authz.DeleteAlbum},
+	{"POST /api/v1/folders/{folderID}/archive", AccessAlbum, authz.DeleteAlbum},
+	// A deleted folder is unknown to every other album route; its owner
+	// lists (only the caller's own) and restores it here. The restore route
+	// reads the deleted folder (handleDeletedAlbum): anyone but its owner
+	// gets 404 folder_not_found, and the transaction decides again.
+	{"GET /api/v1/folders/deleted", AccessSession, ""},
+	{"POST /api/v1/folders/{folderID}/restore", AccessAlbum, authz.DeleteAlbum},
+	// Members: every reader; pending invitations: OWNER.
 	{"GET /api/v1/folders/{folderID}/members", AccessAlbum, authz.ListMembers},
 	{"PATCH /api/v1/folders/{folderID}/members/{userID}", AccessAlbum, authz.ChangeMemberRole},
 	{"DELETE /api/v1/folders/{folderID}/members/{userID}", AccessAlbum, authz.RevokeMember},
 	{"POST /api/v1/folders/{folderID}/owner", AccessAlbum, authz.TransferOwner},
-	{"GET /api/v1/folders/{folderID}/invitations", AccessAlbum, authz.ListMembers},
+	{"GET /api/v1/folders/{folderID}/invitations", AccessAlbum, authz.ListInvitations},
 	{"POST /api/v1/folders/{folderID}/invitations", AccessAlbum, authz.InviteMember},
 	{"DELETE /api/v1/folders/{folderID}/invitations/{invitationID}", AccessAlbum, authz.InviteMember},
 	// Only the invited account's own invitations; acceptance and refusal
@@ -241,6 +257,31 @@ func (rt *router) handleAlbum(pattern string, h albumHandler) {
 		if !a.allowed(p.Action) {
 			rt.s.denied(r, a.P.UserID, pattern, 403, fa.Folder.ID)
 			errorReply(w, 403, "forbidden")
+			return
+		}
+		h(w, r, a)
+	})))
+}
+
+// handleDeletedAlbum registers an album route of a deleted folder (its
+// restore): like handleAlbum, but the folder named by {folderID} must be
+// deleted and still restorable, and every caller the action is not
+// allowed for gets 404 folder_not_found, members included: a deleted
+// folder is hidden from everyone but the one who may restore it.
+func (rt *router) handleDeletedAlbum(pattern string, h albumHandler) {
+	p := rt.policy(pattern, true)
+	rt.mux.Handle(pattern, rt.s.RequireSession(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, _ := IdentityFrom(r.Context())
+		a := albumRequest{ID: id, P: principal(id)}
+		fa, err := rt.s.albums.GetDeletedFolderAccess(r.Context(), r.PathValue("folderID"), a.P.UserID, time.Now())
+		if err != nil && !errors.Is(err, meta.ErrFolderNotFound) {
+			metaReadFailed(w, err)
+			return
+		}
+		a.Folder = fa
+		if err != nil || !a.allowed(p.Action) {
+			rt.s.denied(r, a.P.UserID, pattern, 404, r.PathValue("folderID"))
+			errorReply(w, 404, "folder_not_found")
 			return
 		}
 		h(w, r, a)

@@ -15,6 +15,7 @@ import (
 	"github.com/aaaicu/withalbum/internal/httpapi"
 	"github.com/aaaicu/withalbum/internal/integrity"
 	lpt "github.com/aaaicu/withalbum/internal/livephoto/livephototest"
+	"github.com/aaaicu/withalbum/internal/meta"
 )
 
 const liveID = "8C1D5A0E-4B2F-4F7A-9E3D-1A2B3C4D5E6F"
@@ -344,7 +345,7 @@ func TestLivePhotoDuplicates(t *testing.T) {
 	if m["result"] != "upgraded" || m["asset_id"] != aid || m["media_kind"] != "live_photo" || len(m["components"].([]any)) != 1 {
 		t.Fatalf("upgrade %v", m)
 	}
-	page, err := e.Meta.ListEvents(t.Context(), f, int64(events), 10)
+	page, err := e.Meta.ListEvents(t.Context(), f, int64(events), 10, meta.ViewAll)
 	if err != nil || len(page.Events) != 1 || page.Events[0].Kind != "asset_updated" || page.Events[0].AssetID != aid ||
 		page.Assets[aid].PairedVideo.SHA256 != shaHex(lp.video) || page.Events[0].UploaderDeviceID != "" {
 		t.Fatalf("upgrade event %+v %v", page, err)
@@ -433,7 +434,7 @@ func TestLivePhotoAccess(t *testing.T) {
 	wantError(t, "demoted", e.completeBundle(t, "uploader", f, bid), 403, "forbidden")
 	e.setMember(t, "uploader", "UPLOADER")
 	me := wantJSON(t, "me", e.as(t, "uploader", "GET", "/api/v1/me", nil, nil), 200)
-	if fmt.Sprint(me["server_features"]) != "[live_photo_bundles folder_create_idempotency asset_duration asset_location reactions_comments asset_camera video_playback]" {
+	if fmt.Sprint(me["server_features"]) != "[live_photo_bundles folder_create_idempotency asset_duration asset_location reactions_comments asset_camera video_playback album_management]" {
 		t.Fatalf("server_features %v", me["server_features"])
 	}
 }

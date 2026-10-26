@@ -47,6 +47,13 @@ func validRole(r authz.AlbumRole) bool {
 // changeTx runs fn in one write transaction after re-authorizing the caller
 // on folderID, then c.BeforeCommit, then COMMIT.
 func (s *Store) changeTx(ctx context.Context, c meta.AlbumChange, folderID string, fn func(tx *sql.Tx, fa meta.FolderAccess) error) error {
+	return s.changeTxView(ctx, c, folderID, func(tx *sql.Tx, fa meta.FolderAccess, _ meta.View) error { return fn(tx, fa) })
+}
+
+// changeTxView is changeTx that also passes fn the caller's view of the
+// folder's assets (meta.ViewOf), decided on the account, session and
+// relation as stored in the transaction.
+func (s *Store) changeTxView(ctx context.Context, c meta.AlbumChange, folderID string, fn func(tx *sql.Tx, fa meta.FolderAccess, view meta.View) error) error {
 	if c.Authorize == nil {
 		return errors.New("sqlitestore: AlbumChange.Authorize is required")
 	}
@@ -66,7 +73,7 @@ func (s *Store) changeTx(ctx context.Context, c meta.AlbumChange, folderID strin
 	if err := c.Authorize(p, fa.Access); err != nil {
 		return fmt.Errorf("authorize: %w", err)
 	}
-	if err := fn(tx, fa); err != nil {
+	if err := fn(tx, fa, meta.ViewOf(p, fa.Access)); err != nil {
 		return classify(err)
 	}
 	if c.BeforeCommit != nil {
@@ -140,10 +147,11 @@ func (s *Store) ListFolderInvitations(ctx context.Context, folderID string) ([]m
 }
 
 // ListInvitationsFor implements meta.Memberships. Invitations written by
-// someone who no longer owns the folder are left out (a transfer revokes
-// them anyway).
+// someone who no longer owns the folder, and those of archived or deleted
+// folders, are left out (a transfer, archive or delete revokes them
+// anyway).
 func (s *Store) ListInvitationsFor(ctx context.Context, userID string) ([]meta.Invitation, error) {
-	return s.listInvitations(ctx, "i.invited_user_id = ? AND i.status = 'pending' AND f.archived_at IS NULL AND i.inviter_user_id = f.owner_user_id", userID)
+	return s.listInvitations(ctx, "i.invited_user_id = ? AND i.status = 'pending' AND f.archived_at IS NULL AND f.deleted_at IS NULL AND i.inviter_user_id = f.owner_user_id", userID)
 }
 
 // accountActive reports whether userID exists, is active and can log in.
@@ -391,11 +399,11 @@ func (s *Store) declineInvitation(ctx context.Context, c meta.AlbumChange) error
 // ListMembers implements meta.Memberships.
 func (s *Store) ListMembers(ctx context.Context, folderID string) ([]meta.Member, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT u.user_id, u.display_name, 'OWNER', u.status, substr(u.password_hash, 1, 1), f.created_at, 0
-			FROM folders f JOIN users u ON u.user_id = f.owner_user_id WHERE f.folder_id = ? AND f.archived_at IS NULL
+			FROM folders f JOIN users u ON u.user_id = f.owner_user_id WHERE f.folder_id = ? AND f.archived_at IS NULL AND f.deleted_at IS NULL
 		UNION ALL
 		SELECT u.user_id, u.display_name, m.role, u.status, substr(u.password_hash, 1, 1), m.joined_at, 1
 			FROM folder_members m JOIN folders f ON f.folder_id = m.folder_id JOIN users u ON u.user_id = m.user_id
-			WHERE m.folder_id = ? AND f.archived_at IS NULL
+			WHERE m.folder_id = ? AND f.archived_at IS NULL AND f.deleted_at IS NULL
 		ORDER BY 7, 6, 1`, folderID, folderID)
 	if err != nil {
 		return nil, err
