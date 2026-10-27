@@ -4,6 +4,9 @@
 
 아래 [0.1.0-alpha.1] 초안 이후의 변경을 여기에 적습니다.
 
+### Added (fast sync state, M53)
+- `GET /api/v1/sync/state`: 읽을 수 있는 모든 앨범의 피드 끝 커서(호출자 보기 기준)를 한 번에 — 앱이 앨범마다 묻지 않고 커서가 바뀐 앨범만 받음. `albums_tag`(앨범 목록·이름·역할·설정 변화), `tag`=ETag(`If-None-Match`면 304). `wait=1..25`초 롱폴(1초마다 확인, 동시 대기 64개 상한, 넘으면 바로 응답). `digests=1`이면 앨범별 내용 해시 `digest`·`count`(자산 id 순 `id sha256 like_count liked_by_me comment_count` 줄의 SHA-256, 같은 트랜잭션에서 읽은 커서와 함께) — 앱이 로컬 인덱스와 비교해 어긋나면 그 앨범만 다시 받음. 중계·Funnel 허용, `/me` `server_features`에 `sync_state`.
+
 ### Added (album management, M51)
 - 앨범 삭제 `DELETE /api/v1/folders/{folder_id}`(OWNER): 모두에게서 즉시 사라지고(목록에서 빠지고 모든 앨범 경로 404) 대기 초대 취소, 오너만 30일 동안 `GET /api/v1/folders/deleted`로 보고 `POST /api/v1/folders/{folder_id}/restore`로 되살림(그 밖의 호출자는 404). 30일 뒤 6시간 주기 정리가 앨범 행·다른 앨범이 쓰지 않는 원본을 삭제(다른 앨범이 가진 원본은 유지, 원본은 커밋 직전 `.system/purge`로 옮기고 커밋 뒤 삭제, 기동 시 복구). **바뀐 점:** 이전의 `DELETE`(보관)는 `POST /api/v1/folders/{folder_id}/archive`로 이동.
 - 사진 삭제 권한: OWNER·**CONTRIBUTOR**가 앨범의 모든 사진을 앨범 휴지통으로 옮김(이전: OWNER만). 휴지통 `GET .../trash`·`GET .../trash/{asset_id}/preview`·`POST .../trash/{asset_id}/restore`(같은 asset id, 좋아요·댓글·비공개 상태 복구, `asset_added`; 같은 원본이 다시 올라와 있으면 409 `asset_conflict`). 30일 뒤 좋아요·댓글 삭제로 확정(원본 파일은 이전처럼 유지). **바뀐 점:** 제거 시 좋아요·댓글을 바로 지우지 않음.

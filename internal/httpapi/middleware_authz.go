@@ -79,6 +79,9 @@ var routePolicies = []RoutePolicy{
 	{"POST /api/v1/admin/folders/{folderID}/owner", AccessServer, authz.ManageAccounts},
 	{"GET /api/v1/admin/server/tls", AccessServer, authz.ManageServer},
 	{"GET /api/v1/admin/server/storage", AccessServer, authz.ManageServer},
+	// One state for all the caller's folders (sync_state.go): each one
+	// listed only as authz allows (GetAlbumMetadata, ListAlbumAssets).
+	{"GET /api/v1/sync/state", AccessSession, ""},
 	{"GET /api/v1/folders", AccessSession, ""},
 	{"POST /api/v1/folders", AccessServer, authz.CreateAlbum},
 	{"GET /api/v1/folders/{folderID}", AccessAlbum, authz.GetAlbumMetadata},

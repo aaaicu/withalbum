@@ -74,6 +74,7 @@ var matrixClasses = map[string]matrixClass{
 	"GET /api/v1/me/devices":           classSession,
 	"GET /api/v1/me/activity":          classSession,
 	"GET /api/v1/folders":              classSession,
+	"GET /api/v1/sync/state":           classSession,
 	"GET /api/v1/folders/deleted":      classSession,
 	"GET /api/v1/invitations":          classSession,
 	"POST /api/v1/folders":             classCreate,

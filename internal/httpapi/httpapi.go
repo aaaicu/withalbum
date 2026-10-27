@@ -225,6 +225,7 @@ func (s *Server) Handler() http.Handler {
 	rt.handleAlbum("GET /api/v1/folders/{folderID}/assets/{assetID}/preview", s.download(true))
 	rt.handleAlbum("GET /api/v1/folders/{folderID}/assets/{assetID}/playback", s.getPlayback)
 	s.syncRoutes(rt)
+	s.syncStateRoutes(rt)
 	s.socialRoutes(rt)
 	s.memberRoutes(rt)
 	s.albumRoutes(rt)
