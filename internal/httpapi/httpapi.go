@@ -214,6 +214,7 @@ func (s *Server) Handler() http.Handler {
 	})
 	rt.handle("/api/v1/", func(w http.ResponseWriter, r *http.Request) { errorReply(w, 404, "not_found") })
 	s.authRoutes(rt)
+	s.signInRoutes(rt)
 	rt.handle("GET /api/v1/folders", s.getFolders)
 	rt.handle("POST /api/v1/folders", s.createFolder)
 	rt.handleAlbum("GET /api/v1/folders/{folderID}", s.getFolder)

@@ -419,6 +419,8 @@ func main() {
 	funnelFlag := flag.String("funnel-url", "", "Also serve apps through Tailscale Funnel at this public https://<machine>.<tailnet>.ts.net address (default: WITHALBUM_FUNNEL_URL; see docs/FUNNEL.md). Opens a second listener on loopback only; requires -tls and an active server administrator")
 	funnelListenFlag := flag.String("funnel-listen", "", "Loopback address of the listener the Funnel TCP forwarder connects to (default: WITHALBUM_FUNNEL_LISTEN, else 127.0.0.1:8788)")
 	relayFlag := flag.String("relay", "", "Also serve apps through the relay at host:port over an outbound connection (default: WITHALBUM_RELAY; see docs/RELAY_DESIGN.md). Requires -tls and an active server administrator")
+	googleIDsFlag := flag.String("google-client-ids", "", "Comma-separated Google OAuth client IDs of the app, for sign-in with Google (default: WITHALBUM_GOOGLE_CLIENT_IDS, else built in; \"off\" turns it off)")
+	appleIDsFlag := flag.String("apple-client-ids", "", "Comma-separated Apple client IDs (bundle ID, Services ID) of the app, for Sign in with Apple (default: WITHALBUM_APPLE_CLIENT_IDS, else aaaicu.withalbum.app; \"off\" turns it off)")
 	flag.Parse()
 	if *showVersion {
 		fmt.Println("withalbum-server " + version)
@@ -492,6 +494,7 @@ func main() {
 		log.Printf("playback copies: no tool (avconvert, ffmpeg with an H.264 encoder) or WITHALBUM_PLAYBACK=off; videos are streamed as they are")
 	}
 	opts := appOptions{VolumeID: target.VolumeID, MinFreeBytes: minFree, Converters: converters, Transcoder: transcoder, Faults: chaosFaults()}
+	opts.Auth.SignIn = signInConfig(*googleIDsFlag, *appleIDsFlag)
 	a, err := openApp(ctx, root, opts)
 	// Setup mode (server/setup.go) when the storage can still be chosen, or
 	// when it has no administrator, and only on the plain loopback listener.

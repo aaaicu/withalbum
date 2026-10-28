@@ -38,8 +38,8 @@ func TestEmbeddedMigrationsAreContiguous(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ms) != 17 || LatestVersion() != 17 {
-		t.Fatalf("got %d migrations, LatestVersion %d; want 17", len(ms), LatestVersion())
+	if len(ms) != 18 || LatestVersion() != 18 {
+		t.Fatalf("got %d migrations, LatestVersion %d; want 18", len(ms), LatestVersion())
 	}
 }
 

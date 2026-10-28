@@ -20,7 +20,7 @@ type Access string
 
 const (
 	// AccessPublic: no session. Only the dashboard page (static, no data), health
-	// and the login and refresh endpoints.
+	// and the login, refresh and sign-in (nonce, Google/Apple) endpoints.
 	AccessPublic Access = "public"
 	// AccessSession: any valid session; the handler only touches the caller's
 	// own data (own account, own devices, own folder list).
@@ -58,6 +58,10 @@ var routePolicies = []RoutePolicy{
 	{"GET /api/v1/health", AccessPublic, ""},
 	{"POST /api/v1/auth/login", AccessPublic, ""},
 	{"POST /api/v1/auth/refresh", AccessPublic, ""},
+	// Sign in with Google or Apple (signin.go, M54): a one-attempt nonce,
+	// then an ID token the server verifies itself.
+	{"POST /api/v1/auth/sign-in/nonce", AccessPublic, ""},
+	{"POST /api/v1/auth/sign-in", AccessPublic, ""},
 	{"/api/v1/", AccessSession, ""},
 	{"POST /api/v1/auth/logout", AccessSession, ""},
 	{"GET /api/v1/me", AccessSession, ""},
@@ -66,6 +70,9 @@ var routePolicies = []RoutePolicy{
 	{"GET /api/v1/me/devices", AccessSession, ""},
 	{"DELETE /api/v1/me/devices/{deviceID}", AccessSession, ""},
 	{"POST /api/v1/me/devices/revoke-others", AccessSession, ""},
+	{"GET /api/v1/me/sign-ins", AccessSession, ""},
+	{"POST /api/v1/me/sign-ins", AccessSession, ""},
+	{"DELETE /api/v1/me/sign-ins/{provider}", AccessSession, ""},
 	{"GET /api/v1/admin/users", AccessServer, authz.ManageAccounts},
 	{"POST /api/v1/admin/users", AccessServer, authz.ManageAccounts},
 	{"GET /api/v1/admin/users/{userID}", AccessServer, authz.ManageAccounts},

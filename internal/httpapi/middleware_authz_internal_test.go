@@ -66,7 +66,7 @@ func TestRoutePolicyTable(t *testing.T) {
 			t.Errorf("%s is %s, want album", p.Pattern, p.Access)
 		}
 	}
-	if got := strings.Join(public, ", "); got != "GET /{$}, GET /api/v1/health, POST /api/v1/auth/login, POST /api/v1/auth/refresh" {
+	if got := strings.Join(public, ", "); got != "GET /{$}, GET /api/v1/health, POST /api/v1/auth/login, POST /api/v1/auth/refresh, POST /api/v1/auth/sign-in/nonce, POST /api/v1/auth/sign-in" {
 		t.Fatalf("public routes: %s", got)
 	}
 }

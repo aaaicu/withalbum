@@ -52,6 +52,13 @@ type authEnv struct {
 
 func newAuthEnv(t *testing.T, rl ratelimit.Config) *authEnv {
 	t.Helper()
+	return newAuthEnvOpts(t, httpapi.AuthOptions{RateLimit: rl})
+}
+
+// newAuthEnvOpts: like newAuthEnv with more auth options (fast password
+// parameters and the test clock are always set).
+func newAuthEnvOpts(t *testing.T, o httpapi.AuthOptions) *authEnv {
+	t.Helper()
 	root := t.TempDir()
 	if _, err := storage.Init(root); err != nil {
 		t.Fatal(err)
@@ -78,7 +85,8 @@ func newAuthEnv(t *testing.T, rl ratelimit.Config) *authEnv {
 	if e.member, err = e.users.Create(t.Context(), users.NewUser{LoginName: "member", DisplayName: "Member", PasswordHash: uh, Role: users.RoleUser}, users.Console); err != nil {
 		t.Fatal(err)
 	}
-	auth, err := httpapi.NewAuth(store.DB(), httpapi.AuthOptions{PasswordParams: fastParams, Session: session.Config{Now: e.clock.Now}, RateLimit: rl})
+	o.PasswordParams, o.Session = fastParams, session.Config{Now: e.clock.Now}
+	auth, err := httpapi.NewAuth(store.DB(), o)
 	if err != nil {
 		t.Fatal(err)
 	}
