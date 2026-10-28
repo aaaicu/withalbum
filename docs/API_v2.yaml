@@ -2179,6 +2179,67 @@ paths:
         '404': {description: 'folder_not_found, asset_not_found (not in the trash: unknown, not removed, purged or removed more than 30 days ago)'}
         '409': {description: 'asset_conflict (the album holds the same original again, uploaded since the removal)'}
         '503': {description: 'storage_unavailable, storage_io_error, busy'}
+  /api/v1/sync/state:
+    get:
+      tags: [Sync]
+      summary: Every readable folder's feed position in one request, with a long poll (server_features sync_state)
+      description: >-
+        For each folder the caller can read (OWNER, CONTRIBUTOR, VIEWER; an
+        UPLOADER's folders are not listed) the cursor where its feed ends
+        for the caller (the next_cursor GET .../sync would return at the
+        end, in the caller's view). A client pulls only the folders whose
+        cursor differs from its stored one. "albums_tag" changes whenever
+        GET /folders would answer differently (an album added or lost, a
+        name, role or setting). "tag", also sent as the ETag, changes
+        whenever albums_tag or a cursor does. With If-None-Match equal to
+        the current tag the answer is 304 without a body; with wait=N as
+        well the server waits up to N seconds for a change (checked every
+        second) before answering 304, and answers 200 as soon as the tag
+        changes (a long poll; a busy server may answer without waiting).
+        With digests=1 each folder also has "digest" and "count": the
+        lowercase hex SHA-256, over the folder's assets in ascending id
+        order as the caller sees them, of the lines
+        "<id> <sha256> <like_count> <liked_by_me 0|1> <comment_count>\n"
+        (the Asset fields), read together with that folder's cursor. A
+        client whose index is at that cursor and computes another digest
+        missed a change: it reloads that folder from the snapshot.
+        Available on relay and funnel routes.
+      parameters:
+        - in: query
+          name: wait
+          schema: {type: integer, minimum: 0, maximum: 25}
+          description: seconds to wait for a change when If-None-Match is the current tag
+        - in: query
+          name: digests
+          schema: {type: string, enum: ['0', '1']}
+        - in: header
+          name: If-None-Match
+          schema: {type: string}
+          description: the tag of a previous answer, quoted
+      responses:
+        '200':
+          description: The current state (ETag = tag, Cache-Control no-store)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tag, albums_tag, folders]
+                properties:
+                  tag: {type: string}
+                  albums_tag: {type: string}
+                  folders:
+                    type: array
+                    items:
+                      type: object
+                      required: [folder_id, cursor]
+                      properties:
+                        folder_id: {type: string}
+                        cursor: {type: string}
+                        digest: {type: string, description: 'digests=1 only'}
+                        count: {type: integer, description: 'digests=1 only: assets in the digest'}
+        '304': {description: 'unchanged (If-None-Match), also after waiting'}
+        '400': {description: 'invalid_wait, invalid_digests'}
+        '401': {description: unauthorized}
   /api/v1/folders/{folder_id}/sync:
     get:
       tags: [Sync]

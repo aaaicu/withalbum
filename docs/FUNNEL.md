@@ -69,7 +69,7 @@ Re-check these pages before release; Funnel is beta and may change.
 - **Route classification**: connections on the funnel listener are marked
   `funnel` and served exactly like relay connections: only `GET
   /api/v1/health`, `/api/v1/auth/*`, `/api/v1/me*`, `/api/v1/folders*`,
-  `/api/v1/invitations*`; the dashboard, the setup screen and
+  `/api/v1/invitations*`, `/api/v1/sync/state`; the dashboard, the setup screen and
   `/api/v1/admin/*` answer `403 {"error":"not_available_via_relay","route":"funnel"}`,
   also for administrators; a non-canonical path is refused (shared
   `relayAllowed` table, one test covers every route).
