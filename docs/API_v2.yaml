@@ -779,8 +779,8 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/SignInLink'}
-        '400': {description: 'invalid_json, invalid_request, provider_disabled'}
-        '401': {description: 'unauthorized, invalid_identity_token'}
+        '400': {description: 'invalid_json, invalid_request, provider_disabled, invalid_identity_token (bad, expired, for another app, or unknown/used nonce; not 401, which means the session ended)'}
+        '401': {description: unauthorized}
         '403': {description: 'invalid_credentials (wrong current password) or csrf_failed'}
         '409': {description: 'identity_in_use (linked to another account), provider_linked (unlink the other identity of this provider first)'}
         '429': {description: rate_limited}

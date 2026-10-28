@@ -149,15 +149,16 @@ func (s *Server) signInNonce(w http.ResponseWriter, r *http.Request) {
 }
 
 // verifyIdentity checks provider, nonce and token and writes the error
-// reply when they fail.
-func (s *Server) verifyIdentity(w http.ResponseWriter, r *http.Request, provider, token, nonce string) (oidc.Claims, bool) {
+// reply when they fail: badStatus for a bad token or nonce (401 when
+// signing in; 400 on a session route, where 401 means the session ended).
+func (s *Server) verifyIdentity(w http.ResponseWriter, r *http.Request, provider, token, nonce string, badStatus int) (oidc.Claims, bool) {
 	p := oidc.Provider(provider)
 	if !p.Valid() || token == "" || nonce == "" {
 		errorReply(w, 400, "invalid_request")
 		return oidc.Claims{}, false
 	}
 	if !s.auth.nonces.take(nonce) {
-		errorReply(w, 401, "invalid_identity_token")
+		errorReply(w, badStatus, "invalid_identity_token")
 		return oidc.Claims{}, false
 	}
 	c, err := s.auth.SignIn.Verify(r.Context(), p, token, nonce)
@@ -170,7 +171,7 @@ func (s *Server) verifyIdentity(w http.ResponseWriter, r *http.Request, provider
 		w.Header().Set("Retry-After", "30")
 		errorReply(w, 503, "provider_unavailable")
 	default:
-		errorReply(w, 401, "invalid_identity_token")
+		errorReply(w, badStatus, "invalid_identity_token")
 	}
 	return oidc.Claims{}, false
 }
@@ -202,7 +203,7 @@ func (s *Server) signIn(w http.ResponseWriter, r *http.Request) {
 		rateLimited(w, wait)
 		return
 	}
-	claims, ok := s.verifyIdentity(w, r, req.Provider, req.IDToken, req.Nonce)
+	claims, ok := s.verifyIdentity(w, r, req.Provider, req.IDToken, req.Nonce, 401)
 	if !ok {
 		s.auth.Limiter.FailureIn(sc, rateKey(c.IP), key)
 		return
@@ -293,7 +294,7 @@ func (s *Server) linkSignIn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.auth.Limiter.Success(rateKey(c.IP), id.LoginName)
-	claims, ok := s.verifyIdentity(w, r, req.Provider, req.IDToken, req.Nonce)
+	claims, ok := s.verifyIdentity(w, r, req.Provider, req.IDToken, req.Nonce, 400)
 	if !ok {
 		return
 	}
