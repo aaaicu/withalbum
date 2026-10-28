@@ -33,7 +33,7 @@
 - 기존 제품 설계: [PRODUCT_ARCHITECTURE_v1.3.md](PRODUCT_ARCHITECTURE_v1.3.md)
 - 계정·권한: [ACCESS_CONTROL_v1.4.md](ACCESS_CONTROL_v1.4.md)
 - DB: [schema_v1.4.sql](schema_v1.4.sql)
-- API: [API_AUTH_v1.4.yaml](API_AUTH_v1.4.yaml)
+- API: [API_v2.yaml](API_v2.yaml) (통합 공식 규격; API_AUTH_v1.4.yaml·API_v1.2.yaml은 역사)
 - Google Drive: [GOOGLE_DRIVE_MODE_v1.3.md](GOOGLE_DRIVE_MODE_v1.3.md)
 
 **실행 코드의 현재 상태:** `internal/authz` 권한 판정 함수를 구현해 단위 테스트했다. `server/`의 PoC HTTP 핸들러에는 인증/ACL이 아직 연결되지 않았다. 현 PoC는 루프백 전용으로만 사용할 것.

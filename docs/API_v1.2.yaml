@@ -3,8 +3,14 @@ info:
   title: PhotoHub API
   version: 1.2.0-draft
   description: |
-    Target protocol. The provided Go demo implements ONLY health, folder create/list,
-    whole-file upload, folder sync, and original/preview fetch; the demo has no auth.
+    HISTORICAL (superseded). The server no longer implements this document:
+    every folder and asset route now requires a session and album
+    permissions, asset IDs are random, and the unauthenticated
+    /api/v1/assets/{assetID}/original|preview routes (which took the SHA-256)
+    are REMOVED. The current contract is API_v2.yaml.
+    Upload success (200/201) is sent only after the original file and its metadata are
+    both durably committed; any other status means nothing was committed and the
+    same bytes can be retried.
 servers:
   - url: https://photo-hub.example.test
 security:
@@ -15,7 +21,11 @@ paths:
       summary: Health check
       security: []
       responses:
-        '200': {description: Server healthy}
+        '200':
+          description: Server healthy
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Health'}
   /api/v1/folders:
     get:
       summary: List accessible shared folders
@@ -95,7 +105,35 @@ paths:
               schema: {$ref: '#/components/schemas/UploadResult'}
         '413': {description: File too large}
         '422': {description: Hash mismatch}
-        '507': {description: Insufficient storage}
+        '500':
+          description: |
+            Server-side write failure (temp_failed, temp_write_failed, file_sync_failed,
+            temp_close_failed, storage_failed, metadata_write_failed). Nothing was
+            committed; retrying the same bytes is safe.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '503':
+          description: |
+            Temporarily unable to store; nothing was committed, retry later.
+            storage_unavailable = storage volume missing or replaced (restart after
+            reconnecting the disk); storage_io_error = the disk reported an I/O error;
+            busy = database write lock contention, sent with Retry-After.
+          headers:
+            Retry-After:
+              description: Seconds to wait (only with error busy)
+              schema: {type: integer}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '507':
+          description: |
+            insufficient_storage. Refused before the original is stored when the upload
+            would leave less than the server's reserve (WITHALBUM_MIN_FREE_BYTES, default
+            1 GiB), or the disk became full while storing. Nothing was committed.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   /api/v1/folders/{folder_id}/sync:
     get:
       summary: Ordered incremental changes for a folder
@@ -160,6 +198,25 @@ components:
       required: true
       schema: {type: string}
   schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: {type: string, description: Machine-readable error code}
+    Health:
+      type: object
+      required: [status, version, storage, integrity]
+      properties:
+        status: {type: string, enum: [ok]}
+        version: {type: string}
+        storage:
+          type: string
+          enum: [ok, unavailable]
+          description: unavailable = the storage volume is missing or replaced; writes are refused with 503
+        integrity:
+          type: string
+          enum: [ok, warning]
+          description: warning = startup reconciliation found missing or damaged originals or unexpected files (details only in the server log)
     Folder:
       type: object
       required: [id, name, created_at]

@@ -16,15 +16,26 @@
 **이 저장소는 완성 앱이 아니라 개발용 서버 프로토타입 + 전체 제품 설계 + Claude 개발 인수인계 패키지입니다.**
 
 - **기능이 동작하는 코드:** Go 기반 localhost 전용 서버, 간단한 웹 페이지, 폴더 생성, 파일 업로드, SHA-256 중복 확인, 제한적인 이미지 프리뷰, 변경 이벤트 조회.
-- **코드·테스트만 있는 기능:** `internal/authz/`의 서버/앨범 권한 판정 함수와 단위 테스트. **실제 HTTP 요청에는 적용되지 않음.**
-- **설계만 완료:** SQLite v1.4, 관리자 생성·로그인·세션·초대·폴더 ACL, Mac 설치 마법사, iOS/Android 앱, 역방향 모바일 동기화, Google Drive 어댑터, 장애 복구.
-- **아직 없음:** 서명·공증된 DMG, 정식 Google Drive OAuth 연결, 모바일 앱, 프로덕션 안정성 보장.
-- **보안 경고:** HTTP 서버는 인증이 없으므로 의도적으로 `127.0.0.1`에만 바인딩됩니다. **LAN/인터넷에 공개하거나 대체할 수 없는 원본 사진의 단일 보관소로 사용하지 마세요.**
+- **부분 구현(디스크 이미지 혼돈 시험 검증, 실기기 미검증):** `internal/storage/` 저장소 볼륨 가드. 명시적으로 `-init-storage`한 디렉터리만 사용하고, 기동 시와 쓰기 직전에 볼륨 마커·장치 번호(st_dev)를 재확인해 외장 디스크가 빠지면 쓰기를 거부(503)하며, 한 번 사라진 저장소는 재시작 전까지 다시 믿지 않습니다. 마커에 디스크 UUID를 기록해 다른 디스크로 복사된 마커는 기동을 거부합니다(M37).
+- **부분 구현:** 메타데이터는 SQLite(`.system/withalbum.db`, `internal/meta/sqlitestore`)에 저장합니다. 업로드 1건(blob·자산·폴더 연결·시퀀스·이벤트)은 트랜잭션 하나로 커밋되고, 자산 ID는 랜덤이며 폴더마다 따로 발급됩니다(같은 바이트라도 다른 폴더에서는 다른 자산). 새 폴더의 소유자는 만든 사람이고, 이전 버전·이관 데이터의 폴더는 bootstrap 관리자 계정이 소유합니다(처음에는 로그인할 수 없는 잠금 상태의 `admin`, 콘솔 `withalbum-server admin init`으로 인수하면 user_id가 유지되어 그 폴더를 그대로 소유). **이전 버전의 `.system/state.json`만 있는 저장소는 기동을 거부합니다(파일은 변경하지 않음). `withalbum-server migrate-legacy`(점검) → `migrate-legacy -apply`로 무손실 이관한 뒤 기동하세요. 절차·롤백: [`docs/MIGRATION_legacy_state.md`](docs/MIGRATION_legacy_state.md).**
+- **부분 구현(테스트 검증, 실기기 미검증):** 업로드 원자적 커밋·크래시 복구. 성공 응답(200/201)은 원본 파일(임시 파일 fsync → pool rename → 디렉터리 fsync)과 DB 트랜잭션이 모두 디스크에 기록된 뒤에만 보냅니다. 기동 시 재조정이 미완료 업로드 임시 파일을 지우고, DB에 없는 pool 파일은 `.system/orphans/`로 옮기며(삭제 안 함), DB에 있는데 파일이 없거나 크기가 다른 원본은 로그와 `/api/v1/health`의 `integrity: warning`으로 알립니다. 여유 공간이 예약분(`WITHALBUM_MIN_FREE_BYTES`, 기본 1GiB) 아래로 내려갈 업로드는 기록 전에 `507 insufficient_storage`로 거부합니다. 같은 저장소에 서버/이관 명령이 두 개 뜨지 않도록 `.system/withalbum.lock`을 잠급니다. 단계별 장애 주입과 실제 SIGKILL 테스트로 검증했고, 실제 전원 차단·외장 디스크 분리는 미검증입니다.
+- **부분 구현:** 계정 코어. Argon2id 비밀번호 해시(`internal/auth/password`), 사용자 저장소(`internal/users`, 마지막 활성 관리자 보호·감사 로그), 콘솔 명령 `withalbum-server admin init | create-user | reset-password`.
+- **부분 구현(테스트·로컬 바이너리 스모크 검증, Mac 브라우저 점검 전):** 설치 화면(M24). 저장소가 없거나 관리자가 없으면 서버가 **이 컴퓨터의 평문 루프백 리스너에서만** 설치 모드로 뜨고, 콘솔에 1회용 설치 코드(12자, 30분, 5회 오입력 시 잠김)를 출력합니다. 브라우저 `http://127.0.0.1:8787/setup`에서 코드 → 저장장치 선택(macOS `/Volumes`·홈 폴더·직접 경로, 쓰기 테스트) → 관리자 계정 → 같은 프로세스에서 정상 모드로 전환(설치 라우트 404). 선택한 루트와 볼륨 ID는 사용자 설정 파일(`WITHALBUM_CONFIG`, 기본 `~/Library/Application Support/WithAlbum/server.json`)에 고정됩니다. TLS·LAN 리스너에는 설치 라우트가 없고, 콘솔 경로(`-init-storage`, `admin init`)는 그대로입니다. 위협 모델: [`SECURITY.md`](SECURITY.md#setup-screen-m24-threat-model).
+- **부분 구현:** HTTP 로그인·기기 세션·계정 관리 API(`/api/v1/auth/login|refresh|logout`, `/api/v1/me`, `/api/v1/me/password`, `/api/v1/me/devices`, `/api/v1/admin/users*`, 규격 [`docs/API_v2.yaml`](docs/API_v2.yaml)). access 15분/refresh 30일 회전(로그인 후 최대 90일)·재사용 감지(앱 응답 유실 30초 유예 1회), Bearer(앱)·HttpOnly 쿠키+CSRF(웹), 로그인 속도 제한·실패 감사, 비밀번호 재설정·계정 비활성화 시 세션 회수.
+- **부분 구현(테스트·로컬 바이너리 스모크 검증):** 앨범 ACL. 대시보드 페이지·health·login·refresh를 뺀 모든 API는 세션 필요(없으면 401). 폴더·업로드·동기화·원본/프리뷰는 요청마다 DB의 소유자·멤버십으로 `internal/authz` 판정(`internal/httpapi/middleware_authz.go`, 라우트별 정책 표, 미선언 라우트는 기동 시 panic). 관리자라도 소유·멤버가 아닌 앨범은 404, 역할 부족은 403, 다른 폴더의 자산 ID는 404. UPLOADER는 업로드만 가능하고 응답은 항상 같은 202 영수증. 업로드는 커밋 직전 DB 트랜잭션 안에서 권한을 재확인. 기본 USER는 앨범 생성 불가(`can_create_albums`). 무인증 `/api/v1/assets/{sha}/*`는 제거. 앨범 공유(OWNER만): 등록 계정 초대(7일, 대상 본인만 수락), 초대 취소, 역할 변경·추방(다음 요청부터 반영), 소유권 이전(이전 오너는 CONTRIBUTOR, 1 트랜잭션, 실패 시 롤백), 앨범 보관. 모든 변경은 같은 트랜잭션에서 감사 로그. 관리자는 **보관된 앨범만** 다른 활성 계정에 재배정할 수 있음(탈퇴 계정 비활성화용, 접근 권한은 생기지 않음, M17). 앨범 관리(M51): 앨범 삭제(오너, 30일 동안 오너만 복구, 그 뒤 다른 앨범이 쓰지 않는 원본까지 정리)·보관(`POST .../archive`), CONTRIBUTOR의 사진 삭제(앨범 휴지통 30일·복구), OWNER·CONTRIBUTOR의 비공개 사진(VIEWER에게 모든 읽기 경로에서 숨김, 원본은 디스크에 그대로), 멤버 목록은 읽기 권한자 모두, `liked_by_me` 필터.
+- **별도 비공개 저장소:** iOS/Android 앱(Flutter). 이 서버의 공개 규격 [`docs/API_v2.yaml`](docs/API_v2.yaml)만 사용하며(공유 시트 인입·업로드 큐·역방향 동기화·QR 페어링·앨범 만들기, 서버 없이 쓰는 Google Drive 모드 PoC), 이 저장소에는 앱 코드가 없습니다. 실제 휴대폰 검증·스토어 배포 전입니다.
+- **부분 구현(로컬 빌드·실행 확인, 서명·공증·다른 Mac 미검증):** Mac 메뉴 막대 앱 "WithAlbum Server"(M32, `macos/`, macOS 13+). 앱 안에 유니버설 서버 바이너리를 담고, `scripts/install-macos.sh`와 같은 사용자 LaunchAgent(`org.withalbum.server`)를 등록·시작·멈춤·다시 시작합니다. 상태(정상 실행 중·설치 필요·저장 중단·멈춤), 관리 화면 열기, 설치 코드 보기(이 Mac의 로그에서만 읽음), 로그 폴더, 로그인 시 시작, LAN 접속 허용(`-tls -allow-lan`, 사설 주소만, 서버 게이트 그대로), 페어링 QR. DMG는 `scripts/build-macos-app.sh`(서명 없음), 배포용 서명·공증은 관리자가 `scripts/sign-notarize-macos.sh`로 직접. 설치: [`docs/INSTALL_MACOS.md`](docs/INSTALL_MACOS.md).
+- **아직 없음:** 서명·공증된 DMG 배포본(스크립트만 있음), 검증된 Google Drive OAuth 연결, 배포된 모바일 앱, 프로덕션 안정성 보장.
+- **부분 구현(테스트·LAN 바이너리 스모크 검증, 실기기 앱 미검증):** TLS·LAN 게이트(M15). 기본은 `127.0.0.1` 평문 HTTP. LAN 주소(사설 IP 또는 와일드카드)는 `-allow-lan` + `-tls` + 로그인 가능한 활성 SERVER_ADMIN이 모두 있을 때만 listen하고, 하나라도 없으면 기동을 거부합니다. 공인 IP·호스트 이름은 항상 거부. `-tls`는 자체 서명 인증서(`.system/tls/server.pem`, 0600, ECDSA P-256, TLS 1.3 전용)를 만들고, 앱은 공개키 지문(SPKI SHA-256)을 핀닝합니다(`withalbum-server tls`, 대시보드 관리자 화면에 페어링 페이로드). 보안 헤더·원본 다운로드 sandbox·IPv6 /64 속도 제한 키·루프백 Host 검사. 자세한 내용과 보안 점검 결과: [`SECURITY.md`](SECURITY.md).
+- **부분 구현(Go 통합 테스트 검증, 공인 서버·실기기·앱 미검증):** 집 밖 접속 E2EE 중계(M35, 기본 꺼짐). 서버는 `-tls -relay host:port`로 중계에 바깥쪽 연결만 맺고(수신 포트 없음), 앱은 중계 위에서 LAN과 같은 핀 TLS를 쓰므로 중계는 암호문만 전달합니다. 관리 화면·관리 API는 중계로 제공하지 않음. 중계 프로그램 `withalbum-relay`(`./relay`). 설계·위협 모델: [`docs/RELAY_DESIGN.md`](docs/RELAY_DESIGN.md), 운영: [`docs/RELAY_OPERATIONS.md`](docs/RELAY_OPERATIONS.md).
+- **부분 구현(가짜 Funnel 통합 테스트·로컬 바이너리 검증, 실제 Tailscale·실기기·앱 미검증):** 집 밖 접속 Tailscale Funnel 경로(M47, 기본 꺼짐). `-tls -funnel-url https://<machine>.<tailnet>.ts.net`이면 루프백 전용 리스너를 열고 Funnel TCP 전달로 앱의 핀 TLS가 서버까지 그대로 옵니다(포트포워딩·가족 VPN 불필요, 관리 화면은 403). 메뉴 막대 앱에서 켜기·끄기, 내부망 격리 점검. 안내: [`docs/FUNNEL.md`](docs/FUNNEL.md), [`docs/HOME_NETWORK_ISOLATION.md`](docs/HOME_NETWORK_ISOLATION.md).
+- **내부 보안 리뷰(M41, 외부 리뷰 전):** 위협 모델 [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md), 결과·외부 리뷰어 안내 [`docs/SECURITY_REVIEW_2026-10.md`](docs/SECURITY_REVIEW_2026-10.md). 원격 로그인 실패가 집 로그인을 막지 않도록 계정 한도를 분리, CI에 govulncheck·staticcheck·gosec, 라우트 권한 전수 매트릭스 테스트. 서버는 root로 기동하지 않습니다.
+- **보안 경고:** **인터넷에 공개(포트포워딩·공개 리버스 프록시)하거나 대체할 수 없는 원본 사진의 단일 보관소로 사용하지 마세요.**
 
 <!-- 구현 범위 확인:
-server/main.go: JSON state.json을 읽고 쓰며 SQLite를 사용하지 않는다. 현재 전체 파일 한 번 업로드, MAX 512MiB.
-server/main.go: 자산 ID는 실제 SHA-256이며 목표 스키마의 랜덤 논리 ID와 다르다. 업로더의 identity도 신뢰할 수 있는 인증 주체에서 오지 않는다.
-server/main.go: 현재 예시 원본 다운로드 API는 folder_id/ACL 확인이 없어, 인증을 먼저 통합하지 않고 네트워크를 열면 심각한 정보 유출이 생긴다.
+internal/meta/sqlitestore: 서버가 쓰는 메타데이터 저장소. internal/meta/jsonstore는 서버 기동에 쓰이지 않는다(이관 테스트에서 이전 버전 데이터를 만드는 용도). 이관은 internal/legacyimport가 state.json을 자체 엄격 파서로 읽는다. 단일 요청 업로드 MAX 512MiB, 그보다 큰 원본은 재개 가능한 업로드 세션(M22, 최대 64GiB).
+internal/httpapi: API 자산 ID는 랜덤 assets.asset_id(폴더별). SHA-256은 업로드 중복 제거·다운로드 검증용 sha256 필드로만 노출(읽기 권한자에게만). 라우트 보호는 middleware_authz.go의 routePolicies가 단일 출처다. 업로더는 세션의 user_id로 기록(assets.uploaded_by_user_id, folder_assets.added_by_user_id).
+server/listen.go: non-loopback listen은 -allow-lan + -tls + 사용 가능한 SERVER_ADMIN 모두 필요(checkListen). 평문 HTTP는 loopback만. 이 조건을 완화하지 말 것.
 SQLite 스키마와 YAML API 문서는 목표 규격으로만 분류할 것. 결과/HTTP 응답이 현재 구현과 다를 수 있다.
 이 패키지는 'v1.5 documentation/handoff'이고 서버 실행파일 기능이 v1.5로 향상되었다는 뜻이 아님.
 -->
@@ -37,32 +48,79 @@ SQLite 스키마와 YAML API 문서는 목표 규격으로만 분류할 것. 결
 |---|---|---|
 | [GitHub 최신 다운로드](../../releases/latest) | 저장소에 올린 뒤 태그 릴리스 발행 시 활성화되는 상대 링크 | **미게시** |
 | [GitHub 모든 버전·릴리스 노트](../../releases) | 버전별 변경 내용과 설치 파일 | **미게시** |
-| [Mac mini 설치](docs/INSTALL_MACOS.md) | Apple Silicon(`darwin_arm64`) 최우선; Intel도 목표 | 개발자용 CLI/LaunchAgent |
+| [Mac mini 설치](docs/INSTALL_MACOS.md) | Apple Silicon(`darwin_arm64`) 최우선; Intel도 목표 | 메뉴 막대 앱 DMG(직접 빌드, 서명 전) · 개발자용 CLI/LaunchAgent |
+| Mac 메뉴 막대 앱 DMG | `WithAlbumServer_<버전>.dmg`(서명·공증본)은 관리자가 macOS에서 만들어 Release에 직접 올림([`docs/RELEASING.md`](docs/RELEASING.md#macos-dmg)) | **미게시** — 지금은 `scripts/build-macos-app.sh`로 서명 없는 DMG만 |
 | [Linux·Raspberry Pi 설치](docs/INSTALL_LINUX.md) | Linux AMD64/ARM64/ARMv7, systemd | 개발자용 |
-| [배포 파이프라인](docs/RELEASING.md) | GitHub Actions · GoReleaser · checksum | 골격 구성 |
-| [릴리스 노트 예시](docs/releases/EXAMPLE_RELEASE_NOTES.md) | 알파 릴리스 설명 문구 | 예시 문서 |
+| [배포 파이프라인](docs/RELEASING.md) | GitHub Actions · GoReleaser · checksum · `scripts/release-dryrun.sh` | prerelease(초안)만, dry-run 검증 |
+| [v0.1.0-alpha.1 릴리스 노트](docs/releases/v0.1.0-alpha.1.md) | 첫 prerelease 후보 | **초안, 미발행** |
+| [Mac mini 실기기 점검](docs/MACMINI_E2E_CHECKLIST.md) | 설치·자동 시작·디스크 분리·재부팅·전원 차단·백업·LAN TLS | 절차만, 실기기 결과 없음 |
 
 <!-- 릴리스 요구사항:
 GitHub Releases는 git의 'release/' 폴더가 아니라 GitHub Releases 화면이다.
 파일 명명, checksums.txt, 릴리스 노트, prerelease 표시, 설치 방법, 지원 아키텍처를 매번 검증한다.
-고객용 Mac DMG/PKG는 아직 존재하지 않으므로 README에서 다운로드 가능하다고 적지 않는다.
+서명·공증된 Mac DMG가 Release에 올라가기 전에는 README에서 다운로드 가능하다고 적지 않는다(서명 없는 DMG는 직접 빌드용).
 실제 리포지터리가 만들어지면 GitHub URL, go.mod placeholder, workflow 동작, README 링크를 갱신한다.
 미서명 바이너리와 실제 Mac 실기기 테스트 여부를 명시한다.
 -->
 
+### Known limitations (알려진 제약, v0.1.0-alpha.1 기준, 2026-10-20 갱신)
+
+- **실험판(prerelease)**입니다. 인터넷 공개 금지, 대체 불가능한 원본의 유일한 보관소로 쓰지 말 것. alpha 동안 데이터 형식·API가 바뀔 수 있습니다.
+- **실기기 미검증:** Mac mini + 실제 외장 디스크에서의 설치·launchd 자동 시작·케이블 분리/재연결·재부팅·전원 차단·백업 복원은 절차([`docs/MACMINI_E2E_CHECKLIST.md`](docs/MACMINI_E2E_CHECKLIST.md))만 있고 사람이 수행한 결과가 없습니다. 대신 이 Mac에서 디스크 이미지(hdiutil 스파스 이미지)를 외장 디스크로 흉내 낸 **혼돈 시험 100회**(업로드 중 SIGKILL·결정 지점 SIGKILL·동기화 없는 강제 분리·분리 후 재연결(장치 번호 변경 포함)·디스크 가득 참·SIGTERM)에서 손실·불일치 0건이었습니다: [`docs/CHAOS_RESULTS.md`](docs/CHAOS_RESULTS.md). 강제 분리는 전원 차단의 근사일 뿐이며 디스크 쓰기 캐시 소실은 재현하지 못합니다. Intel Mac·Linux·Raspberry Pi는 크로스빌드만 확인했습니다.
+- **모바일 앱은 비공개 저장소**에서 개발 중입니다(Flutter, iOS/Android). 에뮬레이터·시뮬레이터 빌드와 실서버 통합 테스트까지 확인했고, 실제 휴대폰에서의 설치·공유 시트·백그라운드 업로드·TLS 핀닝은 검증하지 않았습니다. 스토어·TestFlight 배포는 없습니다.
+- **Google Drive 모드**는 비공개 앱 안의 PoC(서버 없이 각자의 Drive에 보관)입니다. 실제 Google 계정·기기 검증과 OAuth 앱 검토는 아직입니다. 이 서버는 Drive와 통신하지 않습니다.
+- macOS 바이너리는 **서명·공증되지 않은 ZIP**입니다. 메뉴 막대 앱 DMG는 `scripts/build-macos-app.sh`로 직접 빌드할 수 있지만 서명·공증 전이라 다른 Mac에서는 Gatekeeper가 막습니다(서명·공증은 관리자 작업, 미수행). 로그인 전 상시 실행(시스템 서비스)은 없습니다. 앱과 `scripts/install-macos.sh`의 LaunchAgent는 사용자가 로그인한 세션에서만 동작합니다.
+- **외장 디스크를 다시 연결하면 서버를 재시작해야 쓰기가 재개됩니다**(장치 번호가 같아도). 실행 중 저장소가 한 번 사라지면 서버는 재시작 전까지 모든 쓰기를 `503 storage_unavailable`로 거부하고 health `storage: unavailable`을 유지합니다 — 분리된 마운트에서 열었던 DB 핸들과 인스턴스 잠금을 다시 믿지 않기 위해서입니다(M37 혼돈 시험에서 발견해 수정). 실행 중인 프로세스는 launchd KeepAlive가 재시작하지 않으므로 메뉴 막대 앱의 "다시 시작" 또는 `launchctl kickstart -k gui/$(id -u)/org.withalbum.server`.
+- **디스크 UUID:** 볼륨 마커에 디스크 UUID(macOS 볼륨 UUID, Linux는 `/dev/disk/by-uuid`가 있을 때)를 기록하고 기동 때 대조해, 다른 디스크로 복사된 마커는 `SECURITY` 오류로 거부합니다. 이전 버전 마커는 첫 기동 때 그 디스크의 UUID를 채택합니다(로그). 라이브러리를 의도적으로 새 디스크에 복제했다면 서버를 멈추고 `-adopt-disk`. UUID를 읽을 수 없는 파일 시스템(일부 네트워크·FUSE, Linux btrfs 하위 볼륨 등)은 마커와 장치 번호로만 구분합니다. 실제 외장 디스크(exFAT/HFS+)의 UUID 동작은 실기기 미검증입니다.
+- **백업:** `backup -to DIR -keep N`(보존 개수), launchd 예약 실행 스크립트 `scripts/install-backup-macos.sh`, 자동 복원 훈련 `scripts/restore-drill.sh`가 있습니다. 원격/클라우드 백업, 백업 대상 원본 정리(GC), 메뉴 막대 앱의 백업 설정 화면은 없습니다. 실제 launchd 예약 실행은 실기기 미검증입니다.
+- **규모:** 합성 라이브러리(실제 사진 아님) 10만·50만 자산에서 기동·동기화 스냅샷·이벤트·업로드·verify 시간과 메모리를 측정했습니다: [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md). 동기화 페이지·업로드 시간은 크기와 무관했지만, **서버 기동(모든 원본 크기 확인)은 50만 원본에서 약 45초**(10만은 1.1초, 파일 시스템 vnode 캐시 한계)이고 그동안 `/health`가 응답하지 않습니다. 실제 사진 크기의 파일·HDD·Raspberry Pi에서는 측정하지 않았습니다.
+- LAN은 자체 서명 TLS + 공개키 지문 핀만 지원합니다(브라우저 경고). 앱의 핀닝은 실기기에서 검증하지 않았습니다. 인터넷 접속·원격 중계는 없습니다.
+- HEIC·영상 미리보기는 `sips`/`ffmpeg`가 있을 때만 만들어집니다(없으면 원본만 보관, `unsupported`). Linux 외부 도구는 미검증입니다.
+- 동영상 재생용 경량본(M50)은 macOS `avconvert`(기본 설치) 또는 `ffmpeg`(H.264 인코더)가 있을 때만 만들어집니다(없으면 `playback.status`가 `unsupported`, 앱은 원본을 스트리밍). avconvert는 비트레이트를 정할 수 없어 1080p에서 약 9~11Mbit/s, ffmpeg는 약 4.5Mbit/s입니다. 실제 iPhone HDR/Dolby Vision 영상·Linux는 미검증입니다.
+- 동영상 길이(`duration_ms`)는 MP4/MOV의 `mvhd`/`mehd` 값이며 실제 iPhone·Android 영상과의 대조는 미검증입니다(조각 MP4 등 값이 없으면 null). 업로드·앨범 생성 멱등 키는 계정·기기 범위라, 다시 로그인한 기기의 재시도는 새 요청으로 처리됩니다.
+- 실시간 푸시, 자진 탈퇴·보관 복원은 없습니다(삭제한 앨범은 30일 동안 복구 가능, M51).
+- 원본 다운로드의 416 응답 본문은 JSON 오류 객체가 아닌 짧은 text/plain입니다(`docs/API_v2.yaml`).
+
 ### 프로젝트 최상위 실행 명령
 
-Go 1.23+에서 테스트용 파일로만 확인하세요.
+Go 1.26+에서 테스트용 파일로만 확인하세요.
 
 ```bash
 go test ./...
 go vet ./...
 go build -o withalbum-server ./server
+mkdir -p "$HOME/WithAlbumTest"                                   # 저장소 루트는 직접 만든다
+WITHALBUM_ROOT="$HOME/WithAlbumTest" ./withalbum-server -init-storage  # 최초 1회: 볼륨 마커 등록
 WITHALBUM_ROOT="$HOME/WithAlbumTest" ./withalbum-server
 # 같은 컴퓨터 브라우저: http://127.0.0.1:8787
 ```
 
-명령 실행 전 `mkdir -p "$HOME/WithAlbumTest"`를 권장합니다. 이 서버는 해당 경로 아래 실험 데이터를 생성합니다. 프로덕션 외장하드 폴더를 지정하지 마세요.
+**설치 화면으로 시작하기(M24, 이 Mac에서만):** `WITHALBUM_ROOT` 없이 `./withalbum-server`를 실행하면, 등록된 저장소가 없을 때 설치 모드로 뜨고 콘솔에 `SETUP: open http://127.0.0.1:8787/setup ... setup code XXXX-XXXX-XXXX`를 출력합니다. 같은 컴퓨터 브라우저에서 그 주소를 열고 코드를 입력한 뒤 저장장치와 관리자 계정을 정하면, 서버는 재시작 없이 일반 대시보드로 바뀝니다. 선택한 저장 폴더는 사용자 설정 파일에 기록되어 다음 기동과 콘솔 명령이 같은 저장소를 씁니다(`WITHALBUM_ROOT`가 있으면 그것이 우선, 설정 파일의 루트가 없으면 설치 모드로 가지 않고 종료). 설치 화면이 만드는 폴더는 사용자가 고른 디스크(또는 홈 폴더) 바로 아래 `WithAlbum` 하나뿐이며, 만들기 직전에 디스크가 마운트되어 있는지 다시 확인합니다. `-tls`·`-allow-lan`으로 시작하면 설치 화면은 열리지 않습니다(콘솔 명령을 쓰세요).
+
+서버는 **저장소 루트를 절대 만들지 않습니다.** 루트가 없거나 `-init-storage`로 등록되지 않았으면 원인을 안내하고 즉시 종료합니다(위 설치 모드 조건 제외). `-init-storage`는 이미 존재하는 디렉터리에 `.withalbum-volume.json`(volume_id) 마커만 추가하며 기존 `.system/` 데이터는 건드리지 않습니다. 이전 버전에서 쓰던 데이터 폴더도 같은 명령으로 한 번 등록하면 됩니다. 출력된 `volume_id`를 `WITHALBUM_VOLUME_ID` 환경변수로 지정하면 다른 볼륨으로는 기동하지 않습니다(선택). 실행 중 마커가 사라지거나 루트의 장치가 바뀌면 업로드·폴더 생성은 `503 storage_unavailable`로 거부되고 `/api/v1/health`의 `storage`가 `unavailable`이 되며, 디스크를 다시 연결해도 재시작 전까지 그대로입니다. 디스크를 다시 연결했다면 서버를 재시작하세요. 마커에는 디스크 UUID도 기록되어 다른 디스크로 복사한 마커로는 기동하지 않습니다(의도적인 디스크 이전 뒤에는 서버를 멈추고 `withalbum-server -adopt-disk` 한 번). 프로덕션 외장하드 폴더를 지정하지 마세요.
+
+**업로드 안전성과 복구:** 업로드는 성공 응답 전에 파일과 DB가 모두 디스크에 기록됩니다(macOS는 `F_FULLFSYNC`). 실패 응답이나 연결 끊김이면 아무것도 확정되지 않았으므로 같은 파일을 다시 올리면 됩니다. 서버가 강제 종료되면 다음 기동 때 자동으로 정리합니다: `.system/incoming/`의 미완료 임시 파일 삭제, DB에 없는 원본은 `.system/orphans/<sha256>.orphan.<UTC>`로 이동(자동 삭제하지 않음, 필요 없으면 직접 지우세요), 결과는 로그 `recovery: ...` 한 줄로 요약됩니다. DB에 기록된 원본이 pool에 없거나 크기가 다르면 `INTEGRITY ERROR` 로그와 health `integrity: warning`이 나오며, 같은 파일을 다시 업로드하면 사라진 원본이 복원됩니다. 업로드 후 남을 여유 공간이 `WITHALBUM_MIN_FREE_BYTES`(바이트, 기본 `1073741824` = 1GiB) 미만이면 `507 insufficient_storage`, 디스크 I/O 오류는 `503 storage_io_error`, DB 쓰기 경합(5초 초과)은 `503 busy` + `Retry-After: 1`입니다. 같은 저장소로 서버를 두 번 띄우거나 서버 실행 중 `migrate-legacy -apply`를 실행하면 `LOCKED`로 거부됩니다(이 버전 이후끼리만; 이전 버전 서버는 잠금을 모르므로 직접 중지하세요).
+
+**백업·복원·무결성 검사:** `withalbum-server verify [-hash]`(DB integrity_check + 모든 원본 존재·크기, `-hash`면 SHA-256 전수 비교, 아무것도 바꾸지 않음), `backup -to <백업 디스크 디렉터리>`(서버 실행 중 가능: DB `VACUUM INTO` 스냅샷 + 원본 증분 복사 + SHA-256 매니페스트), `restore -from <스냅샷>`(서버 중지 필요: 전수 검증 후 원자적 활성화, 기존 데이터는 `.system.before-restore-<UTC>`로 보존, 모든 세션 폐기). 백업은 비밀번호·세션 해시와 모든 사진을 담은 민감정보입니다. 절차·복원 훈련·launchd 예시: [`docs/BACKUP_RESTORE.md`](docs/BACKUP_RESTORE.md).
+
+**이전 버전(state.json)에서 업그레이드:** 새 버전은 `.system/state.json`만 있는 저장소에서 기동하지 않습니다. 이전 버전 서버를 중지한 뒤 아래 순서로 이관하세요. 원본·프리뷰 파일은 읽기만 하고, state.json은 백업(`state.json.bak-<UTC>`)과 보존본(`state.json.migrated-<UTC>`)으로 남습니다. 실패하거나 중간에 끊겨도 같은 명령을 다시 실행하면 안전하게 이어가거나 처음부터 다시 합니다.
+
+```bash
+WITHALBUM_ROOT="$HOME/WithAlbumTest" ./withalbum-server migrate-legacy         # 점검만, 아무것도 쓰지 않음
+WITHALBUM_ROOT="$HOME/WithAlbumTest" ./withalbum-server migrate-legacy -apply  # 이관
+```
+
+자세한 절차·실패 시 상태·롤백: [`docs/MIGRATION_legacy_state.md`](docs/MIGRATION_legacy_state.md)
+
+**관리자 계정(콘솔 또는 이 Mac의 설치 화면):** 최초 관리자는 서버 콘솔이나, 콘솔의 설치 코드를 아는 사람이 같은 컴퓨터(루프백)의 설치 화면에서만 만들 수 있습니다(네트워크로는 불가). **서버를 중지한 뒤** 실행하세요. 서버 실행 중에는 저장소 잠금 때문에 `LOCKED`로 거부됩니다. 비밀번호는 터미널에서 에코 없이 두 번 입력하며(최소 12자, 최대 1024바이트), 터미널이 아니면 stdin의 한 줄을 읽습니다. 명령행 인자로는 받지 않습니다.
+
+```bash
+WITHALBUM_ROOT="$HOME/WithAlbumTest" ./withalbum-server admin init -login alice            # 최초 1회
+WITHALBUM_ROOT="$HOME/WithAlbumTest" ./withalbum-server admin create-user -login bob       # USER, 앨범 생성 불가가 기본
+WITHALBUM_ROOT="$HOME/WithAlbumTest" ./withalbum-server admin reset-password -login alice  # 콘솔 복구
+```
+
+`admin init`은 새 계정을 만들지 않고, 기존 폴더를 소유한 잠금 bootstrap 계정(`admin`)을 **인수**합니다. 로그인 이름·표시 이름·비밀번호만 바뀌고 `user_id`가 그대로라 이전 버전에서 만든 폴더(이관한 폴더 포함)의 소유자가 유지됩니다. `-login admin`으로 이름을 그대로 둘 수도 있으며, 다른 이름으로 바꾸면 `admin` 이름은 일반 계정에 쓸 수 있게 됩니다. 두 번째 `admin init`은 아무것도 바꾸지 않고 거부됩니다. `create-user`는 `admin init` 이후에만 동작합니다. 옵션: `-display-name`, `create-user`의 `-role USER|SERVER_ADMIN`, `-can-create-albums`. 계정 변경은 `audit_log`에 기록됩니다(비밀번호·해시 제외).
 
 <!-- 운영 시 제약:
 WITHALBUM_LISTEN=127.0.0.1:8787 기본. 주의: 바인딩 가드는 운영 인증을 대신하지 않는다.
@@ -152,7 +210,7 @@ flowchart TD
     Storage --> Hosted[SelfHostedAdapter: 로그인 + REST + 앨범 cursor]
     Storage --> Drive[GoogleDriveAdapter: OAuth + Drive API]
     Hosted --> Go[WithAlbum Go Server + 웹 관리]
-    Go --> DB[(SQLite: 목표 구현)]
+    Go --> DB[(SQLite: 부분 구현)]
     Go --> CAS[(외장 SSD/HDD · 보호된 원본)]
     Drive --> GD[(사용자의 Google Drive)]
 ```
@@ -204,6 +262,8 @@ Google Drive 전체 제약과 공개 사용자 안내 문구는 [GOOGLE_DRIVE_MO
 | 타인의 사진 삭제/앨범 설정 | ✅ | ❌ | ❌ | ❌ |
 | 멤버 초대·권한 변경·추방 | ✅ | ❌ | ❌ | ❌ |
 | 소유권 이전·앨범 삭제 | ✅ | ❌ | ❌ | ❌ |
+| 좋아요·댓글·멘션 보기·쓰기 (M49) | ✅ | ✅ | ✅ | ❌ |
+| 남의 댓글 삭제 | ✅ | ❌ | ❌ | ❌ |
 
 **UPLOADER는 제출함 용도:** 서버에 원본을 올릴 수 있지만, 사진 목록·다른 사람의 파일 존재 여부·원본/프리뷰는 볼 수 없습니다. 원본이 이미 CAS에 있는지를 업로드 응답으로 유추하게 해서도 안 됩니다.
 
@@ -221,8 +281,8 @@ Google Drive 전체 제약과 공개 사용자 안내 문구는 [GOOGLE_DRIVE_MO
 
 - 상세 정책: [ACCESS_CONTROL_v1.4.md](docs/ACCESS_CONTROL_v1.4.md)
 - 순수 정책 함수(구현됨, **미연동**): [`internal/authz/policy.go`](internal/authz/policy.go)
-- 계정·초대 API 목표: [`docs/API_AUTH_v1.4.yaml`](docs/API_AUTH_v1.4.yaml)
-- SQLite 목표: [`docs/schema_v1.4.sql`](docs/schema_v1.4.sql)
+- 공식 API 규격(통합): [`docs/API_v2.yaml`](docs/API_v2.yaml) — 라우트 표와 일치하는지 `internal/httpapi/openapi_test.go`가 검사
+- SQLite 스키마: [`docs/schema_v1.4.sql`](docs/schema_v1.4.sql) (정본: `internal/db/migrations/`, 0003에서 `assets.preview_ready` 추가)
 
 ## 5. 저장 엔진 · CAS · 원본 보호
 
@@ -233,19 +293,25 @@ Google Drive 전체 제약과 공개 사용자 안내 문구는 [GOOGLE_DRIVE_MO
 ```text
 WithAlbumRoot/
 ├── .system/
-│   ├── metadata.sqlite             # 목표 DB: 현재는 없음
-│   ├── incoming/                   # 불완전 업로드 격리 영역
+│   ├── withalbum.db                # SQLite 메타데이터 DB (WAL, 0600). 새로 초기화한 저장소에서 자동 생성
+│   ├── withalbum.lock              # 단일 인스턴스 잠금 (서버·migrate-legacy -apply·admin 명령)
+│   ├── incoming/                   # 불완전 업로드 격리 영역 (기동 시 정리)
 │   ├── pool/<hash-prefix>/<sha256> # 보호된 원본 blob (현재 PoC 존재)
 │   ├── previews/                   # 경량 이미지·영상 프리뷰
-│   └── backups/                    # 보존/복구 정책 확정 후 (미구현)
+│   ├── orphans/                    # 기동 재조정이 격리한, DB에 없는 원본 (자동 삭제 안 함)
 └── Imports/                        # Finder에서 직접 놓는 안전한 가져오기 영역 (미구현)
 ```
 
-현재 프로토타입은 `metadata.sqlite`가 아닌 `.system/state.json`을 사용하고, 일부 원본 풀·기본 프리뷰 디렉터리만 만듭니다. 목표 DB는 사용자/기기/세션/앨범/멤버/초대/blobs/assets/폴더 연결/이벤트/감사 로그를 다룹니다.
+현재 서버는 `.system/withalbum.db`에 폴더·자산·blob·폴더 연결·시퀀스·이벤트를 저장하고, 원본 풀·기본 프리뷰 디렉터리를 만듭니다. 사용자 테이블과 감사 로그는 콘솔 `admin` 명령과 로그인·계정 API가, 기기/세션 테이블은 로그인 API가, 멤버/초대 테이블은 초대·멤버 API가 사용합니다. 이전 버전의 `.system/state.json`이 있는 저장소에서는 기동을 거부하며, 그 데이터를 읽거나 바꾸지 않습니다. `migrate-legacy -apply`가 이관 후 state.json을 `state.json.migrated-<UTC>`로 보존합니다([`docs/MIGRATION_legacy_state.md`](docs/MIGRATION_legacy_state.md)). 목표 DB는 사용자/기기/세션/앨범/멤버/초대/blobs/assets/폴더 연결/이벤트/감사 로그를 다룹니다.
+
+**DB는 로컬로 연결된 디스크(내장 또는 USB/Thunderbolt 외장)에만 두세요.** SQLite WAL 모드는 SMB/NFS 같은 네트워크 파일시스템(NAS 공유 폴더 마운트)에서 잠금이 보장되지 않아 DB가 손상될 수 있습니다.
 
 <!-- 저장 안정성 / Claude의 최우선 개선 사항:
-**현재 위험** newStore(root)가 경로를 mkdirAll로 생성한다. 외장 볼륨이 언마운트된 상태에서 같은 마운트 경로에 새 디렉터리가 생겨 다른 디스크에 기록되는 일을 막아야 한다.
-볼륨 고유 ID/실제 마운트 여부/가용 용량/읽기쓰기 상태를 확인하고 fail-closed.
+**부분 해결(M1 볼륨 가드)** 루트 MkdirAll 제거, `-init-storage` 마커(volume_id) + st_dev 비교로 기동 시·쓰기 직전 fail-closed. 실기기(Mac mini 외장 디스크 언플러그) 미검증.
+**부분 해결(M6)** 커밋 순서(staging fsync → pool rename → 디렉터리 fsync → DB tx, tx 안에서 COMMIT 직전 볼륨·pool 파일 재확인), 기동 재조정(incoming 정리, 고아 → orphans/ 격리, 누락·크기 불일치 보고), 여유 공간 사전검사 507, ENOSPC/EIO/SQLITE_BUSY 구분, darwin F_FULLFSYNC(SQLite PRAGMA fullfsync), 단일 인스턴스 flock. 장애 주입·SIGKILL 테스트로 검증, 전원 차단·실기기 미검증.
+**부분 해결(M14)** `verify -hash` 전수 해시 scrub(같은 크기 손상 감지), orphans/ 자동 삭제 안 함 정책 문서화, `backup`/`restore`(스냅샷·매니페스트·검증 후 원자적 교체·저널 크래시 복구). 실기기 미검증.
+**부분 해결(M37)** 마커 disk_uuid(macOS getattrlist ATTR_VOL_UUID, Linux /dev/disk/by-uuid) 대조로 복사된 마커 거부, 한 번 사라진 볼륨은 재시작 전까지 거부(latch), hdiutil 디스크 이미지 혼돈 시험 100회(docs/CHAOS_RESULTS.md), backup -keep, 복원 훈련 스크립트.
+남은 것: statfs 마운트 지점 대조, 점진 scrub·마지막 검사 시각 기록, 백업 대상 GC, 실제 전원 차단.
 CAS pool 원본에 대해 해시가 같더라도 멀티파일 Live Photo, 메타데이터/자산 ID/폴더 연결은 별도 객체.
 여러 계정·동시 업로드·디스크 전원 차단·DB 커밋 전후 실패·중복 응답 손실에서 원본 손실 없이 재시도.
 최종 원본은 불변(immutable) 처리, 파일 경로 외부 노출 금지, Finder로 옮기는 폴더와 시스템 pool 분리.
@@ -259,32 +325,41 @@ CAS pool 원본에 대해 해시가 같더라도 멀티파일 Live Photo, 메타
 
 | Method | Path | 동작 | 보안 상태 |
 |---|---|---|---|
-| `GET` | `/` | 로컬 브라우저 UI | 인증 없음/loopback |
-| `GET` | `/api/v1/health` | 서버 상태 | 인증 없음 |
-| `GET` | `/api/v1/folders` | 전체 데모 폴더 반환 | **권한 없음** |
-| `POST` | `/api/v1/folders` | 이름으로 폴더 생성 | **권한 없음** |
-| `POST` | `/api/v1/folders/{folderID}/assets` | 원본 전체 업로드/해시 검증 | **권한 없음** |
-| `GET` | `/api/v1/folders/{folderID}/sync?cursor=N` | 데모 변경 이벤트 | **권한 없음** |
-| `GET` | `/api/v1/assets/{assetID}/original` | 원본 다운로드 | **권한 없음** |
-| `GET` | `/api/v1/assets/{assetID}/preview` | 기초 프리뷰 | **권한 없음** |
+| `GET` | `/` | 브라우저 UI(정적 페이지, 데이터는 로그인 후 API로) | 공개 |
+| `GET` | `/api/v1/health` | 서버 상태 + `storage: ok\|unavailable` + `integrity: ok\|warning` | 공개 |
+| `POST` | `/api/v1/auth/login`, `/api/v1/auth/refresh` | 로그인·토큰 회전 | 공개(속도 제한) |
+| `GET` | `/api/v1/folders` | 내가 소유하거나 멤버인 폴더만, 내 역할 포함 | 세션 |
+| `POST` | `/api/v1/folders` | 폴더 생성, 만든 사람이 OWNER | 세션 + SERVER_ADMIN 또는 `can_create_albums` |
+| `GET` | `/api/v1/folders/{folderID}` | 이름·내 역할·가능 작업 | OWNER·모든 멤버 |
+| `POST` | `/api/v1/folders/{folderID}/assets` | 원본 업로드(한 요청, 512MiB 이하). `Idempotency-Key` 필수(계정·기기·폴더 범위, 같은 키 재시도는 같은 결과·중복 없음). 201/200은 파일+DB+영수증 커밋 후에만, UPLOADER는 항상 202 영수증. 커밋 직전 권한 재확인 | OWNER·CONTRIBUTOR·UPLOADER |
+| `POST` | `/api/v1/folders/{folderID}/uploads` | 재개 가능한 업로드 세션 생성(전체 크기·SHA-256 선언, `Idempotency-Key` 같은 범위, 전체 크기만큼 공간 예약·부족 시 507, 24시간 만료) | OWNER·CONTRIBUTOR·UPLOADER |
+| `GET`·`PATCH`·`DELETE` | `/api/v1/folders/{folderID}/uploads/{uploadID}` | 오프셋 조회 / 청크 순차 추가(`Upload-Offset`, 선택 `X-Chunk-SHA256`, fsync 후 기록) / 취소. 만든 계정·기기·폴더 외에는 404 | 세션을 만든 기기 |
+| `POST` | `/api/v1/folders/{folderID}/uploads/{uploadID}/complete` | 저장된 파일 전체 SHA-256 검증 → 단일 업로드와 같은 커밋(권한·볼륨 재확인, 영수증, UPLOADER 202). 재시도는 저장된 결과 | 세션을 만든 기기 |
+| `GET` | `/api/v1/folders/{folderID}/assets?after=&limit=` | 현재 자산 스냅샷(첫 페이지에 피드 cursor) | OWNER·CONTRIBUTOR·VIEWER |
+| `POST` | `/api/v1/folders/{folderID}/assets/check` | 이 폴더에 이미 있는 SHA-256(폴더 범위만) | OWNER·CONTRIBUTOR·VIEWER |
+| `DELETE` | `/api/v1/folders/{folderID}/assets/{assetID}` | 앨범에서 사진 제거(tombstone 이벤트, 원본 파일은 유지) | OWNER |
+| `GET` | `/api/v1/folders/{folderID}/sync?cursor=&limit=` | 변경 이벤트(`asset_added`/`asset_removed`/`asset_updated`(프리뷰 상태 변경)), 문자열 cursor, 다른 폴더·복원 전·만료 cursor는 409 | OWNER·CONTRIBUTOR·VIEWER |
+| `PUT` | `/api/v1/folders/{folderID}/sync/cursor` | 기기별 적용 위치 기록(선택) | OWNER·CONTRIBUTOR·VIEWER |
+| `GET` | `/api/v1/folders/{folderID}/assets/{assetID}/original` | 원본(그 폴더에 연결된 자산만) | OWNER·CONTRIBUTOR·VIEWER |
+| `GET` | `/api/v1/folders/{folderID}/assets/{assetID}/preview` | JPEG 프리뷰(`preview_status` = ready일 때) | OWNER·CONTRIBUTOR·VIEWER |
 
-이 표의 경로는 실제 `server/main.go`를 기준으로 합니다. 설계 문서의 API(`docs/API_v1.2.yaml`, `docs/API_AUTH_v1.4.yaml`)와 **서로 다르므로 목표 명세를 구현 완료로 오해하지 마세요.**
+나머지 `/api/v1/me*`, `/api/v1/admin/users*`(관리자의 타인 기기 목록·해지 포함)는 [`docs/API_v2.yaml`](docs/API_v2.yaml) 참조. 소유·멤버가 아닌 폴더(관리자 포함)는 존재하지 않는 폴더와 똑같이 404, 멤버인데 역할이 부족하면 403. 이 표는 실제 `internal/httpapi`(라우트 정책 표 `middleware_authz.go`)를 기준으로 합니다. 초대·멤버·소유권 이전·삭제·보관·휴지통 라우트(`/api/v1/folders/{id}/invitations*`, `/members*`, `/owner`, `DELETE /api/v1/folders/{id}`, `.../archive`, `.../restore`, `/api/v1/folders/deleted`, `.../trash*`, `/api/v1/invitations*`)도 같은 규격 파일에 있습니다.
 
-**미디어 목표:** HEIC/HEIF, JPG, PNG, RAW, Live Photo(HEIC+MOV 묶음), MP4/MOV, 4K/HDR, EXIF 및 촬영 날짜 유지. 원본 바이트는 변환하지 않고 보존, 프리뷰만 별도 생성. 현재 JPEG/PNG/GIF 기초 이미지 디코딩/간이 JPEG 미리보기 외에는 구현돼 있지 않습니다. 영상 프리뷰·변환은 미구현입니다.
+**미디어 목표:** HEIC/HEIF, JPG, PNG, RAW, Live Photo(HEIC+MOV 묶음), MP4/MOV, 4K/HDR, EXIF 및 촬영 날짜 유지. 원본 바이트는 변환하지 않고 보존, 프리뷰만 별도 생성. 현재 JPEG/PNG/GIF는 업로드 중 내장 디코더로 간이 JPEG 미리보기를 만들고, HEIC/HEIF/AVIF 등 정지 이미지(macOS `sips`)와 영상(`ffmpeg`, 대표 프레임 1장)은 **선택적 외부 도구**가 있을 때 커밋 후 백그라운드 워커가 만듭니다(M22: `preview_status` pending → ready/failed, 폴더 피드에 `asset_updated`). 도구가 없으면 원본만 보존하고 `unsupported`로 표시합니다. 도구는 셸 없이 인자 배열로만, 최소 환경·시간 제한·프로세스 그룹·격리된 작업 디렉터리(`.system/work`)에서 실행하고, 출력은 JPEG로 디코드·재인코드한 뒤에만 저장합니다. Live Photo는 사진+영상 묶음 업로드(M26: `POST /folders/{id}/bundles`, 두 원본 검증 후 한 트랜잭션 커밋, Apple content identifier 짝 확인, 영상은 `components/paired_video`로 다운로드)로 원본 그대로 보관합니다(실기기 iPhone 파일 대조 미검증). 동영상은 재생용 경량본(M50: H.264+AAC MP4, 최대 1080p, fast start, `GET .../assets/{id}/playback`)을 커밋 후 백그라운드에서 따로 만들고 원본은 그대로 둡니다. RAW는 미구현입니다.
 
 <!-- API 개발 지시:
-server/main.go는 512MiB 일괄 업로드만 지원. 대용량 영상 업로드 재개, idempotency receipt, hash preflight 정합성 등은 미구현.
-차기 API에서 원본 다운로드는 단순 assets/{sha}만으로 접근하지 말고, 인증된 앨범 연결·역할을 검증.
+internal/httpapi는 512MiB 단일 요청 업로드 + 재개 가능한 업로드 세션(M22, uploads.go: 세션은 계정·기기·폴더 소유, 청크 fsync 후 오프셋 기록, 완료 시 전체 SHA-256 재계산 후 단일 업로드와 같은 commitOriginal). idempotency receipt·폴더 범위 hash preflight는 M16에서 구현.
+원본 다운로드는 /folders/{folderID}/assets/{assetID}로만, 인증된 앨범 연결(folder_assets, removed_at NULL)·역할을 매 요청 검증한다(M10 구현).
 초대/관리/원본/프리뷰/이벤트 모든 핸들러가 인증 미들웨어를 통과해야 한다.
-새 OpenAPI 명세를 작성할 때 기존 API_v1.2+API_AUTH_v1.4의 차이를 조정하고 계약 테스트 작성.
-네트워크 ACL을 완성하기 전 loopback 제한을 제거하지 말 것. HTTPS/페어링 설계 후 LAN 확장.
+공식 규격은 docs/API_v2.yaml 하나(M16). 라우트를 바꾸면 이 파일도 바꾼다(openapi_test.go가 강제).
+LAN은 TLS(자체 서명 + SPKI 핀닝) + 관리자 + -allow-lan일 때만(M15). 인터넷 공개·리버스 프록시 모드는 미지원.
 -->
 
 ## 7. macOS 최우선 설치 · Linux/Pi 배포 · 오픈소스 공개
 
 | 대상 | 목표 패키지 | 현재 상태 |
 |---|---|---|
-| **Mac mini Apple Silicon (M1+)** | 서명·공증 DMG/PKG, 최초 설정 화면, 외장하드 지정, 메뉴바/백그라운드 서비스 | **기본 바이너리/실험용 LaunchAgent만** |
+| **Mac mini Apple Silicon (M1+)** | 서명·공증 DMG/PKG, 최초 설정 화면, 외장하드 지정, 메뉴바/백그라운드 서비스 | **메뉴 막대 앱 + 서명 없는 DMG 빌드(M32), 기본 바이너리/실험용 LaunchAgent** — 서명·공증본 미발행 |
 | Intel Mac | 동일 사용자 흐름 | 크로스빌드 대상 |
 | Linux x86-64 | tar.gz / 장차 `.deb` 또는 systemd | 기본 스크립트 존재 |
 | Raspberry Pi 64/32-bit | ARM64/ARMv7 바이너리, 메모리 경량화 | 크로스빌드 대상 |
@@ -337,15 +412,37 @@ GitHub에 곧바로 public push, Release 발행, 실제 원본 정리/삭제 등
 
 | 경로 | 역할 / 구현 상태 |
 |---|---|
-| `server/main.go` | **실행됨:** localhost Go HTTP PoC, 원본·해싱·동기화·기초 프리뷰, 현재 인증·SQLite 없음 |
-| `server/web/index.html` | **실행됨:** 내장 로컬 관리 UI; 관리자 인증 화면 아님 |
-| `server/main_test.go`, `server/dashboard_test.go` | **테스트:** 현 PoC 동작 확인, 프로덕션 안전성 테스트 아님 |
-| `internal/authz/policy.go`, `policy_test.go` | **부분 구현:** 역할 판정·단위 테스트. HTTP 서버 미연결 |
+| `server/main.go` | **실행됨:** 설정·기동만 (환경변수, `-init-storage`, `migrate-legacy`·`admin`·`verify`·`backup`·`restore`·`tls` 서브커맨드, `-tls`/`-allow-lan`, 볼륨 검증, 저장소 조립). listen 게이트·TLS 기동은 `server/listen.go` |
+| `server/setup.go` | **실행됨(테스트·바이너리 스모크):** 저장소 루트 결정(`WITHALBUM_ROOT` → 설정 파일 → `./withalbum-data`), 설치 모드 진입 조건(평문 루프백 리스너만), 등록(`storage.Init` + `openApp` + 설정 파일), `ClaimBootstrap`, 정상 모드로 핸들러 원자적 교체 |
+| `internal/httpapi/setup.go`, `web/setup.html` | **실행됨(httptest·jsdom 스모크, 브라우저 점검 전):** 설치 화면 전용 라우트 표(정상 라우트 표와 분리)·1회용 코드·설치 세션 쿠키·CSRF·동일 출처 검사·저장장치 후보(마운트 재확인)·관리자 생성. 해시 기반 CSP |
+| `server/admin.go` | **실행됨(콘솔):** `admin init`(bootstrap 관리자 인수) / `create-user` / `reset-password`. 저장소 잠금 필요(서버 중지 상태), 비밀번호는 에코 없는 TTY 2회 입력 또는 stdin 한 줄 |
+| `internal/auth/password/` | **실행됨(콘솔):** Argon2id PHC 해시(기본 m=64MiB,t=3,p=2), 상수시간 검증, 정규형·파라미터 상한 검사, 잠금 값(`!` 접두) 항상 거부, 재해시 필요 판정, 비밀번호 정책 |
+| `internal/users/` | **실행됨:** 사용자 저장소(생성·조회·비활성·역할·앨범 생성 권한·비밀번호), bootstrap 인수 1회, 마지막 활성 관리자 보호, 감사 로그(`internal/audit`). 콘솔 명령과 `/api/v1/admin/users*`에서 사용 |
+| `internal/httpapi/` | **실행됨:** localhost HTTP 핸들러(health, 로그인·세션·계정, folders, upload, sync, original/preview). `middleware_authz.go`가 모든 라우트의 접근 정책 표(public/session/server/album)와 앨범 판정을 담당. `contract_test.go`는 HTTP 계약 테스트(상태코드·JSON 키·에러 코드), `authz_test.go`는 역할×엔드포인트 권한 매트릭스·IDOR·권한 회수 테스트 |
+| `internal/httpapi/web/index.html` | **실행됨(httptest 검증, 브라우저 수동 점검 전):** 내장 관리 UI(M17, 디자인 M23: SEED 기반 "보관 그린", 상단 바 + 왼쪽 관리 메뉴 + 카드, 라이트/다크). 로그인(웹 쿠키 세션+CSRF) 후 개요(서버·저장장치·여유 공간·받은 초대), 내 앨범(OWNER: 멤버·초대·소유권 이전·보관), 기기·내 계정, 관리자: 저장장치(저장 중단 경고·점검 결과·재검사), 사용자(생성·권한·비활성·기기 해지·보관 앨범 재배정), 백업·복구(콘솔 명령 안내), 서버 설정(TLS 지문). 공통 상태 카드(디스크 분리·서버 오프라인·세션 만료·권한 변경·초대 만료·빈 앨범·원본 검증 실패). 기존 API만 사용, DOM은 textContent·요소 복제로만 작성, 원격 글꼴·이미지 없음, CSP는 인라인 스크립트·스타일 해시 허용(`'unsafe-inline'` 없음) 기존 API만 사용, DOM은 textContent로만 작성, CSP는 인라인 스크립트·스타일 해시 허용(`'unsafe-inline'` 없음) |
+| `internal/meta/` | **실행됨:** 메타데이터 저장소 인터페이스 `MetadataStore`(폴더 접근 관계 조회 `GetFolderAccess`·`ListFoldersFor`, 커밋 안 권한 재확인 `Authorizer`)와 도메인 타입. `metatest/`는 적합성 테스트 |
+| `internal/meta/sqlitestore/` | **실행됨(부분 구현):** SQLite `MetadataStore`. 쓰기는 `BEGIN IMMEDIATE` 트랜잭션 하나(전역 mutex 없음), 읽기는 트랜잭션 없이 조회. 폴더별 랜덤 asset_id, 소유자는 `folders.owner_user_id`, 멤버는 `folder_members`. bootstrap 관리자(`account_bootstrap.user_id`로 식별, 처음엔 잠금된 `admin`)가 이전·이관 폴더 소유 |
+| `internal/meta/jsonstore/` | **서버 미사용·고정:** 이전 버전의 `.system/state.json` 구현. `MetadataStore`를 더 이상 구현하지 않으며 테스트에서 이전 버전 데이터를 만드는 용도로만 유지 |
+| `internal/legacyimport/` | **실행됨(`migrate-legacy`):** state.json → SQLite 무손실 이관. dry-run 기본, `-apply` 시 백업 → 임시 DB에 단일 트랜잭션 → 전 행 대조 검증 → 원자적 rename → state.json 보존 rename. 단계별 크래시·결함 입력 테스트 |
+| `internal/blobstore/` | **실행됨:** 업로드 임시 저장(해시·크기·MIME, HEIC/MOV 등 ISO BMFF 판별), pool 승격(원자적 rename, 0400, 접두 디렉터리별 직렬화), 재개 업로드 부분 파일(`.system/uploads`), JPEG 프리뷰, 선택적 외부 변환기(sips·ffmpeg), 동영상 재생용 경량본(avconvert·ffmpeg, `.system/playback`) |
+| `internal/integrity/` | **실행됨(`verify`):** 읽기 전용 무결성 검사 — DB integrity_check·foreign_key_check, 원본 존재·크기·(`-hash`) SHA-256, 손상 원본의 자산·폴더 보고, 프리뷰 누락·미참조 pool 파일·orphans 집계 |
+| `internal/backup/` | **실행됨(`backup`/`restore`):** `VACUUM INTO` 스냅샷 + 원본 증분 복사(복사 중 해시 검증) + 매니페스트, 백업 대상 마커·잠금. 복원은 전수 검증 → 스테이징 → 세션 폐기·감사 → 저널 → 원자적 rename(기존 데이터 보존). 단계별 크래시·손상 백업·업로드 중 백업 테스트 |
+| `server/maint.go` | **실행됨(콘솔):** `verify`·`backup`·`restore` 명령과 잠금 정책(verify·backup은 서버 실행 중 가능, restore는 중지 필요) |
+| `server/main_test.go` 및 각 패키지 `*_test.go` | **테스트:** 현 PoC 동작 확인, 볼륨 소실 시 503 fail-closed, 프로덕션 안전성 테스트 아님 |
+| `internal/db/` | **실행됨:** `Open`(모든 연결에 foreign_keys/WAL/synchronous=FULL/busy_timeout, 트랜잭션은 BEGIN IMMEDIATE), `Migrate`(`migrations/*.sql` 내장, `PRAGMA user_version`, 상위 버전 거부, integrity_check), 스키마 트리거·FK 테스트 |
+| `internal/storage/` | **부분 구현:** 볼륨 마커 생성(`-init-storage`)/검증/쓰기 직전 재확인(st_dev, 한 번 실패하면 재시작 전까지 실패), 디스크 UUID 기록·대조·채택(`-adopt-disk`). 디스크 이미지 혼돈 시험 검증, 실기기 미검증 |
+| `internal/authz/policy.go`, `policy_test.go` | **실행됨:** 역할 판정·단위 테스트. 모든 관리자·앨범 라우트가 매 요청 사용 |
 | `go.mod` | Go 모듈 버전, GitHub 주소 정하면 `module` 변경 필요 |
-| `.goreleaser.yaml` | 5개 CPU/OS 조합 릴리스 압축 산출물 설정 |
+| `.goreleaser.yaml` | 5개 CPU/OS 조합 릴리스 압축 산출물 설정(prerelease·초안만, `-trimpath`, `main.version`) |
+| `scripts/release-dryrun.sh`, `scripts/third-party-licenses.sh` | GoReleaser 없이 같은 산출물·체크섬을 만들어 검사(저장소 밖) / 링크되는 Go 모듈 라이선스 수집·확인 |
+| `NOTICE`, `third_party/` | 제3자 고지: Go 모듈·표준 라이브러리 라이선스(`go-modules/`), SEED Design 토큰 Apache-2.0(`seed-design/`) |
 | `.github/workflows/ci.yml`, `release.yml` | 테스트/크로스빌드 및 태그 릴리스 CI/CD |
 | `.github/release.yml` | GitHub 릴리스 노트 분류 예시 |
-| `scripts/install-macos.sh`, `install-linux.sh` | 개발용 백그라운드 실행 설치 스크립트, 정식 설치기 아님 |
+| `scripts/install-macos.sh`, `install-linux.sh` | 개발용 백그라운드 실행 설치 스크립트, 정식 설치기 아님(macOS: 설치 화면 설정 파일 또는 `WITHALBUM_ROOT`, `--lan`) |
+| `scripts/install-backup-macos.sh`, `scripts/restore-drill.sh` | 매일 `backup -keep N`(+ 주간 `verify -hash`) launchd LaunchAgent 설치·제거·`--print` / 백업 → 임시 루트 복원 → `verify -hash` → 임시 포트 기동 확인(`--demo`) |
+| `scripts/chaos-macos.sh` + `tools/chaos/` | macOS 혼돈 시험: hdiutil 스파스 디스크 이미지 위에서 실제 서버(`-tags chaos` 시험 빌드만 장애 지점에서 멈춤)에 SIGKILL·강제 분리·재연결·가득 참·SIGTERM을 반복 주입하고 매 회 재시작·`verify -hash`·API 대조. 결과 [`docs/CHAOS_RESULTS.md`](docs/CHAOS_RESULTS.md) |
+| `scripts/perf-bench.sh` + `tools/perf/` | 합성 라이브러리(10만·50만 자산, 실제 사진 없음) 성능 측정. 결과 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) |
+| `tools/internal/harness/` | 위 도구들이 실제 서버 바이너리를 자식 프로세스로 띄우고 API를 호출하는 공용 코드(서버에는 포함되지 않음) |
 | `Makefile`, `.env.example`, `.gitignore` | 개발 명령·환경·제외 경로 |
 | `LICENSE`, `SECURITY.md` | AGPL-3.0 라이선스, 현재 시제품 보안 경고 |
 
@@ -358,9 +455,9 @@ GitHub에 곧바로 public push, Release 발행, 실제 원본 정리/삭제 등
 | **`docs/DECISIONS_v1.5.md`** | 변경된 사용자 요구·버림/유지한 방향 기록 |
 | **`docs/PRODUCT_ARCHITECTURE_v1.4.md`** | 최신 통합 제품 정의·우선순위 |
 | **`docs/ACCESS_CONTROL_v1.4.md`** | 계정, OWNER, 초대, 읽기/쓰기, 정보누출 예외까지 상세 |
-| **`docs/schema_v1.4.sql`** | **목표** SQLite DDL, 현 PoC에 적용된 DB 아님 |
-| **`docs/API_AUTH_v1.4.yaml`** | **목표** 인증/초대/권한 API 초안 |
-| **`docs/API_v1.2.yaml`** | 초기 **목표** 업로드/동기화 API 초안, PhotoHub 표기 일부 잔존 |
+| **`docs/schema_v1.4.sql`** | SQLite DDL v1.4. 마이그레이션 0001로 적용되며 정본은 `internal/db/migrations/`(0002 이관 보조, 0003 `assets.preview_ready`) |
+| **`docs/API_v2.yaml`** | **공식 API 규격**(2.0.0-draft, 전 라우트 구현, 라우트 표와 테스트로 고정) |
+| **`docs/API_AUTH_v1.4.yaml`**, **`docs/API_v1.2.yaml`** | 폐기(역사 기록용) |
 | **`docs/GOOGLE_DRIVE_MODE_v1.3.md`** | OAuth·공유 폴더·Drive 제약/PoC 실험 계획 |
 | **`docs/STORAGE_ARCHITECTURE_v1.3.md`** | 모바일 공통 저장 어댑터·provider capability 구조 |
 | **`docs/CLIENT_SYNC_STATES.md`** | 송수신 큐·커서·실패·복구 상태 머신 |

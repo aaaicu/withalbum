@@ -1,5 +1,5 @@
-// Package authz defines authorization decisions for the future WithAlbum server.
-// IMPORTANT: This package is not yet wired into the server HTTP handlers.
+// Package authz defines authorization decisions for the WithAlbum server.
+// Every protected HTTP route decides with Allowed (internal/httpapi).
 package authz
 
 // ServerRole is the scope of the account on one self-hosted server instance.
@@ -14,7 +14,7 @@ const (
 type AlbumRole string
 
 const (
-	Contributor AlbumRole = "CONTRIBUTOR" // read and upload, cannot manage other users or delete assets
+	Contributor AlbumRole = "CONTRIBUTOR" // read, upload, and manage the album's assets (delete, restore, hide); cannot manage members
 	Viewer      AlbumRole = "VIEWER"      // read only
 	Uploader    AlbumRole = "UPLOADER"    // upload only; cannot list or download even its own uploads remotely
 )
@@ -31,12 +31,36 @@ const (
 	ListAlbumAssets  Action = "list_album_assets"
 	DownloadAsset    Action = "download_asset"
 	UploadAsset      Action = "upload_asset"
+	// DeleteAsset: move any asset of the album to its trash, list the
+	// trash and restore from it (OWNER, CONTRIBUTOR).
 	DeleteAsset      Action = "delete_asset"
 	InviteMember     Action = "invite_member"
 	RevokeMember     Action = "revoke_member"
 	ChangeMemberRole Action = "change_member_role"
-	TransferOwner    Action = "transfer_owner"
-	DeleteAlbum      Action = "delete_album"
+	// ListMembers: the album's owner and members (every role that can
+	// read the album: OWNER, CONTRIBUTOR, VIEWER).
+	ListMembers Action = "list_members"
+	// ListInvitations: the album's pending invitations (OWNER).
+	ListInvitations Action = "list_invitations"
+	TransferOwner   Action = "transfer_owner"
+	// DeleteAlbum: delete (restorable for 30 days), restore or archive the
+	// album (OWNER).
+	DeleteAlbum Action = "delete_album"
+	// UpdateAlbumSettings: the owner's album settings (hide_location).
+	UpdateAlbumSettings Action = "update_album_settings"
+	// ReactToAsset: like an asset and write, edit or delete one's own
+	// comments. Every role that can read the album (OWNER, CONTRIBUTOR,
+	// VIEWER); never an UPLOADER, which cannot see the album's contents.
+	ReactToAsset Action = "react_to_asset"
+	// ModerateComments: delete anyone's comment in the album (OWNER).
+	ModerateComments Action = "moderate_comments"
+	// HideAsset: mark an asset of the album hidden or visible again
+	// (OWNER, CONTRIBUTOR).
+	HideAsset Action = "hide_asset"
+	// SeeHiddenAssets: see the album's hidden assets (OWNER, CONTRIBUTOR).
+	// Everyone else who can read the album (VIEWER) is shown the album
+	// without them.
+	SeeHiddenAssets Action = "see_hidden_assets"
 )
 
 // Principal is derived from the authenticated session and database, never request body fields.
@@ -74,7 +98,8 @@ func Allowed(user Principal, action Action, album *AlbumAccess) bool {
 		switch action {
 		case GetAlbumMetadata, ListAlbumAssets, DownloadAsset, UploadAsset,
 			DeleteAsset, InviteMember, RevokeMember, ChangeMemberRole,
-			TransferOwner, DeleteAlbum:
+			ListMembers, ListInvitations, TransferOwner, DeleteAlbum, UpdateAlbumSettings,
+			ReactToAsset, ModerateComments, HideAsset, SeeHiddenAssets:
 			return true
 		default:
 			return false
@@ -86,10 +111,12 @@ func Allowed(user Principal, action Action, album *AlbumAccess) bool {
 	switch action {
 	case GetAlbumMetadata:
 		return album.MemberRole == Contributor || album.MemberRole == Viewer || album.MemberRole == Uploader
-	case ListAlbumAssets, DownloadAsset:
+	case ListAlbumAssets, DownloadAsset, ReactToAsset, ListMembers:
 		return album.MemberRole == Contributor || album.MemberRole == Viewer
 	case UploadAsset:
 		return album.MemberRole == Contributor || album.MemberRole == Uploader
+	case DeleteAsset, HideAsset, SeeHiddenAssets:
+		return album.MemberRole == Contributor
 	default:
 		return false
 	}
