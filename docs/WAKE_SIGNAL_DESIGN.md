@@ -1,6 +1,8 @@
 # New-photo notifications, step 2: content-free wake signals (M39 design)
 
-Status: **design only, nothing implemented.** Step 1 (shipped in the app) needs
+Status: **design only, deferred.** Step 2 is on hold: it needs a gateway that
+runs around the clock, and step 1 is enough for now. It will be revisited if
+late notifications on iOS turn out to be a real problem. Step 1 (shipped in the app) needs
 no server change: the phone wakes up on its own schedule (iOS
 BGAppRefreshTask, Android WorkManager every 30 minutes), asks its home server
 which albums changed (`GET /api/v1/sync/state`, M53), pulls only those, and
