@@ -157,3 +157,35 @@ func TestForwardFlags(t *testing.T) {
 		t.Fatalf("no map: exit %d", code)
 	}
 }
+
+func TestReach(t *testing.T) {
+	open, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer open.Close()
+	closed, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closedAddr := closed.Addr().String()
+	closed.Close()
+	var out strings.Builder
+	if code := runReach([]string{open.Addr().String(), closedAddr}, &out, io.Discard); code != exitProblems {
+		t.Fatalf("exit %d", code)
+	}
+	if s := out.String(); !strings.Contains(s, "OPEN    "+open.Addr().String()) || !strings.Contains(s, "route   "+closedAddr) || !strings.Contains(s, "NOT ISOLATED") {
+		t.Fatalf("output:\n%s", s)
+	}
+	// 192.0.2.0/24 (TEST-NET-1) is never routed: no answer within the timeout.
+	old := reachTimeout
+	reachTimeout = 300 * time.Millisecond
+	defer func() { reachTimeout = old }()
+	out.Reset()
+	if code := runReach([]string{"192.0.2.1:9"}, &out, io.Discard); code != 0 || !strings.Contains(out.String(), "all blocked") {
+		t.Fatalf("unroutable: exit %d\n%s", code, out.String())
+	}
+	if code := runReach(nil, io.Discard, io.Discard); code != exitUsage {
+		t.Fatalf("no args: %d", code)
+	}
+}

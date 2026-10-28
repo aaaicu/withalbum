@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Added (Docker, M58)
+- `Dockerfile`·`compose.yaml`·`docker.env.example`·[`docs/DOCKER.md`](docs/DOCKER.md)(시험판, 실제 Docker 미검증): 서버 컨테이너는 바깥으로 나가는 길이 없는 Docker `internal` 네트워크에만(공유기 설정 없이 서버 → 홈캠·공유기·다른 기기·인터넷 차단), 휴대폰·Funnel 연결은 같은 이미지의 전달 컨테이너가 받음. uid 10001, 읽기 전용 FS, capability 전부 제거, `no-new-privileges`. 미리보기 도구 ffmpeg·libheif.
+- `WITHALBUM_CONTAINER=1`(이미지가 설정): Funnel 리스너를 컨테이너 주소(`0.0.0.0:8788`)에 열 수 있음, 디스크 UUID를 읽을 수 없으면 그 확인만 건너뜀(읽히는 UUID가 다르면 여전히 거부, 마커·볼륨 ID는 확인).
+- `WITHALBUM_LAN_URL`: 와일드카드 리스너의 연결 QR 주소(`https://<사설 IP>:<포트>`, 쉼표로 여러 개) — 컨테이너 안 주소 대신 호스트의 집 주소.
+- `withalbum-server forward -map listen=target`(바이트만 옮기는 TCP 전달기), `withalbum-server reach <host:port>...`(격리 확인: 연결 1회씩, `blocked`/`route`/`OPEN`, 모두 막혀야 종료 코드 0).
+- HEIC/HEIF/AVIF 미리보기를 libheif `heif-dec`(옛 이름 `heif-convert`)로도 만듦(Linux에는 `sips`가 없음): 파일 머리의 크기로 1억 2천만 화소 상한을 먼저 확인, 크기를 모르면 실행하지 않음. `WITHALBUM_HEIFDEC`. 순서 sips → heif-dec → ffmpeg.
+
 ### Added (fast sync state, M53)
 - `GET /api/v1/sync/state`: 읽을 수 있는 모든 앨범의 피드 끝 커서(호출자 보기 기준)를 한 번에 — 앱이 앨범마다 묻지 않고 커서가 바뀐 앨범만 받음. `albums_tag`(앨범 목록·이름·역할·설정 변화), `tag`=ETag(`If-None-Match`면 304). `wait=1..25`초 롱폴(1초마다 확인, 동시 대기 64개 상한, 넘으면 바로 응답). `digests=1`이면 앨범별 내용 해시 `digest`·`count`(자산 id 순 `id sha256 like_count liked_by_me comment_count` 줄의 SHA-256, 같은 트랜잭션에서 읽은 커서와 함께) — 앱이 로컬 인덱스와 비교해 어긋나면 그 앨범만 다시 받음. 중계·Funnel 허용, `/me` `server_features`에 `sync_state`.
 

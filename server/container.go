@@ -195,3 +195,55 @@ func forwardConn(ctx context.Context, c net.Conn, target string) {
 	<-done
 	<-done
 }
+
+// Reach results of runReach, as the menu bar app's isolation check names
+// them.
+const (
+	reachBlocked = "blocked" // no route, or no answer: isolated
+	reachRoute   = "route"   // something answered (refused): a route exists
+	reachOpen    = "OPEN"    // connected
+)
+
+// reachTimeout bounds one connection attempt of runReach.
+var reachTimeout = 2 * time.Second
+
+// runReach is `withalbum-server reach <host:port> ...`: one TCP attempt to
+// each address, to check from inside the container that the home network
+// cannot be reached (docs/DOCKER.md). It sends nothing. Exit 0 only when
+// every address is blocked.
+func runReach(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, "usage: withalbum-server reach <host:port> [<host:port> ...]   e.g. reach 192.168.0.1:80 192.168.0.20:554")
+		return exitUsage
+	}
+	code := 0
+	for _, a := range args {
+		if _, port, err := net.SplitHostPort(a); err != nil || port == "" {
+			fmt.Fprintf(stderr, "reach: %q: want host:port\n", a)
+			return exitUsage
+		}
+		r, detail := reach(a)
+		if r != reachBlocked {
+			code = exitProblems
+		}
+		fmt.Fprintf(stdout, "%-7s %s  (%s)\n", r, a, detail)
+	}
+	if code == 0 {
+		fmt.Fprintln(stdout, "all blocked: this container cannot reach these addresses")
+	} else {
+		fmt.Fprintln(stdout, "NOT ISOLATED: a connection or an answer came back from at least one address")
+	}
+	return code
+}
+
+func reach(addr string) (string, string) {
+	c, err := net.DialTimeout("tcp", addr, reachTimeout) // #nosec G704 -- an operator-typed address on the console, one connection, nothing sent
+	if err == nil {
+		c.Close()
+		return reachOpen, "connected"
+	}
+	if errors.Is(err, syscall.ECONNREFUSED) {
+		return reachRoute, "refused: the address answered"
+	}
+	return reachBlocked, err.Error()
+}

@@ -411,6 +411,8 @@ func main() {
 			os.Exit(runTLSInfo(os.Args[2:], os.Stdout, os.Stderr))
 		case "forward":
 			os.Exit(runForward(os.Args[2:], os.Stderr))
+		case "reach":
+			os.Exit(runReach(os.Args[2:], os.Stdout, os.Stderr))
 		}
 	}
 	showVersion := flag.Bool("version", false, "Print WithAlbum Server version and exit")
@@ -464,6 +466,9 @@ func main() {
 	lc := listenConfig{Addr: listenAddr(), AllowLAN: *allowLAN, TLS: *useTLS, Container: containerSetting(os.Getenv), LANURLs: lanURLs}
 	if flag.NArg() != 0 {
 		log.Fatalf("unexpected arguments %q", flag.Args())
+	}
+	if lc.Container {
+		log.Print("container mode (WITHALBUM_CONTAINER=1, docs/DOCKER.md): the funnel listener may use a container address, and the disk UUID is not checked when it cannot be read here (the volume marker and ID still are)")
 	}
 	// The administrator condition needs the database; check the rest first.
 	if _, err := checkListen(lc, 1); err != nil {
