@@ -194,6 +194,45 @@ func TestSignInLinkAndUse(t *testing.T) {
 	}
 }
 
+// An administrator sees an account's links and can remove one (a lost
+// Google account), but never add one.
+func TestSignInAdmin(t *testing.T) {
+	e, ti := newSignInEnv(t, true, ratelimit.Config{IPBurst: 1000, PairFailures: 100, AccountFailures: 100})
+	member, _ := e.users.GetByLogin(t.Context(), "member")
+	access, _ := e.mustLogin(t, "member", userPassword)
+	n := e.nonce(t)
+	wantStatus(t, "link", e.link(t, access, "google", googleToken(ti, "g-member", n), n, userPassword), 201, "")
+	adminAccess, _ := e.mustLogin(t, "root", adminPassword)
+	path := "/api/v1/admin/users/" + member.ID + "/sign-ins"
+
+	wantStatus(t, "member cannot", e.call(t, "GET", path, nil, bearer(access)), 403, "forbidden")
+	list := e.call(t, "GET", path, nil, bearer(adminAccess))
+	wantStatus(t, "admin list", list, 200, "")
+	items := list.body["items"].([]any)
+	if len(items) != 1 || items[0].(map[string]any)["email"] != "g-member@gmail.example" || strings.Contains(list.raw, "g-member\"") {
+		t.Fatalf("admin list %s", list.raw)
+	}
+	wantStatus(t, "unknown user", e.call(t, "GET", "/api/v1/admin/users/nobody/sign-ins", nil, bearer(adminAccess)), 404, "user_not_found")
+	wantStatus(t, "no admin link route", e.call(t, "POST", path, map[string]string{}, bearer(adminAccess)), 404, "not_found")
+
+	wantStatus(t, "member cannot unlink", e.call(t, "DELETE", path+"/google", nil, bearer(access)), 403, "forbidden")
+	wantStatus(t, "admin unlink", e.call(t, "DELETE", path+"/google", nil, bearer(adminAccess)), 204, "")
+	wantStatus(t, "admin unlink again", e.call(t, "DELETE", path+"/google", nil, bearer(adminAccess)), 404, "not_found")
+	wantStatus(t, "admin unlink unknown provider", e.call(t, "DELETE", path+"/facebook", nil, bearer(adminAccess)), 404, "not_found")
+	n = e.nonce(t)
+	wantStatus(t, "after admin unlink", e.signIn(t, "google", googleToken(ti, "g-member", n), n), 401, "identity_not_linked")
+
+	// The audit names the administrator as actor and the member as target.
+	root, _ := e.users.GetByLogin(t.Context(), "root")
+	var actor, target string
+	if err := e.db.QueryRowContext(t.Context(), "SELECT actor_user_id, target_id FROM audit_log WHERE action = 'account.identity_unlink'").Scan(&actor, &target); err != nil {
+		t.Fatal(err)
+	}
+	if actor != root.ID || target != member.ID {
+		t.Fatalf("audit actor %s target %s", actor, target)
+	}
+}
+
 func TestSignInProviderOff(t *testing.T) {
 	e, ti := newSignInEnv(t, false, ratelimit.Config{})
 	r := e.call(t, "POST", "/api/v1/auth/sign-in/nonce", map[string]string{}, nil)

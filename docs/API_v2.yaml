@@ -952,6 +952,52 @@ paths:
         '401': {description: unauthorized}
         '403': {description: 'forbidden (not SERVER_ADMIN) or csrf_failed'}
         '404': {description: 'user_not_found, device_not_found (not a live device of this account)'}
+  /api/v1/admin/users/{user_id}/sign-ins:
+    get:
+      tags: [Server Admin]
+      summary: Google and Apple identities linked to an account (SERVER_ADMIN only, M54)
+      description: Same fields as GET /me/sign-ins; never the provider's account identifier.
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+      responses:
+        '200':
+          description: Linked identities
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, providers]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/SignInLink'}
+                  providers:
+                    type: array
+                    items: {type: string, enum: [google, apple]}
+        '401': {description: unauthorized}
+        '403': {description: forbidden (not SERVER_ADMIN)}
+        '404': {description: user_not_found}
+  /api/v1/admin/users/{user_id}/sign-ins/{provider}:
+    delete:
+      tags: [Server Admin]
+      summary: Unlink a Google or Apple identity of an account (SERVER_ADMIN only, M54)
+      description: >-
+        For a lost or taken-over provider account. An administrator can
+        remove a link but never add one (linking needs the holder's password
+        and their own ID token). Sessions already made with it stay valid;
+        revoke devices to end them. Audited as "account.identity_unlink"
+        with the administrator as actor.
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+        - in: path
+          name: provider
+          required: true
+          schema: {type: string, enum: [google, apple]}
+      responses:
+        '204': {description: Unlinked}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (not SERVER_ADMIN) or csrf_failed'}
+        '404': {description: 'user_not_found, not_found (nothing linked for this provider)'}
   /api/v1/admin/users/{user_id}/folders:
     get:
       tags: [Server Admin]

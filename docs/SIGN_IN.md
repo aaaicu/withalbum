@@ -69,13 +69,20 @@ still works.
   (`409 provider_linked` / `409 identity_in_use`).
 - Unlinking (`DELETE /api/v1/me/sign-ins/{provider}`) keeps the sessions made
   with it; revoke devices to end them.
+- A server administrator can see which providers an account linked
+  (`GET /api/v1/admin/users/{user_id}/sign-ins`) and remove a link for a
+  lost or taken-over Google or Apple account
+  (`DELETE /api/v1/admin/users/{user_id}/sign-ins/{provider}`), but never
+  add one: linking always needs the holder's password and their own ID
+  token.
 - Failed sign-ins count against the client address per provider (the login
   rate limiter, remote and home counted separately); they never lock any
   account's password login.
 - Nonces are kept in memory (SHA-256 only): at most 32 outstanding per client
   address and 8192 in all, the oldest dropped first; a restart forgets them.
 - Audit: `account.identity_link` (allowed / denied with a reason),
-  `account.identity_unlink`, and `auth.login` with `"method": "google"` or
+  `account.identity_unlink` (the administrator as actor when they unlinked),
+  and `auth.login` with `"method": "google"` or
   `"apple"`. Tokens and subject identifiers are never logged.
 - Google and Apple learn that this person used the app's sign-in, as with
   any app that offers it. They learn nothing about the home server.

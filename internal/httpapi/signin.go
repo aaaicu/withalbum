@@ -27,6 +27,8 @@ func (s *Server) signInRoutes(rt *router) {
 	rt.handle("GET /api/v1/me/sign-ins", s.listSignIns)
 	rt.handle("POST /api/v1/me/sign-ins", s.linkSignIn)
 	rt.handle("DELETE /api/v1/me/sign-ins/{provider}", s.unlinkSignIn)
+	rt.handle("GET /api/v1/admin/users/{userID}/sign-ins", s.adminListSignIns)
+	rt.handle("DELETE /api/v1/admin/users/{userID}/sign-ins/{provider}", s.adminUnlinkSignIn)
 }
 
 // nonceTTL is how long an issued nonce can be used.
@@ -319,7 +321,54 @@ func (s *Server) unlinkSignIn(w http.ResponseWriter, r *http.Request) {
 		errorReply(w, 404, "not_found")
 		return
 	}
-	err := s.auth.Identities.Remove(r.Context(), id.UserID, string(p), identity.Details(client(r).Audit()))
+	err := s.auth.Identities.Remove(r.Context(), id.UserID, id.UserID, string(p), identity.Details(client(r).Audit()))
+	switch {
+	case err == nil:
+		w.WriteHeader(204)
+	case errors.Is(err, identity.ErrNotFound):
+		errorReply(w, 404, "not_found")
+	default:
+		internalError(w, "unlink sign-in", err)
+	}
+}
+
+// adminListSignIns shows which providers an account has linked, for
+// support ("why can't I sign in with Google?"). Same fields as the
+// account's own list; never the provider's account identifier.
+func (s *Server) adminListSignIns(w http.ResponseWriter, r *http.Request) {
+	userID := r.PathValue("userID")
+	if _, err := s.auth.Users.Get(r.Context(), userID); err != nil {
+		s.usersError(w, "get user", err)
+		return
+	}
+	links, err := s.auth.Identities.List(r.Context(), userID)
+	if err != nil {
+		internalError(w, "list sign-ins", err)
+		return
+	}
+	items := []signInJSON{}
+	for _, l := range links {
+		items = append(items, signInLink(l))
+	}
+	jsonReply(w, 200, map[string]any{"items": items, "providers": providersJSON(s.auth.SignIn)})
+}
+
+// adminUnlinkSignIn removes a link of another account, for a lost or
+// taken-over Google or Apple account. It cannot add one: linking stays
+// with the account holder (their password and their own ID token).
+func (s *Server) adminUnlinkSignIn(w http.ResponseWriter, r *http.Request) {
+	userID := r.PathValue("userID")
+	if _, err := s.auth.Users.Get(r.Context(), userID); err != nil {
+		s.usersError(w, "get user", err)
+		return
+	}
+	p := oidc.Provider(r.PathValue("provider"))
+	if !p.Valid() {
+		errorReply(w, 404, "not_found")
+		return
+	}
+	id, _ := IdentityFrom(r.Context())
+	err := s.auth.Identities.Remove(r.Context(), id.UserID, userID, string(p), identity.Details(client(r).Audit()))
 	switch {
 	case err == nil:
 		w.WriteHeader(204)

@@ -163,7 +163,7 @@ func (s *Store) get(ctx context.Context, userID, provider string) (Link, error) 
 
 // Remove unlinks the account's identity of provider. Sessions made with it
 // stay valid (like sessions after linking); revoke devices to end them.
-func (s *Store) Remove(ctx context.Context, userID, provider string, d Details) error {
+func (s *Store) Remove(ctx context.Context, actorID, userID, provider string, d Details) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -178,7 +178,7 @@ func (s *Store) Remove(ctx context.Context, userID, provider string, d Details) 
 	} else if n == 0 {
 		return ErrNotFound
 	}
-	if err := audit.Record(ctx, tx, audit.Entry{ActorUserID: userID, Action: "account.identity_unlink", TargetType: "user", TargetID: userID,
+	if err := audit.Record(ctx, tx, audit.Entry{ActorUserID: actorID, Action: "account.identity_unlink", TargetType: "user", TargetID: userID,
 		Result: audit.Allowed, Details: with(d, map[string]any{"provider": provider})}); err != nil {
 		return err
 	}

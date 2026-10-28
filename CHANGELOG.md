@@ -5,7 +5,7 @@
 아래 [0.1.0-alpha.1] 초안 이후의 변경을 여기에 적습니다.
 
 ### Added (sign in with Google or Apple, M54)
-- 계정에 Google·Apple 계정을 하나씩 연결하고 비밀번호 대신 로그인: `POST /api/v1/auth/sign-in/nonce`(공개, 1회용 nonce 10분 + 이 서버가 받는 제공자), `POST /api/v1/auth/sign-in`(공개, 연결된 계정으로 비밀번호 로그인과 같은 토큰 응답), `GET|POST /api/v1/me/sign-ins`(목록·연결 — **현재 비밀번호 필요**), `DELETE /api/v1/me/sign-ins/{provider}`. 서버가 ID 토큰을 직접 검증(RS256 서명·발급자·앱 클라이언트 ID·만료·서버가 낸 nonce, 공개키는 요청 시 받아 캐시) — 제공자 비밀값 없음. 계정은 `sub`로만 찾고(이메일로 찾지 않음) 로그인으로 계정을 만들지 않음(`401 identity_not_linked`). 실패는 주소·제공자별 속도 제한(비밀번호 로그인 잠금 없음), 감사 `account.identity_link`·`account.identity_unlink`·`auth.login`의 `method`.
+- 계정에 Google·Apple 계정을 하나씩 연결하고 비밀번호 대신 로그인: `POST /api/v1/auth/sign-in/nonce`(공개, 1회용 nonce 10분 + 이 서버가 받는 제공자), `POST /api/v1/auth/sign-in`(공개, 연결된 계정으로 비밀번호 로그인과 같은 토큰 응답), `GET|POST /api/v1/me/sign-ins`(목록·연결 — **현재 비밀번호 필요**), `DELETE /api/v1/me/sign-ins/{provider}`, 관리자용 `GET /api/v1/admin/users/{user_id}/sign-ins`·`DELETE …/sign-ins/{provider}`(연결 보기·해제만, 관리자가 연결을 만들 수는 없음). 서버가 ID 토큰을 직접 검증(RS256 서명·발급자·앱 클라이언트 ID·만료·서버가 낸 nonce, 공개키는 요청 시 받아 캐시) — 제공자 비밀값 없음. 계정은 `sub`로만 찾고(이메일로 찾지 않음) 로그인으로 계정을 만들지 않음(`401 identity_not_linked`). 실패는 주소·제공자별 속도 제한(비밀번호 로그인 잠금 없음), 감사 `account.identity_link`·`account.identity_unlink`·`auth.login`의 `method`.
 - 설정 `-google-client-ids`/`WITHALBUM_GOOGLE_CLIENT_IDS`(기본 꺼짐, 릴리스 빌드는 ldflags로 내장 가능), `-apple-client-ids`/`WITHALBUM_APPLE_CLIENT_IDS`(기본 `aaaicu.withalbum.app`), `off`로 끔. `/me` `server_features`에 `sign_in`. 공개 라우트 4개 → 6개. 마이그레이션 **0018**(`user_identities`). 설명 [`docs/SIGN_IN.md`](docs/SIGN_IN.md).
 
 ### Added (fast sync state, M53)

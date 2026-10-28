@@ -81,6 +81,8 @@ var routePolicies = []RoutePolicy{
 	{"GET /api/v1/admin/users/{userID}/devices", AccessServer, authz.ManageAccounts},
 	{"DELETE /api/v1/admin/users/{userID}/devices/{deviceID}", AccessServer, authz.ManageAccounts},
 	{"GET /api/v1/admin/users/{userID}/folders", AccessServer, authz.ManageAccounts},
+	{"GET /api/v1/admin/users/{userID}/sign-ins", AccessServer, authz.ManageAccounts},
+	{"DELETE /api/v1/admin/users/{userID}/sign-ins/{provider}", AccessServer, authz.ManageAccounts},
 	// Archived folders only; the handler and the transaction refuse others
 	// as unknown (admin.go). No access to the folder follows from it.
 	{"POST /api/v1/admin/folders/{folderID}/owner", AccessServer, authz.ManageAccounts},
