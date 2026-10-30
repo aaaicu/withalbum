@@ -13,6 +13,10 @@ Docker 격리 구성(M58)과 빠른 동기화 상태(M53). 실기기 검증 결�
 - `withalbum-server forward -map listen=target`(바이트만 옮기는 TCP 전달기), `withalbum-server reach <host:port>...`(격리 확인: 연결 1회씩, `blocked`/`route`/`OPEN`, 모두 막혀야 종료 코드 0).
 - HEIC/HEIF/AVIF 미리보기를 libheif `heif-dec`(옛 이름 `heif-convert`)로도 만듦(Linux에는 `sips`가 없음): 파일 머리의 크기로 1억 2천만 화소 상한을 먼저 확인, 크기를 모르면 실행하지 않음. `WITHALBUM_HEIFDEC`. 순서 sips → heif-dec → ffmpeg.
 
+### Added (sign in with Google or Apple, M54)
+- 계정에 Google·Apple 계정을 하나씩 연결하고 비밀번호 대신 로그인: `POST /api/v1/auth/sign-in/nonce`(공개, 1회용 nonce 10분 + 이 서버가 받는 제공자), `POST /api/v1/auth/sign-in`(공개, 연결된 계정으로 비밀번호 로그인과 같은 토큰 응답), `GET|POST /api/v1/me/sign-ins`(목록·연결 — **현재 비밀번호 필요**), `DELETE /api/v1/me/sign-ins/{provider}`, 관리자용 `GET /api/v1/admin/users/{user_id}/sign-ins`·`DELETE …/sign-ins/{provider}`(연결 보기·해제만, 관리자가 연결을 만들 수는 없음). 서버가 ID 토큰을 직접 검증(RS256 서명·발급자·앱 클라이언트 ID·만료·서버가 낸 nonce, 공개키는 요청 시 받아 캐시) — 제공자 비밀값 없음. 계정은 `sub`로만 찾고(이메일로 찾지 않음) 로그인으로 계정을 만들지 않음(`401 identity_not_linked`). 실패는 주소·제공자별 속도 제한(비밀번호 로그인 잠금 없음), 감사 `account.identity_link`·`account.identity_unlink`·`auth.login`의 `method`.
+- 설정 `-google-client-ids`/`WITHALBUM_GOOGLE_CLIENT_IDS`(기본 꺼짐, 릴리스 빌드는 ldflags로 내장 가능), `-apple-client-ids`/`WITHALBUM_APPLE_CLIENT_IDS`(기본 `aaaicu.withalbum.app`), `off`로 끔. `/me` `server_features`에 `sign_in`. 공개 라우트 4개 → 6개. 마이그레이션 **0018**(`user_identities`). 설명 [`docs/SIGN_IN.md`](docs/SIGN_IN.md).
+
 ### Added (fast sync state, M53)
 - `GET /api/v1/sync/state`: 읽을 수 있는 모든 앨범의 피드 끝 커서(호출자 보기 기준)를 한 번에 — 앱이 앨범마다 묻지 않고 커서가 바뀐 앨범만 받음. `albums_tag`(앨범 목록·이름·역할·설정 변화), `tag`=ETag(`If-None-Match`면 304). `wait=1..25`초 롱폴(1초마다 확인, 동시 대기 64개 상한, 넘으면 바로 응답). `digests=1`이면 앨범별 내용 해시 `digest`·`count`(자산 id 순 `id sha256 like_count liked_by_me comment_count` 줄의 SHA-256, 같은 트랜잭션에서 읽은 커서와 함께) — 앱이 로컬 인덱스와 비교해 어긋나면 그 앨범만 다시 받음. 중계·Funnel 허용, `/me` `server_features`에 `sync_state`.
 

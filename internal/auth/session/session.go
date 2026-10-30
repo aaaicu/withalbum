@@ -258,6 +258,9 @@ type Client struct {
 	Route string
 }
 
+// Audit returns where the request came from, for audit details.
+func (c Client) Audit() map[string]any { return c.details(map[string]any{}) }
+
 // details adds where the request came from to audit details d.
 func (c Client) details(d map[string]any) map[string]any {
 	d["ip"], d["via"] = c.IP, "http"
@@ -274,6 +277,9 @@ type LoginRequest struct {
 	DeviceName string
 	Platform   string
 	Client     Client
+	// Method is how the account proved itself when not by password
+	// ("google", "apple"; M54), recorded in the audit log.
+	Method string
 }
 
 // FailureReason is why a login failed, for the audit log only.
@@ -463,6 +469,14 @@ func nullableHash(token string) sql.NullString {
 	return sql.NullString{String: HashToken(token), Valid: true}
 }
 
+func loginDetails(req LoginRequest) map[string]any {
+	d := map[string]any{"platform": req.Platform}
+	if req.Method != "" {
+		d["method"] = req.Method
+	}
+	return d
+}
+
 func (s *Service) create(ctx context.Context, userID string, req LoginRequest) (Tokens, error) {
 	// The stored creation time decides the absolute end on every refresh
 	// (rotate), so the end reported now is computed from the same value.
@@ -498,7 +512,7 @@ func (s *Service) create(ctx context.Context, userID string, req LoginRequest) (
 		return Tokens{}, err
 	}
 	if err := audit.Record(ctx, tx, audit.Entry{ActorUserID: userID, Action: "auth.login", TargetType: "device", TargetID: t.DeviceID,
-		Result: audit.Allowed, Details: req.Client.details(map[string]any{"platform": req.Platform})}); err != nil {
+		Result: audit.Allowed, Details: req.Client.details(loginDetails(req))}); err != nil {
 		return Tokens{}, err
 	}
 	return t, tx.Commit()
