@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.1.0-alpha.2] — 2026-10-31 (prerelease)
+
+Docker 격리 구성(M58)과 빠른 동기화 상태(M53). 실기기 검증 결과는 `docs/releases/v0.1.0-alpha.2.md`.
+
 ### Added (Docker, M58)
 - `Dockerfile`·`compose.yaml`·`docker.env.example`·[`docs/DOCKER.md`](docs/DOCKER.md)(시험판, 실제 Docker 미검증): 서버 컨테이너는 바깥으로 나가는 길이 없는 Docker `internal` 네트워크에만(공유기 설정 없이 서버 → 홈캠·공유기·다른 기기·인터넷 차단), 휴대폰·Funnel 연결은 같은 이미지의 전달 컨테이너가 받음. uid 10001, 읽기 전용 FS, capability 전부 제거, `no-new-privileges`. 미리보기 도구 ffmpeg·libheif.
 - `WITHALBUM_CONTAINER=1`(이미지가 설정): Funnel 리스너를 컨테이너 주소(`0.0.0.0:8788`)에 열 수 있음, 디스크 UUID를 읽을 수 없으면 그 확인만 건너뜀(읽히는 UUID가 다르면 여전히 거부, 마커·볼륨 ID는 확인).

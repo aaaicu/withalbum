@@ -52,7 +52,8 @@ SQLite 스키마와 YAML API 문서는 목표 규격으로만 분류할 것. 결
 | Mac 메뉴 막대 앱 DMG | `WithAlbumServer_<버전>.dmg`(서명·공증본)은 관리자가 macOS에서 만들어 Release에 직접 올림([`docs/RELEASING.md`](docs/RELEASING.md#macos-dmg)) | **미게시** — 지금은 `scripts/build-macos-app.sh`로 서명 없는 DMG만 |
 | [Linux·Raspberry Pi 설치](docs/INSTALL_LINUX.md) | Linux AMD64/ARM64/ARMv7, systemd | 개발자용 |
 | [배포 파이프라인](docs/RELEASING.md) | GitHub Actions · GoReleaser · checksum · `scripts/release-dryrun.sh` | prerelease(초안)만, dry-run 검증 |
-| [v0.1.0-alpha.1 릴리스 노트](docs/releases/v0.1.0-alpha.1.md) | 첫 prerelease 후보 | **초안, 미발행** |
+| [v0.1.0-alpha.2 릴리스 노트](docs/releases/v0.1.0-alpha.2.md) | 두 번째 prerelease 후보 (Docker 격리, 빠른 동기화) | **후보, 미발행** |
+| [v0.1.0-alpha.1 릴리스 노트](docs/releases/v0.1.0-alpha.1.md) | 첫 prerelease | 태그 발행 |
 | [Mac mini 실기기 점검](docs/MACMINI_E2E_CHECKLIST.md) | 설치·자동 시작·디스크 분리·재부팅·전원 차단·백업·LAN TLS | 절차만, 실기기 결과 없음 |
 
 <!-- 릴리스 요구사항:
