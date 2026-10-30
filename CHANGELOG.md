@@ -2,7 +2,12 @@
 
 ## [Unreleased]
 
-아래 [0.1.0-alpha.1] 초안 이후의 변경을 여기에 적습니다.
+### Added (Docker, M58)
+- `Dockerfile`·`compose.yaml`·`docker.env.example`·[`docs/DOCKER.md`](docs/DOCKER.md)(시험판, 실제 Docker 미검증): 서버 컨테이너는 바깥으로 나가는 길이 없는 Docker `internal` 네트워크에만(공유기 설정 없이 서버 → 홈캠·공유기·다른 기기·인터넷 차단), 휴대폰·Funnel 연결은 같은 이미지의 전달 컨테이너가 받음. uid 10001, 읽기 전용 FS, capability 전부 제거, `no-new-privileges`. 미리보기 도구 ffmpeg·libheif.
+- `WITHALBUM_CONTAINER=1`(이미지가 설정): Funnel 리스너를 컨테이너 주소(`0.0.0.0:8788`)에 열 수 있음, 디스크 UUID를 읽을 수 없으면 그 확인만 건너뜀(읽히는 UUID가 다르면 여전히 거부, 마커·볼륨 ID는 확인).
+- `WITHALBUM_LAN_URL`: 와일드카드 리스너의 연결 QR 주소(`https://<사설 IP>:<포트>`, 쉼표로 여러 개) — 컨테이너 안 주소 대신 호스트의 집 주소.
+- `withalbum-server forward -map listen=target`(바이트만 옮기는 TCP 전달기), `withalbum-server reach <host:port>...`(격리 확인: 연결 1회씩, `blocked`/`route`/`OPEN`, 모두 막혀야 종료 코드 0).
+- HEIC/HEIF/AVIF 미리보기를 libheif `heif-dec`(옛 이름 `heif-convert`)로도 만듦(Linux에는 `sips`가 없음): 파일 머리의 크기로 1억 2천만 화소 상한을 먼저 확인, 크기를 모르면 실행하지 않음. `WITHALBUM_HEIFDEC`. 순서 sips → heif-dec → ffmpeg.
 
 ### Added (sign in with Google or Apple, M54)
 - 계정에 Google·Apple 계정을 하나씩 연결하고 비밀번호 대신 로그인: `POST /api/v1/auth/sign-in/nonce`(공개, 1회용 nonce 10분 + 이 서버가 받는 제공자), `POST /api/v1/auth/sign-in`(공개, 연결된 계정으로 비밀번호 로그인과 같은 토큰 응답), `GET|POST /api/v1/me/sign-ins`(목록·연결 — **현재 비밀번호 필요**), `DELETE /api/v1/me/sign-ins/{provider}`, 관리자용 `GET /api/v1/admin/users/{user_id}/sign-ins`·`DELETE …/sign-ins/{provider}`(연결 보기·해제만, 관리자가 연결을 만들 수는 없음). 서버가 ID 토큰을 직접 검증(RS256 서명·발급자·앱 클라이언트 ID·만료·서버가 낸 nonce, 공개키는 요청 시 받아 캐시) — 제공자 비밀값 없음. 계정은 `sub`로만 찾고(이메일로 찾지 않음) 로그인으로 계정을 만들지 않음(`401 identity_not_linked`). 실패는 주소·제공자별 속도 제한(비밀번호 로그인 잠금 없음), 감사 `account.identity_link`·`account.identity_unlink`·`auth.login`의 `method`.
@@ -10,6 +15,10 @@
 
 ### Added (fast sync state, M53)
 - `GET /api/v1/sync/state`: 읽을 수 있는 모든 앨범의 피드 끝 커서(호출자 보기 기준)를 한 번에 — 앱이 앨범마다 묻지 않고 커서가 바뀐 앨범만 받음. `albums_tag`(앨범 목록·이름·역할·설정 변화), `tag`=ETag(`If-None-Match`면 304). `wait=1..25`초 롱폴(1초마다 확인, 동시 대기 64개 상한, 넘으면 바로 응답). `digests=1`이면 앨범별 내용 해시 `digest`·`count`(자산 id 순 `id sha256 like_count liked_by_me comment_count` 줄의 SHA-256, 같은 트랜잭션에서 읽은 커서와 함께) — 앱이 로컬 인덱스와 비교해 어긋나면 그 앨범만 다시 받음. 중계·Funnel 허용, `/me` `server_features`에 `sync_state`.
+
+## [0.1.0-alpha.1] — 2026-10-28 (prerelease)
+
+첫 prerelease. 아래는 2026-10-18 첫 후보 초안 이후에 더해진 것과(앞부분), 그 초안의 내용("요약"부터)입니다. 실기기 검증 결과는 `docs/releases/v0.1.0-alpha.1.md`.
 
 ### Added (album management, M51)
 - 앨범 삭제 `DELETE /api/v1/folders/{folder_id}`(OWNER): 모두에게서 즉시 사라지고(목록에서 빠지고 모든 앨범 경로 404) 대기 초대 취소, 오너만 30일 동안 `GET /api/v1/folders/deleted`로 보고 `POST /api/v1/folders/{folder_id}/restore`로 되살림(그 밖의 호출자는 404). 30일 뒤 6시간 주기 정리가 앨범 행·다른 앨범이 쓰지 않는 원본을 삭제(다른 앨범이 가진 원본은 유지, 원본은 커밋 직전 `.system/purge`로 옮기고 커밋 뒤 삭제, 기동 시 복구). **바뀐 점:** 이전의 `DELETE`(보관)는 `POST /api/v1/folders/{folder_id}/archive`로 이동.
@@ -134,10 +143,6 @@
 - 앨범(D-05/06): 왼쪽 메뉴 "내 앨범" 아래 앨범 목록, 이동 경로 제거, 제목 아래 "사진 N장 · 멤버 N명"(오너가 아니면 역할부터, 영상·기타는 있을 때만), "최근 추가순", 넓은 사진 카드 + "멤버" 카드(작은 역할 태그, 초대는 "초대 대기 · N일 남음", 관리 도구는 "⋯" 아래). 머리의 방패 "원본 N장 보관됨"은 넣지 않음(자산 목록은 서버 재검증 결과가 아님).
 - 초대 대화상자: 닫기(X), "누구를 초대할까요"(관리자 오너: 이미 멤버·초대 대기 계정은 고를 수 없게 표시), 처음 역할 "보기", 7일 만료 안내 상자, 보낸 뒤 버튼이 "OO 님에게 초대를 보냈어요 · 닫기"로 바뀜. 역할 설명 갱신(업로드 전용은 자기가 보낸 사진도 볼 수 없음).
 - 역할 표시 "소유자" → "오너". 입력·선택 상자는 안쪽 테두리, 포커스 시 안쪽 2px 포커스 색(강제 색상 모드에서는 외곽선).
-
-## [0.1.0-alpha.1] — 미발행 (초안: 태그·GitHub Release 없음)
-
-> 첫 prerelease 후보. 발행 전까지 이 섹션은 바뀔 수 있습니다. 발행 시 날짜를 적고 "미발행"을 지웁니다. 실기기 검증 결과는 `docs/releases/v0.1.0-alpha.1.md`.
 
 ### 요약
 - Mac mini 우선 셀프호스팅 서버의 첫 실험판: SQLite 메타데이터, SHA-256 원본 보관(원자적 커밋·기동 재조정), 계정·기기 세션(Argon2id, 회전 refresh), 앨범 ACL(OWNER/CONTRIBUTOR/VIEWER/UPLOADER)·초대·소유권 이전, sync API v2(cursor·tombstone·멱등 업로드), 재개 업로드, HEIC/영상 프리뷰(선택 도구), 백업·복원·무결성 검사, TLS·LAN 게이트, 내장 관리 화면과 설치 화면.

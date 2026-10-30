@@ -139,7 +139,7 @@ func openAccounts(ctx context.Context) (*users.Store, func(), error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	vol, err := storage.Open(root, storage.OpenOptions{ExpectedVolumeID: expectedVolumeID()})
+	vol, err := storage.Open(root, storage.OpenOptions{ExpectedVolumeID: expectedVolumeID(), UnreadableDiskOK: containerSetting(os.Getenv)})
 	if err != nil {
 		return nil, nil, fmt.Errorf("STORAGE: %s (%w)", openStorageHint(root, err), err)
 	}
