@@ -1,9 +1,12 @@
 package httpapi_test
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log"
+	"os"
 	"strings"
 	"testing"
 
@@ -268,4 +271,28 @@ func TestSignInNonceIsMissingOrUnknown(t *testing.T) {
 	wantStatus(t, "no token", e.signIn(t, "google", "", e.nonce(t)), 400, "invalid_request")
 	wantStatus(t, "long nonce", e.signIn(t, "google", googleToken(ti, "g", "x"), strings.Repeat("n", 200)), 401, "invalid_identity_token")
 	wantStatus(t, "not json", e.call(t, "POST", "/api/v1/auth/sign-in", nil, map[string]string{"Content-Type": "text/plain"}), 415, "json_required")
+}
+
+// M62 follow-up: a refused sign-in is logged with the reason (never the
+// token), so "the app never reached the server" can be told apart.
+func TestSignInRejectionsAreLogged(t *testing.T) {
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	e, ti := newSignInEnv(t, true, ratelimit.Config{})
+	n := e.nonce(t)
+	tok := ti.Sign(oidc.Google, oidctest.TokenFields{Sub: "g", Aud: "android-web.apps.googleusercontent.com", Nonce: n})
+	wantStatus(t, "other client", e.signIn(t, "google", tok, n), 401, "invalid_identity_token")
+	n = e.nonce(t)
+	wantStatus(t, "not linked", e.signIn(t, "google", googleToken(ti, "g-new", n), n), 401, "identity_not_linked")
+	out := buf.String()
+	for _, want := range []string{"nonce issued", `"google" rejected: invalid_identity_token`,
+		`audience "android-web.apps.googleusercontent.com"`, "google account is not linked"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, tok) || strings.Contains(out, strings.Split(tok, ".")[1]) {
+		t.Fatalf("log leaks the token:\n%s", out)
+	}
 }
