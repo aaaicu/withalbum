@@ -48,7 +48,18 @@ Tailscale Funnel ──▶ 이 컴퓨터 127.0.0.1:8788 ─┤
 서버가 바깥으로 나갈 수 없으므로, **서버가 먼저 바깥에 연결해야 하는 기능**은 쓸 수 없습니다.
 
 - 중계(`WITHALBUM_RELAY`, 종단 간 암호화 중계) — 대신 Tailscale Funnel을 쓰세요(들어오는 연결이라 됨).
-- (나중 기능) Google·Apple 로그인의 키 받기 등 서버가 외부 서버에 묻는 기능.
+
+Google·Apple 로그인은 **켜져 있습니다**(M62). 서버 대신 `keys` 컨테이너가 Google·Apple의 공개 서명 키를 받습니다:
+
+- `keys`는 `withalbum-server oidc-keys`만 돌립니다. 정해진 두 주소(`https://www.googleapis.com/oauth2/v3/certs`,
+  `https://appleid.apple.com/auth/keys`)에서 6시간마다 키를 받아 검사한 뒤 `oidc-keys` 볼륨에 씁니다. 다른 주소로
+  가지 않고(전달(redirect)도 따라가지 않음), 아무 포트도 열지 않습니다.
+- 서버는 그 볼륨을 **읽기 전용**으로 `/keys`에 붙여 파일만 읽습니다(`WITHALBUM_OIDC_KEYS_DIR=/keys`). 서버와 `keys`는
+  네트워크를 함께 쓰지 않으므로 서버는 여전히 바깥으로 나갈 길이 없습니다.
+- 키 파일이 72시간 넘게 갱신되지 않으면 서버는 그 키를 믿지 않고 Google·Apple 로그인에 `503 provider_unavailable`을
+  답합니다(비밀번호 로그인은 그대로). `docker compose logs keys`로 받기 상태를 봅니다.
+- 서버에는 위드앨범 앱의 **공개** Google 클라이언트 ID가 들어 있습니다(비밀값 아님). 직접 만든 앱 빌드를 쓰면
+  `.env`의 `WITHALBUM_GOOGLE_CLIENT_IDS`로 바꾸고, 끄려면 `off`.
 
 ## 1. 준비
 
@@ -140,7 +151,10 @@ docker compose run --rm --no-deps withalbum reach 192.168.0.1:80 192.168.0.1:443
   `sudo iptables -I INPUT -s 172.30.0.0/16 -j DROP` (재부팅 후에도 유지하려면 배포판의 방화벽 설정에 넣기).
 - 홈캠·공유기 주소는 공유기 관리 화면의 "연결된 기기" 목록에서 확인할 수 있습니다.
 
+`keys` 컨테이너는 바깥으로 나가는 것이 정상입니다(서버가 아님). 서버 쪽 확인은 위 명령(서비스 `withalbum`)으로 합니다.
+
 정상 동작도 함께 확인합니다: 휴대폰 앱으로 연결·사진 올리기·보기, 그리고 집 밖(LTE)에서 Funnel로 접속.
+Google 로그인 키는 `docker compose exec withalbum ls -l /keys`에 `google.json`·`apple.json`이 보이면 준비된 것입니다.
 
 ## 5. 공유기를 못 바꿀 때 같이 할 일
 
@@ -160,7 +174,7 @@ docker compose ps                    # 상태
 docker compose logs --tail 100 withalbum
 docker compose stop                  # 멈추기 (사진 보관소 잠금이 풀림)
 docker compose up -d                 # 다시 시작
-git pull && docker compose build && docker compose up -d     # 새 버전으로
+git pull && docker compose build && docker compose up -d     # 새 버전으로 (사진 폴더·TLS 키·연결 정보는 그대로)
 ```
 
 - 백업: 서버가 켜진 채로 `docker compose exec withalbum withalbum-server backup -to /data/...`는 **권하지 않습니다**
@@ -198,6 +212,8 @@ Funnel 경로에서는 지금처럼 앱 기능만 열리고 관리 화면·설�
 |---|---|
 | `WITHALBUM_CONTAINER=1` | 이미지가 설정. Funnel 리스너를 컨테이너 주소(`0.0.0.0:8788`)에 열 수 있게 하고, 디스크 UUID를 읽을 수 없을 때 그 확인만 건너뜀 |
 | `WITHALBUM_LAN_URL` | 연결 QR에 넣을 집 주소. `https://<사설 IP>:<포트>`, 쉼표로 여러 개 |
+| `WITHALBUM_OIDC_KEYS_DIR=/keys` | compose가 설정. Google·Apple 로그인 키를 이 폴더의 파일에서 읽음(`keys` 컨테이너가 씀), 서버는 외부에 묻지 않음 |
+| `WITHALBUM_GOOGLE_CLIENT_IDS` | 비우면 위드앨범 앱의 공개 클라이언트 ID(내장), `off`면 Google 로그인 끔 |
 | `WITHALBUM_ROOT=/data`, `WITHALBUM_LISTEN=0.0.0.0:8787`, `WITHALBUM_FUNNEL_LISTEN=0.0.0.0:8788` | 이미지 기본값 |
 | `WITHALBUM_HEIFDEC` | `heif-dec` 경로 지정, `off`면 끔 |
 
