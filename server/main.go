@@ -160,7 +160,7 @@ func runMigrateLegacy(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "migrate-legacy: %v\n", err)
 		return 1
 	}
-	vol, err := storage.Open(root, storage.OpenOptions{ExpectedVolumeID: expectedVolumeID()})
+	vol, err := storage.Open(root, storage.OpenOptions{ExpectedVolumeID: expectedVolumeID(), UnreadableDiskOK: containerSetting(os.Getenv)})
 	if err != nil {
 		fmt.Fprintf(stderr, "migrate-legacy: STORAGE: %s (%v)\n", openStorageHint(root, err), err)
 		return 1
@@ -289,7 +289,7 @@ func (a *app) Close() error {
 //     report missing or damaged originals,
 //  5. build the HTTP API with its login and session services.
 func openApp(ctx context.Context, root string, opt appOptions) (*app, error) {
-	vol, err := storage.Open(root, storage.OpenOptions{ExpectedVolumeID: opt.VolumeID})
+	vol, err := storage.Open(root, storage.OpenOptions{ExpectedVolumeID: opt.VolumeID, UnreadableDiskOK: containerSetting(os.Getenv)})
 	if err != nil {
 		return nil, fmt.Errorf("STORAGE: %s (%w)", openStorageHint(root, err), err)
 	}
@@ -409,6 +409,10 @@ func main() {
 			os.Exit(runRestore(os.Args[2:], os.Stdout, os.Stderr))
 		case "tls":
 			os.Exit(runTLSInfo(os.Args[2:], os.Stdout, os.Stderr))
+		case "forward":
+			os.Exit(runForward(os.Args[2:], os.Stderr))
+		case "reach":
+			os.Exit(runReach(os.Args[2:], os.Stdout, os.Stderr))
 		}
 	}
 	showVersion := flag.Bool("version", false, "Print WithAlbum Server version and exit")
@@ -419,6 +423,8 @@ func main() {
 	funnelFlag := flag.String("funnel-url", "", "Also serve apps through Tailscale Funnel at this public https://<machine>.<tailnet>.ts.net address (default: WITHALBUM_FUNNEL_URL; see docs/FUNNEL.md). Opens a second listener on loopback only; requires -tls and an active server administrator")
 	funnelListenFlag := flag.String("funnel-listen", "", "Loopback address of the listener the Funnel TCP forwarder connects to (default: WITHALBUM_FUNNEL_LISTEN, else 127.0.0.1:8788)")
 	relayFlag := flag.String("relay", "", "Also serve apps through the relay at host:port over an outbound connection (default: WITHALBUM_RELAY; see docs/RELAY_DESIGN.md). Requires -tls and an active server administrator")
+	googleIDsFlag := flag.String("google-client-ids", "", "Comma-separated Google OAuth client IDs of the app, for sign-in with Google (default: WITHALBUM_GOOGLE_CLIENT_IDS, else built in; \"off\" turns it off)")
+	appleIDsFlag := flag.String("apple-client-ids", "", "Comma-separated Apple client IDs (bundle ID, Services ID) of the app, for Sign in with Apple (default: WITHALBUM_APPLE_CLIENT_IDS, else aaaicu.withalbum.app; \"off\" turns it off)")
 	flag.Parse()
 	if *showVersion {
 		fmt.Println("withalbum-server " + version)
@@ -455,9 +461,16 @@ func main() {
 		os.Exit(runAdoptDisk(root, target.VolumeID, os.Stdout, os.Stderr))
 	}
 	// Validate the configuration before touching the storage.
-	lc := listenConfig{Addr: listenAddr(), AllowLAN: *allowLAN, TLS: *useTLS}
+	lanURLs, err := lanURLsSetting(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	lc := listenConfig{Addr: listenAddr(), AllowLAN: *allowLAN, TLS: *useTLS, Container: containerSetting(os.Getenv), LANURLs: lanURLs}
 	if flag.NArg() != 0 {
 		log.Fatalf("unexpected arguments %q", flag.Args())
+	}
+	if lc.Container {
+		log.Print("container mode (WITHALBUM_CONTAINER=1, docs/DOCKER.md): the funnel listener may use a container address, and the disk UUID is not checked when it cannot be read here (the volume marker and ID still are)")
 	}
 	// The administrator condition needs the database; check the rest first.
 	if _, err := checkListen(lc, 1); err != nil {
@@ -492,6 +505,7 @@ func main() {
 		log.Printf("playback copies: no tool (avconvert, ffmpeg with an H.264 encoder) or WITHALBUM_PLAYBACK=off; videos are streamed as they are")
 	}
 	opts := appOptions{VolumeID: target.VolumeID, MinFreeBytes: minFree, Converters: converters, Transcoder: transcoder, Faults: chaosFaults()}
+	opts.Auth.SignIn = signInConfig(*googleIDsFlag, *appleIDsFlag)
 	a, err := openApp(ctx, root, opts)
 	// Setup mode (server/setup.go) when the storage can still be chosen, or
 	// when it has no administrator, and only on the plain loopback listener.
@@ -592,7 +606,7 @@ func main() {
 			case id.Renewed:
 				log.Printf("TLS: re-issued the certificate with the same key; the pin did not change.")
 			}
-			urls := pairingURLs(lc.Addr, public, net.InterfaceAddrs)
+			urls := lc.pairing(public, net.InterfaceAddrs)
 			var rr remoteRoutes
 			if relayAddr != "" {
 				if relayc, err = a.setupRelay(ctx, relayAddr, id); err != nil {
@@ -645,7 +659,7 @@ func main() {
 	}
 	var funnelLn net.Listener
 	if public != "" && !setupMode {
-		if funnelLn, err = listenFunnel(funnelListen); err != nil {
+		if funnelLn, err = listenFunnel(funnelListen, lc.Container); err != nil {
 			ln.Close()
 			closeApp()
 			log.Fatalf("SECURITY: funnel listener: %v", err)

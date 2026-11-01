@@ -63,8 +63,9 @@ func (s *Server) publicJSON() map[string]any {
 
 // RemoteAllowed lists the paths served on a remote route (relay, funnel):
 // what an app uses (login, its own account and devices, albums,
-// invitations, health) and the landing page of invite links (/i/<token>),
-// which someone without the app opens from a message. Every other path, in particular the dashboard page
+// invitations, the account sync state, health) and the landing page of
+// invite links (/i/<token>), which someone without the app opens from a
+// message. Every other path, in particular the dashboard page
 // and /api/v1/admin/, is not. A path that is not in canonical form is
 // refused rather than interpreted.
 func RemoteAllowed(p string) bool {
@@ -73,7 +74,7 @@ func RemoteAllowed(p string) bool {
 	}
 	under := func(prefix string) bool { return p == prefix || strings.HasPrefix(p, prefix+"/") }
 	return p == "/api/v1/health" || under("/api/v1/auth") || under("/api/v1/me") || under("/api/v1/folders") || under("/api/v1/invitations") ||
-		strings.HasPrefix(p, "/i/")
+		p == "/api/v1/sync/state" || strings.HasPrefix(p, "/i/")
 }
 
 // RemoteOnly wraps the API handler of a listener for connections from

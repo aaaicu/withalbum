@@ -1,4 +1,4 @@
--- Migration 0018: invitation history and album invite links (M57).
+-- Migration 0019: invitation history and album invite links (M57).
 --
 -- folder_invitations keeps every invitation (it never deleted any); the
 -- invitee and the owner now see the recent answered ones too. The time

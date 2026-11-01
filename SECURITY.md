@@ -50,7 +50,11 @@ Off by default. With `-tls -funnel-url https://<machine>.<tailnet>.ts.net` (or `
 - Exposure limits on the funnel listener: 128 connections at once, 10 s for the PROXY header and the TLS handshake, JSON bodies 8 KiB within 30 s (all listeners), 64 KiB headers. Audit entries of logins, refreshes, logouts and device revocations carry `"route":"funnel"` or `"relay"`.
 - Lost device: `POST /api/v1/me/devices/revoke-others` signs out every other device of the account (served on every route).
 - Tailscale sees client IPs, the ts.net name, times and byte counts. Funnel is a beta service with unpublished bandwidth limits.
-- Funnel does not protect the rest of the home network: isolate the Mac from cameras and home automation ([`docs/HOME_NETWORK_ISOLATION.md`](docs/HOME_NETWORK_ISOLATION.md)); the menu bar app has a connection check for typed addresses.
+- Funnel does not protect the rest of the home network: isolate the Mac from cameras and home automation ([`docs/HOME_NETWORK_ISOLATION.md`](docs/HOME_NETWORK_ISOLATION.md)); the menu bar app has a connection check for typed addresses. Without a router that can separate networks, the Docker setup ([`docs/DOCKER.md`](docs/DOCKER.md)) keeps the server on a Docker network with no route out, so a compromised server cannot open connections to the home network; check it with `withalbum-server reach`. It does not protect cameras from other compromised devices on the same Wi-Fi.
+
+### Sign in with Google or Apple (M54)
+
+An account can link one Google and one Apple identity (with its current password) and then sign in with it. The server verifies each ID token itself against the provider's published keys — signature, issuer, the app's client IDs as audience, expiry, and a one-attempt nonce the server issued — and finds the account by the provider's subject identifier, never by e-mail. No provider secret is on the server and no account is created by a sign-in. The only outbound requests are the providers' key sets, on demand. Details: [`docs/SIGN_IN.md`](docs/SIGN_IN.md).
 
 ### Response hardening
 

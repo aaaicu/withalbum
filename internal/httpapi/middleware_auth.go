@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aaaicu/withalbum/internal/auth/identity"
+	"github.com/aaaicu/withalbum/internal/auth/oidc"
 	"github.com/aaaicu/withalbum/internal/auth/password"
 	"github.com/aaaicu/withalbum/internal/auth/ratelimit"
 	"github.com/aaaicu/withalbum/internal/auth/session"
@@ -50,7 +52,12 @@ type Auth struct {
 	Users     *users.Store
 	Passwords *password.Limiter
 	Limiter   *ratelimit.Limiter
-	db        *sql.DB // the account database, for denial audit rows
+	// SignIn verifies Google and Apple ID tokens (M54); providers without
+	// a client ID are off.
+	SignIn     *oidc.Verifier
+	Identities *identity.Store
+	nonces     *nonceStore
+	db         *sql.DB // the account database, for denial audit rows
 }
 
 // AuthOptions configures NewAuth. Zero values take the defaults.
@@ -60,6 +67,7 @@ type AuthOptions struct {
 	HashWait        time.Duration   // longest wait for a hashing slot; 0: 5 s
 	Session         session.Config
 	RateLimit       ratelimit.Config
+	SignIn          oidc.Config // Google/Apple client IDs (M54); empty: off
 }
 
 // DefaultHashConcurrency bounds the memory used by password hashing to
@@ -78,7 +86,8 @@ func NewAuth(db *sql.DB, o AuthOptions) (*Auth, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Auth{Sessions: session.New(db, pw, o.Session), Users: users.New(db), Passwords: pw, Limiter: ratelimit.New(o.RateLimit), db: db}, nil
+	return &Auth{Sessions: session.New(db, pw, o.Session), Users: users.New(db), Passwords: pw, Limiter: ratelimit.New(o.RateLimit),
+		SignIn: oidc.New(o.SignIn), Identities: identity.New(db), nonces: newNonceStore(), db: db}, nil
 }
 
 type identityKey struct{}

@@ -1537,9 +1537,10 @@
       const box = $('userDetail');
       box.hidden = false;
       box.replaceChildren(el('p', {className: 'note', text: '불러오는 중...'}));
-      let u, devices, owned;
+      let u, devices, owned, signIns;
       try {
-        [u, devices, owned] = await Promise.all([api('/api/v1/admin/users/' + enc(userID)), api('/api/v1/admin/users/' + enc(userID) + '/devices'), api('/api/v1/admin/users/' + enc(userID) + '/folders')]);
+        [u, devices, owned, signIns] = await Promise.all([api('/api/v1/admin/users/' + enc(userID)), api('/api/v1/admin/users/' + enc(userID) + '/devices'), api('/api/v1/admin/users/' + enc(userID) + '/folders'),
+          api('/api/v1/admin/users/' + enc(userID) + '/sign-ins')]);
       } catch (err) { box.replaceChildren(el('p', {className: 'error', text: err.message})); fail(err); return; }
       const reopen = async () => { await fetchUsers(); renderUsers(); await openUser(userID); };
       activity[userID] = devices.devices;
@@ -1552,6 +1553,16 @@
         if (d.current) { showLogin('이 브라우저를 해지해 로그아웃되었습니다.'); return; }
         await openUser(userID);
       }, '기기를 해지했어요.'));
+      // Google·Apple links (M54): the administrator can only remove one.
+      const PROVIDER = {google: 'Google', apple: 'Apple'};
+      const signInBody = el('tbody');
+      if (!signIns.items.length) signInBody.append(el('tr', {}, el('td', {className: 'note', text: '연결된 계정이 없어요.', colSpan: 5})));
+      signIns.items.forEach(l => signInBody.append(el('tr', {}, el('td', {text: PROVIDER[l.provider] || l.provider}), el('td', {text: l.email || '-'}),
+        el('td', {text: fmtTime(l.linked_at)}), el('td', {text: l.last_used_at ? fmtTime(l.last_used_at) : '-'}),
+        el('td', {}, button('연결 해제', () => {
+          if (!confirm(u.login_name + ' 계정의 ' + (PROVIDER[l.provider] || l.provider) + ' 연결을 해제할까요? 이미 로그인한 기기는 그대로예요(필요하면 아래에서 기기를 해지하세요).')) return;
+          run(async () => { await api('/api/v1/admin/users/' + enc(userID) + '/sign-ins/' + enc(l.provider), {method: 'DELETE'}); await openUser(userID); }, '연결을 해제했어요.');
+        }, 'btn btn-danger')))));
       const archivedN = owned.archived.length;
       const ownedInfo = el('p', {className: 'note', text: '소유 앨범: 사용 중 ' + owned.active_owned + '개 · 보관 앨범 ' + archivedN + '개' +
         (owned.deleted_owned ? ' · 삭제된 앨범 ' + owned.deleted_owned + '개(30일 뒤 정리, 비활성화를 막지 않아요)' : '') + ' (이름·내용은 관리자에게 표시되지 않아요)'});
@@ -1592,6 +1603,9 @@
           if (self) { await reload(); } await reopen();
         }, '권한을 저장했어요.'), 'btn btn-solid')),
         el('h3', {className: 't-h3', text: '계정 상태 · 소유 앨범'}), ownedInfo, statusArea, reassign,
+        el('h3', {className: 't-h3', text: 'Google·Apple 로그인'}),
+        el('p', {className: 'caption', text: '잃어버리거나 남이 쓰게 된 Google·Apple 계정의 연결을 끊을 수 있어요. 연결은 본인이 앱에서 비밀번호를 확인한 뒤에만 할 수 있어요.'}),
+        el('div', {className: 'scroll'}, el('table', {}, el('thead', {}, el('tr', {}, el('th', {text: '제공자'}), el('th', {text: '이메일'}), el('th', {text: '연결'}), el('th', {text: '마지막 로그인'}), el('th', {}, el('span', {className: 'sr-only', text: '동작'})))), signInBody)),
         el('h3', {className: 't-h3', text: '기기'}), el('div', {className: 'scroll'}, el('table', {}, el('thead', {}, el('tr', {}, el('th', {text: '기기'}), el('th', {text: '플랫폼'}), el('th', {text: '마지막 사용'}), el('th', {}, el('span', {className: 'sr-only', text: '동작'})))), devBody)));
     }
 

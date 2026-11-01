@@ -197,11 +197,11 @@ func TestFindConverters(t *testing.T) {
 	if cs := FindConverters(get); len(cs) != 0 {
 		t.Fatalf("off: %v", cs)
 	}
-	env = map[string]string{"WITHALBUM_SIPS": "off", "WITHALBUM_FFMPEG": "relative/ffmpeg"}
+	env = map[string]string{"WITHALBUM_SIPS": "off", "WITHALBUM_HEIFDEC": "off", "WITHALBUM_FFMPEG": "relative/ffmpeg"}
 	if cs := FindConverters(get); len(cs) != 0 {
 		t.Fatalf("disabled and relative: %v", cs)
 	}
-	env = map[string]string{"WITHALBUM_SIPS": "off", "WITHALBUM_FFMPEG": os.Args[0]}
+	env = map[string]string{"WITHALBUM_SIPS": "off", "WITHALBUM_HEIFDEC": "off", "WITHALBUM_FFMPEG": os.Args[0]}
 	cs := FindConverters(get)
 	if len(cs) != 1 || cs[0].Name != "ffmpeg" || cs[0].Path != os.Args[0] {
 		t.Fatalf("explicit ffmpeg: %+v", cs)
@@ -263,6 +263,31 @@ func TestRealConverters(t *testing.T) {
 			t.Log("sips dropped the EXIF of the geotagged source; the HEIC has no GPS to leak")
 		}
 		checkRealPreview(t, NewSips(sips), geoHEIC, 8, 8)
+	})
+	t.Run("heif-dec", func(t *testing.T) {
+		// A HEIC made by sips (macOS) or heif-enc (libheif), decoded by
+		// heif-dec as on Linux.
+		heifDec := realTool(t, "heif-dec")
+		src := filepath.Join(work, "h.jpg")
+		img := image.NewRGBA(image.Rect(0, 0, 3200, 2000))
+		for x := 0; x < 3200; x++ {
+			img.Set(x, x*5/8, color.RGBA{0, 128, 255, 255})
+		}
+		f, _ := os.Create(src)
+		_ = jpeg.Encode(f, img, nil)
+		f.Close()
+		heic := filepath.Join(work, "h.heic")
+		var made bool
+		if p := findTool("sips", ""); p != "" {
+			made = exec.Command(p, "-s", "format", "heic", src, "--out", heic).Run() == nil
+		}
+		if p := findTool("heif-enc", ""); !made && p != "" {
+			made = exec.Command(p, "-o", heic, src).Run() == nil
+		}
+		if !made {
+			t.Skip("neither sips nor heif-enc can write HEIC here")
+		}
+		checkRealPreview(t, NewHeifDec(heifDec), heic, 1600, 1000)
 	})
 	t.Run("ffmpeg", func(t *testing.T) {
 		ffmpeg := realTool(t, "ffmpeg")
@@ -384,6 +409,53 @@ func TestSipsRefusesHugeCanvas(t *testing.T) {
 			t.Errorf("%dx%d: attempts %v, err %v", c.w, c.h, attempts, err)
 		}
 	}
+}
+
+// TestHeifDecRefusesUnknownOrHugeCanvas: heif-dec is not run on an image
+// whose size its headers do not give, or give above the pixel limit.
+func TestHeifDecRefusesUnknownOrHugeCanvas(t *testing.T) {
+	dir := t.TempDir()
+	c := NewHeifDec("/nonexistent/heif-dec")
+	junk := filepath.Join(dir, "junk.heic")
+	if err := os.WriteFile(junk, []byte("not an image at all"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if a, err := c.attempts(context.Background(), junk, filepath.Join(dir, "o.jpg"), dir); err == nil || len(a) != 0 {
+		t.Fatalf("unknown size: %v %v", a, err)
+	}
+	for _, sz := range []struct {
+		w, h int
+		ok   bool
+	}{{12000, 10001, false}, {8064, 6048, true}} {
+		p := filepath.Join(dir, "s.heic")
+		if err := os.WriteFile(p, minimalHEIF(sz.w, sz.h), 0600); err != nil {
+			t.Fatal(err)
+		}
+		a, err := c.attempts(context.Background(), p, filepath.Join(dir, "o.jpg"), dir)
+		if sz.ok != (err == nil) || sz.ok && (len(a) != 1 || a[0][len(a[0])-2] != p) {
+			t.Errorf("%dx%d: attempts %v, err %v", sz.w, sz.h, a, err)
+		}
+	}
+}
+
+// minimalHEIF is the box structure capturetime reads a HEIF still's size
+// from: ftyp, and meta with pitm, iprp/ipco/ispe and ipma for item 1.
+func minimalHEIF(w, h int) []byte {
+	box := func(typ string, body ...[]byte) []byte {
+		b := bytes.Join(body, nil)
+		n := len(b) + 8
+		return append([]byte{byte(n >> 24), byte(n >> 16), byte(n >> 8), byte(n), typ[0], typ[1], typ[2], typ[3]}, b...)
+	}
+	u32 := func(v int) []byte { return []byte{byte(v >> 24), byte(v >> 16), byte(v >> 8), byte(v)} }
+	full := []byte{0, 0, 0, 0}
+	ftyp := box("ftyp", []byte("heic"), u32(0), []byte("mif1heic"))
+	pitm := box("pitm", full, []byte{0, 1})
+	ispe := box("ispe", full, u32(w), u32(h))
+	ipco := box("ipco", ispe)
+	ipma := box("ipma", full, u32(1), []byte{0, 1, 1, 0x81})
+	iprp := box("iprp", ipco, ipma)
+	meta := box("meta", full, pitm, iprp)
+	return append(ftyp, meta...)
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }

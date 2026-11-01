@@ -58,7 +58,8 @@ info:
 
 
     Access. Only the dashboard page (GET /), GET /api/v1/health,
-    /api/v1/auth/login, /api/v1/auth/refresh, the invite link preview
+    /api/v1/auth/login, /api/v1/auth/refresh, /api/v1/auth/sign-in,
+    /api/v1/auth/sign-in/nonce, the invite link preview
     (POST /api/v1/invitations/link-preview) and the invite link landing
     page (GET /i/{token}) work without a session;
     every other path under /api/v1/, including unknown ones, answers 401
@@ -521,6 +522,77 @@ paths:
         '401': {description: 'unauthorized: expired, revoked, unknown or reused refresh token, or account disabled'}
         '403': {description: 'csrf_failed (cookie refresh without a valid X-CSRF-Token; nothing changed)'}
         '415': {description: json_required}
+  /api/v1/auth/sign-in/nonce:
+    post:
+      tags: [Auth]
+      security: []
+      summary: One-attempt nonce for signing in or linking with Google or Apple (M54)
+      description: >-
+        Returns a random nonce that one sign-in or link request may use
+        within 10 minutes, and the providers this server accepts (those
+        with a configured client ID; may be empty). The app passes the nonce
+        to the provider's sign-in (Google: as is; Apple: its SHA-256 in
+        hex), so the ID token it gets back names it. Nonces live in memory
+        only; at most 32 outstanding per client address, the oldest is
+        dropped. No body is needed.
+      responses:
+        '200':
+          description: Nonce issued
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [nonce, expires_at, providers]
+                properties:
+                  nonce: {type: string}
+                  expires_at: {type: string, format: date-time}
+                  providers:
+                    type: array
+                    items: {type: string, enum: [google, apple]}
+  /api/v1/auth/sign-in:
+    post:
+      tags: [Auth]
+      security: []
+      summary: Sign in with a linked Google or Apple identity (M54, rate-limited)
+      description: >-
+        The server verifies the ID token itself against the provider's
+        published keys (RS256 signature, issuer, audience = this app's client
+        ID, expiry, and the nonce from POST /auth/sign-in/nonce, which is
+        used up by this request whatever the result). It then signs in the
+        account that linked this identity (POST /me/sign-ins) and answers
+        like a password login. No account is ever created here. Failures
+        count against the client address like login failures, per provider,
+        never against an account's password login.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider, id_token, nonce, device_name, platform]
+              properties:
+                provider: {type: string, enum: [google, apple]}
+                id_token: {type: string, description: the provider's OpenID Connect ID token (JWT)}
+                nonce: {type: string}
+                device_name: {type: string, minLength: 1, maxLength: 64}
+                platform: {type: string, enum: [ios, android, macos, web]}
+      responses:
+        '200':
+          description: Session created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TokenResponse'}
+        '400': {description: 'invalid_json, invalid_request, invalid_device, provider_disabled (no client ID configured for it)'}
+        '401': {description: 'invalid_identity_token (bad, expired, for another app, or unknown/used nonce), identity_not_linked, invalid_credentials (the linked account is disabled)'}
+        '415': {description: json_required}
+        '429':
+          description: rate_limited
+          headers:
+            Retry-After: {schema: {type: integer}, description: seconds}
+        '503':
+          description: provider_unavailable (the provider's keys could not be fetched)
+          headers:
+            Retry-After: {schema: {type: integer}, description: seconds}
   /api/v1/auth/logout:
     post:
       tags: [Auth]
@@ -702,6 +774,81 @@ paths:
                   revoked: {type: integer, minimum: 0}
         '401': {description: unauthorized}
         '403': {description: csrf_failed}
+  /api/v1/me/sign-ins:
+    get:
+      tags: [Me]
+      summary: Google and Apple identities linked to the own account (M54)
+      description: >-
+        The provider's account identifier is never shown; email is what the
+        ID token carried when the identity was linked (Apple may give a
+        relay address or none). providers lists what this server accepts.
+      responses:
+        '200':
+          description: Linked identities
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, providers]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/SignInLink'}
+                  providers:
+                    type: array
+                    items: {type: string, enum: [google, apple]}
+        '401': {description: unauthorized}
+    post:
+      tags: [Me]
+      summary: Link a Google or Apple identity to the own account (M54)
+      description: >-
+        Needs the current password (a session alone must not add a lasting
+        way in) and a fresh ID token with a nonce from POST
+        /auth/sign-in/nonce. One identity per provider per account; an
+        identity belongs to one account. Linking the same identity again
+        returns the existing link. Audited as "account.identity_link".
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider, id_token, nonce, current_password]
+              properties:
+                provider: {type: string, enum: [google, apple]}
+                id_token: {type: string}
+                nonce: {type: string}
+                current_password: {type: string, format: password}
+      responses:
+        '201':
+          description: Linked
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SignInLink'}
+        '400': {description: 'invalid_json, invalid_request, provider_disabled, invalid_identity_token (bad, expired, for another app, or unknown/used nonce; not 401, which means the session ended)'}
+        '401': {description: unauthorized}
+        '403': {description: 'invalid_credentials (wrong current password) or csrf_failed'}
+        '409': {description: 'identity_in_use (linked to another account), provider_linked (unlink the other identity of this provider first)'}
+        '429': {description: rate_limited}
+        '503': {description: 'busy, provider_unavailable'}
+  /api/v1/me/sign-ins/{provider}:
+    delete:
+      tags: [Me]
+      summary: Unlink the own Google or Apple identity (M54)
+      description: >-
+        Sessions already made with it stay valid; revoke devices to end
+        them. The password keeps working. Audited as
+        "account.identity_unlink".
+      parameters:
+        - in: path
+          name: provider
+          required: true
+          schema: {type: string, enum: [google, apple]}
+      responses:
+        '204': {description: Unlinked}
+        '401': {description: unauthorized}
+        '403': {description: csrf_failed}
+        '404': {description: not_found (nothing linked for this provider)}
   /api/v1/admin/users:
     post:
       tags: [Server Admin]
@@ -851,6 +998,52 @@ paths:
         '401': {description: unauthorized}
         '403': {description: 'forbidden (not SERVER_ADMIN) or csrf_failed'}
         '404': {description: 'user_not_found, device_not_found (not a live device of this account)'}
+  /api/v1/admin/users/{user_id}/sign-ins:
+    get:
+      tags: [Server Admin]
+      summary: Google and Apple identities linked to an account (SERVER_ADMIN only, M54)
+      description: Same fields as GET /me/sign-ins; never the provider's account identifier.
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+      responses:
+        '200':
+          description: Linked identities
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, providers]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/SignInLink'}
+                  providers:
+                    type: array
+                    items: {type: string, enum: [google, apple]}
+        '401': {description: unauthorized}
+        '403': {description: forbidden (not SERVER_ADMIN)}
+        '404': {description: user_not_found}
+  /api/v1/admin/users/{user_id}/sign-ins/{provider}:
+    delete:
+      tags: [Server Admin]
+      summary: Unlink a Google or Apple identity of an account (SERVER_ADMIN only, M54)
+      description: >-
+        For a lost or taken-over provider account. An administrator can
+        remove a link but never add one (linking needs the holder's password
+        and their own ID token). Sessions already made with it stay valid;
+        revoke devices to end them. Audited as "account.identity_unlink"
+        with the administrator as actor.
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+        - in: path
+          name: provider
+          required: true
+          schema: {type: string, enum: [google, apple]}
+      responses:
+        '204': {description: Unlinked}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (not SERVER_ADMIN) or csrf_failed'}
+        '404': {description: 'user_not_found, not_found (nothing linked for this provider)'}
   /api/v1/admin/users/{user_id}/folders:
     get:
       tags: [Server Admin]
@@ -2421,6 +2614,67 @@ paths:
         '404': {description: 'folder_not_found, asset_not_found (not in the trash: unknown, not removed, purged or removed more than 30 days ago)'}
         '409': {description: 'asset_conflict (the album holds the same original again, uploaded since the removal)'}
         '503': {description: 'storage_unavailable, storage_io_error, busy'}
+  /api/v1/sync/state:
+    get:
+      tags: [Sync]
+      summary: Every readable folder's feed position in one request, with a long poll (server_features sync_state)
+      description: >-
+        For each folder the caller can read (OWNER, CONTRIBUTOR, VIEWER; an
+        UPLOADER's folders are not listed) the cursor where its feed ends
+        for the caller (the next_cursor GET .../sync would return at the
+        end, in the caller's view). A client pulls only the folders whose
+        cursor differs from its stored one. "albums_tag" changes whenever
+        GET /folders would answer differently (an album added or lost, a
+        name, role or setting). "tag", also sent as the ETag, changes
+        whenever albums_tag or a cursor does. With If-None-Match equal to
+        the current tag the answer is 304 without a body; with wait=N as
+        well the server waits up to N seconds for a change (checked every
+        second) before answering 304, and answers 200 as soon as the tag
+        changes (a long poll; a busy server may answer without waiting).
+        With digests=1 each folder also has "digest" and "count": the
+        lowercase hex SHA-256, over the folder's assets in ascending id
+        order as the caller sees them, of the lines
+        "<id> <sha256> <like_count> <liked_by_me 0|1> <comment_count>\n"
+        (the Asset fields), read together with that folder's cursor. A
+        client whose index is at that cursor and computes another digest
+        missed a change: it reloads that folder from the snapshot.
+        Available on relay and funnel routes.
+      parameters:
+        - in: query
+          name: wait
+          schema: {type: integer, minimum: 0, maximum: 25}
+          description: seconds to wait for a change when If-None-Match is the current tag
+        - in: query
+          name: digests
+          schema: {type: string, enum: ['0', '1']}
+        - in: header
+          name: If-None-Match
+          schema: {type: string}
+          description: the tag of a previous answer, quoted
+      responses:
+        '200':
+          description: The current state (ETag = tag, Cache-Control no-store)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tag, albums_tag, folders]
+                properties:
+                  tag: {type: string}
+                  albums_tag: {type: string}
+                  folders:
+                    type: array
+                    items:
+                      type: object
+                      required: [folder_id, cursor]
+                      properties:
+                        folder_id: {type: string}
+                        cursor: {type: string}
+                        digest: {type: string, description: 'digests=1 only'}
+                        count: {type: integer, description: 'digests=1 only: assets in the digest'}
+        '304': {description: 'unchanged (If-None-Match), also after waiting'}
+        '400': {description: 'invalid_wait, invalid_digests'}
+        '401': {description: unauthorized}
   /api/v1/folders/{folder_id}/sync:
     get:
       tags: [Sync]
@@ -3514,6 +3768,14 @@ components:
         joined_at: {type: string, description: 'album creation time for the owner'}
         is_me: {type: boolean, description: 'the caller ("album_management" servers)'}
         is_owner: {type: boolean, description: 'the album''s owner, role OWNER ("album_management" servers)'}
+    SignInLink:
+      type: object
+      required: [provider, email, linked_at, last_used_at]
+      properties:
+        provider: {type: string, enum: [google, apple]}
+        email: {type: [string, 'null']}
+        linked_at: {type: string, format: date-time}
+        last_used_at: {type: [string, 'null'], format: date-time, description: last sign-in with it}
     Device:
       type: object
       required: [device_id, device_name, platform, created_at, last_used_at, expires_at, current]

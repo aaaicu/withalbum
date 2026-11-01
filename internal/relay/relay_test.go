@@ -123,7 +123,11 @@ func startServer(t *testing.T, tr *testRelay, key *ecdsa.PrivateKey) *testServer
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	go c.Run(ctx)
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		c.Run(ctx)
+	}()
 	go func() {
 		for {
 			conn, err := c.Accept()
@@ -145,7 +149,8 @@ func startServer(t *testing.T, tr *testRelay, key *ecdsa.PrivateKey) *testServer
 			}()
 		}
 	}()
-	t.Cleanup(func() { cancel(); c.Close() })
+	// Run logs through t.Logf: it must be over before the test ends.
+	t.Cleanup(func() { cancel(); c.Close(); <-stopped })
 	s := &testServer{client: c, key: key, spki: spki, cancel: cancel}
 	waitFor(t, "tunnel up", func() bool { return c.Status().Connected && tr.lookup(c.RendezvousID()) != nil })
 	return s

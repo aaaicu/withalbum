@@ -28,4 +28,4 @@ bash scripts/install-linux.sh ./withalbum-server "$HOME/WithAlbumTest"
 
 서비스는 사용자 세션에 묶입니다. 재로그인 이후에도 유지하고 싶다면 시스템 관리자가 `loginctl enable-linger` 설정을 검토해야 합니다. systemd가 없는 NAS에서는 스크립트를 사용하지 말고 지원되는 방식으로 바이너리를 직접 실행합니다.
 
-Docker/Compose는 보안/저장소 볼륨 처리와 인증 기능이 준비된 뒤 지원할 계획입니다.
+Docker/Compose로도 실행할 수 있습니다(시험판): 서버를 바깥으로 나가는 길이 없는 Docker 내부 네트워크에 두어, 서버가 뚫려도 집 안 다른 기기로 넘어가지 못하게 합니다. [`DOCKER.md`](DOCKER.md).

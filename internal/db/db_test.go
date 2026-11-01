@@ -38,8 +38,8 @@ func TestEmbeddedMigrationsAreContiguous(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ms) != 18 || LatestVersion() != 18 {
-		t.Fatalf("got %d migrations, LatestVersion %d; want 18", len(ms), LatestVersion())
+	if len(ms) != 19 || LatestVersion() != 19 {
+		t.Fatalf("got %d migrations, LatestVersion %d; want 19", len(ms), LatestVersion())
 	}
 }
 
@@ -819,14 +819,14 @@ func TestMigration0017AlbumManagement(t *testing.T) {
 	mustExec(t, sqlDB, "UPDATE users SET status = 'disabled' WHERE user_id = 'owner'")
 }
 
-// TestMigration0018InvitationHistoryLinks: existing invitations keep every
+// TestMigration0019InvitationHistoryLinks: existing invitations keep every
 // value and get no invented answer time or reason; the new columns and the
 // invite_links table hold their constraints; deleting a folder deletes its
 // links and a link's deletion leaves its invitations.
-func TestMigration0018InvitationHistoryLinks(t *testing.T) {
+func TestMigration0019InvitationHistoryLinks(t *testing.T) {
 	ctx := context.Background()
 	sqlDB, _ := openTemp(t)
-	migrateTo(t, sqlDB, 17)
+	migrateTo(t, sqlDB, 18)
 	addUser(t, sqlDB, "owner", "active")
 	addUser(t, sqlDB, "alice", "active")
 	mustExec(t, sqlDB, "INSERT INTO folders(folder_id, folder_name, owner_user_id) VALUES ('f1', 'Trip', 'owner')")

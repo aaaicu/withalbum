@@ -760,8 +760,8 @@ type Invitation struct {
 	CreatedAt   string
 	ExpiresAt   string
 	AcceptedAt  string // "" unless accepted
-	DeclinedAt  string // "" unless declined (and not before migration 0018)
-	RevokedAt   string // "" unless revoked (and not before migration 0018)
+	DeclinedAt  string // "" unless declined (and not before migration 0019)
+	RevokedAt   string // "" unless revoked (and not before migration 0019)
 	// Reason is why a revoked invitation was revoked (Reason* in
 	// invites.go; "" if unknown).
 	Reason string

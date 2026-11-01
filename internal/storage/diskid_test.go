@@ -154,6 +154,32 @@ func TestRecordedDiskUUIDUnreadableFailsClosed(t *testing.T) {
 	}
 }
 
+// TestUnreadableDiskOK: in a container no disk UUID can be read; the
+// option opens the root then, but a readable UUID that differs, or a
+// failure to read it, is still refused.
+func TestUnreadableDiskOK(t *testing.T) {
+	root := resolvedTempDir(t)
+	disks := map[string]string{root: "44444444-4444-4444-4444-444444444444"}
+	fakeDisks(t, disks)
+	if _, err := Init(root); err != nil {
+		t.Fatal(err)
+	}
+	delete(disks, root)
+	if _, err := Open(root, OpenOptions{UnreadableDiskOK: true}); err != nil {
+		t.Fatalf("unreadable UUID with the option: %v", err)
+	}
+	disks[root] = "55555555-5555-5555-5555-555555555555"
+	if _, err := Open(root, OpenOptions{UnreadableDiskOK: true}); !errors.Is(err, ErrDiskMismatch) {
+		t.Fatalf("other disk with the option: %v, want ErrDiskMismatch", err)
+	}
+	old := diskUUID
+	diskUUID = func(string) (string, error) { return "", errors.New("boom") }
+	defer func() { diskUUID = old }()
+	if _, err := Open(root, OpenOptions{UnreadableDiskOK: true}); !errors.Is(err, ErrDiskUnknown) {
+		t.Fatalf("read error with the option: %v, want ErrDiskUnknown", err)
+	}
+}
+
 func TestLegacyMarkerAdoptsDiskUUID(t *testing.T) {
 	root := resolvedTempDir(t)
 	disks := map[string]string{}
