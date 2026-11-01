@@ -202,6 +202,16 @@ func wantJSON(t *testing.T, what string, r reply, status int) map[string]any {
 	return r.object(t)
 }
 
+// wantGone asserts a 410 reply of exactly {"error": code, "reason": reason}.
+func wantGone(t *testing.T, what string, r reply, code, reason string) {
+	t.Helper()
+	m := wantJSON(t, what, r, 410)
+	wantKeys(t, what, m, "error", "reason")
+	if m["error"] != code || m["reason"] != reason {
+		t.Fatalf("%s: %v, want %s/%s", what, m, code, reason)
+	}
+}
+
 // wantError asserts an error reply of exactly {"error": code}.
 func wantError(t *testing.T, what string, r reply, status int, code string) {
 	t.Helper()

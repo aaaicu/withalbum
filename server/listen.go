@@ -210,7 +210,7 @@ func pairingURLs(addr, public string, interfaceAddrs func() ([]net.Addr, error))
 // tlsInfo is what the dashboard shows administrators about id. With a
 // relay or a public route, every pairing payload also names it.
 func tlsInfo(id *tlsid.Identity, urls []string, rr remoteRoutes) *httpapi.TLSInfo {
-	info := &httpapi.TLSInfo{SPKISHA256: id.SPKIHex(), CertSHA256: id.CertHex(), NotAfter: id.Leaf.NotAfter}
+	info := &httpapi.TLSInfo{SPKISHA256: id.SPKIHex(), CertSHA256: id.CertHex(), NotAfter: id.Leaf.NotAfter, Extras: rr.extras()}
 	for _, u := range urls {
 		info.Pairing = append(info.Pairing, httpapi.Pairing{URL: u, Payload: tlsid.PairingPayloadWith(u, id.SPKIHex(), rr.extras())})
 	}

@@ -138,6 +138,15 @@ var matrixClasses = map[string]matrixClass{
 	"GET /api/v1/folders/{folderID}/invitations":                              classOwner,
 	"POST /api/v1/folders/{folderID}/invitations":                             classOwner,
 	"DELETE /api/v1/folders/{folderID}/invitations/{invitationID}":            classOwner,
+	"GET /api/v1/folders/{folderID}/invite-links":                             classOwner,
+	"POST /api/v1/folders/{folderID}/invite-links":                            classOwner,
+	"DELETE /api/v1/folders/{folderID}/invite-links/{linkID}":                 classOwner,
+	// Invite links: anyone holding a token may preview it and open its
+	// landing page (also from outside the home: the link is shared through
+	// messengers); any signed-in account may redeem one.
+	"POST /api/v1/invitations/link-preview": classPublic,
+	"POST /api/v1/invitations/link-redeem":  classSession,
+	"GET /i/{token}":                        classPublic,
 }
 
 func TestAuthzMatrixCoversEveryRoute(t *testing.T) {
@@ -241,7 +250,7 @@ func probePath(pattern, folder string) (method, path string) {
 	path = strings.ReplaceAll(path, "{$}", "")
 	path = strings.ReplaceAll(path, "{folderID}", folder)
 	path = strings.ReplaceAll(path, "{role}", "paired_video")
-	for _, p := range []string{"{assetID}", "{uploadID}", "{bundleID}", "{commentID}", "{userID}", "{deviceID}", "{invitationID}"} {
+	for _, p := range []string{"{assetID}", "{uploadID}", "{bundleID}", "{commentID}", "{userID}", "{deviceID}", "{invitationID}", "{linkID}", "{token}"} {
 		path = strings.ReplaceAll(path, p, randomHexID())
 	}
 	return method, path

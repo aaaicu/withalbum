@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<title>위드앨범 초대</title>
+<style>
+:root { --fg: #1a1c20; --muted: #555d6d; --line: #dcdee3; --bg: #f7f8f9; --brand: #1f7a4d; --on-brand: #ffffff; }
+* { box-sizing: border-box; }
+body { margin: 0; padding: 32px 20px; background: var(--bg); color: var(--fg);
+  font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif; }
+main { max-width: 440px; margin: 0 auto; background: #fff; border: 1px solid var(--line); border-radius: 16px; padding: 28px 24px; }
+h1 { font-size: 21px; line-height: 1.4; margin: 0 0 8px; word-break: keep-all; overflow-wrap: anywhere; }
+p { margin: 0 0 12px; color: var(--muted); word-break: keep-all; }
+.meta { color: var(--fg); }
+a.button { display: block; text-align: center; margin: 20px 0 16px; padding: 14px 16px; border-radius: 12px;
+  background: var(--brand); color: var(--on-brand); font-weight: 600; text-decoration: none; }
+ol { margin: 8px 0 0; padding-left: 20px; color: var(--muted); }
+li { margin-bottom: 6px; }
+.brand { font-size: 13px; font-weight: 600; color: var(--brand); margin-bottom: 12px; }
+</style>
+</head>
+<body>
+<main>
+<div class="brand">위드앨범</div>
+{{if .OK}}
+<h1>{{.InviterName}}님이 ‘{{.FolderName}}’ 앨범에 초대했어요</h1>
+<p class="meta">{{.Role}} 권한으로 참여해요.{{if .Until}} 이 링크는 {{.Until}}까지 쓸 수 있어요.{{end}}</p>
+{{if .AppLink}}<a class="button" href="{{.AppLink}}">위드앨범 앱에서 열기</a>{{end}}
+<ol>
+<li>휴대폰에 위드앨범 앱을 설치해 주세요.</li>
+<li>받은 메시지의 초대 링크를 다시 누르거나, 앱에서 ‘초대 링크로 참여’를 눌러 링크를 붙여 넣어 주세요.</li>
+<li>계정이 없다면 이 서버 관리자에게 계정을 받아야 해요.</li>
+</ol>
+{{else if or (eq .Status 429) (eq .Status 500)}}
+<h1>잠시 후 다시 열어 주세요</h1>
+<p>지금은 초대 내용을 확인할 수 없어요.</p>
+{{else}}
+<h1>이 초대 링크는 쓸 수 없어요</h1>
+<p>기간이 지났거나, 모두 사용됐거나, 취소된 링크예요. 초대한 분께 새 링크를 부탁해 주세요.</p>
+{{end}}
+</main>
+</body>
+</html>

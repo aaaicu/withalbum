@@ -760,6 +760,20 @@ type Invitation struct {
 	CreatedAt   string
 	ExpiresAt   string
 	AcceptedAt  string // "" unless accepted
+	DeclinedAt  string // "" unless declined (and not before migration 0018)
+	RevokedAt   string // "" unless revoked (and not before migration 0018)
+	// Reason is why a revoked invitation was revoked (Reason* in
+	// invites.go; "" if unknown).
+	Reason string
+	// AnsweredAt is when it stopped being pending: accepted, declined or
+	// revoked at, or its expiry; "" for a pending one and when unknown.
+	AnsweredAt string
+	// MemberNow: the invitee is now the owner or a member of the folder
+	// (which is in use). Set by InvitationHistory only.
+	MemberNow bool
+	// LinkID is the invite link it was created by ("" for an invitation
+	// the owner addressed to the account).
+	LinkID string
 }
 
 // Member is the owner (Role "OWNER") or a member of a folder.
@@ -780,6 +794,9 @@ type AlbumChange struct {
 	// the change is about.
 	TargetID string
 	Role     authz.AlbumRole // CreateInvitation and SetMemberRole
+	// ReplacePending (CreateInvitation): a pending invitation of the same
+	// folder and account is revoked (ReasonReplaced) instead of refused.
+	ReplacePending bool
 	// Authorize re-checks the caller inside the write transaction, with the
 	// account, session, owner and membership as stored at that moment. It is
 	// required; its error aborts the change and is returned wrapped.
@@ -799,7 +816,7 @@ var (
 	ErrInvitationPending  = errors.New("a pending invitation exists")
 	ErrInvitationNotFound = errors.New("invitation not found")
 	// ErrInvitationGone: accepted, revoked, expired or declined; it cannot
-	// be used.
+	// be used. It comes wrapped in a GoneError naming the reason.
 	ErrInvitationGone = errors.New("invitation no longer valid")
 	// ErrNotInvitee: the invitation names another account.
 	ErrNotInvitee     = errors.New("invitation is addressed to another account")
@@ -846,10 +863,14 @@ type Reassignment struct {
 type Memberships interface {
 	// CreateInvitation invites TargetID with Role to FolderID, valid for
 	// InvitationTTL. ErrInviteeNotFound, ErrAlreadyMember (the owner or a
-	// member), ErrInvitationPending (one per folder and account).
+	// member), ErrInvitationPending (one per folder and account, unless
+	// ReplacePending).
 	CreateInvitation(ctx context.Context, c AlbumChange) (Invitation, error)
 	// ListFolderInvitations returns the folder's pending invitations.
 	ListFolderInvitations(ctx context.Context, folderID string) ([]Invitation, error)
+	// InvitationHistory returns a page of the invitations q selects.
+	// ErrInvalidCursor.
+	InvitationHistory(ctx context.Context, q InvitationQuery) (InvitationPage, error)
 	// RevokeInvitation cancels invitation TargetID of FolderID.
 	// ErrInvitationNotFound (unknown or of another folder), ErrInvitationGone.
 	RevokeInvitation(ctx context.Context, c AlbumChange) error

@@ -19,8 +19,10 @@ import (
 type Access string
 
 const (
-	// AccessPublic: no session. Only the dashboard page (static, no data), health
-	// and the login and refresh endpoints.
+	// AccessPublic: no session. Only the dashboard page (static, no data), health,
+	// the login and refresh endpoints, and the invite link preview and
+	// landing page (what the holder of a link's token may know: the album's
+	// name, the inviter's name, the role and the expiry; rate limited).
 	AccessPublic Access = "public"
 	// AccessSession: any valid session; the handler only touches the caller's
 	// own data (own account, own devices, own folder list).
@@ -150,6 +152,16 @@ var routePolicies = []RoutePolicy{
 	{"GET /api/v1/invitations", AccessSession, ""},
 	{"POST /api/v1/invitations/{invitationID}/accept", AccessSession, ""},
 	{"POST /api/v1/invitations/{invitationID}/decline", AccessSession, ""},
+	// Invite links (invite_links.go): the owner manages them; anyone
+	// holding a token may preview it (public, rate limited, never spends
+	// a use) and any signed-in account may redeem it (the store decides
+	// the link, the folder and the caller in one transaction).
+	{"GET /api/v1/folders/{folderID}/invite-links", AccessAlbum, authz.InviteMember},
+	{"POST /api/v1/folders/{folderID}/invite-links", AccessAlbum, authz.InviteMember},
+	{"DELETE /api/v1/folders/{folderID}/invite-links/{linkID}", AccessAlbum, authz.InviteMember},
+	{"POST /api/v1/invitations/link-preview", AccessPublic, ""},
+	{"POST /api/v1/invitations/link-redeem", AccessSession, ""},
+	{"GET /i/{token}", AccessPublic, ""},
 }
 
 // Routes returns the declared protection of every route (for tests and

@@ -237,3 +237,34 @@ func FuzzPairingPayload(f *testing.F) {
 		}
 	})
 }
+
+// TestInvitePayload: the app link of an invite link carries the pairing
+// fields (so a phone that never paired can pin the server) and the token,
+// each exactly once; a token cannot add or override a field.
+func TestInvitePayload(t *testing.T) {
+	pin := strings.Repeat("ab", 32)
+	x := tlsid.PairingExtras{RelayAddr: "relay.example.org:443", RID: "0123456789abcdef", PublicURL: "https://home.example-tailnet.ts.net", PublicRoute: "funnel"}
+	for _, token := range []string{"AbC-_09xyzAbC-_09xyzAbC-_09xyzAbC-_09xyzAbC", "a&spki_sha256=00&url=evil#x"} {
+		p := tlsid.InvitePayload("https://192.0.2.10:8787", pin, x, token)
+		u, err := url.Parse(p)
+		if err != nil || u.Scheme != "withalbum" || u.Host != "invite" || u.Fragment != "" {
+			t.Fatalf("payload %q: %v", p, err)
+		}
+		q := u.Query()
+		want := map[string]string{"v": "1", "url": "https://192.0.2.10:8787", "spki_sha256": pin, "relay": x.RelayAddr, "rid": x.RID,
+			"public_url": x.PublicURL, "public_route": "funnel", "token": token}
+		if len(q) != len(want) {
+			t.Fatalf("payload %q has fields %v", p, q)
+		}
+		for k, v := range want {
+			if got := q[k]; len(got) != 1 || got[0] != v {
+				t.Fatalf("payload %q: %s = %q, want %q", p, k, got, v)
+			}
+		}
+	}
+	// Without a relay or a public route only the direct fields and the token.
+	q, _ := url.ParseQuery(strings.TrimPrefix(tlsid.InvitePayload("https://192.0.2.10:8787", pin, tlsid.PairingExtras{}, "t"), "withalbum://invite?"))
+	if len(q) != 4 || q.Get("token") != "t" {
+		t.Fatalf("plain invite payload %v", q)
+	}
+}

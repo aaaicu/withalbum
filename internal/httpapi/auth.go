@@ -122,8 +122,13 @@ func busy(w http.ResponseWriter) {
 }
 
 func rateLimited(w http.ResponseWriter, wait time.Duration) {
-	w.Header().Set("Retry-After", strconv.Itoa(int((wait+time.Second-1)/time.Second)))
+	w.Header().Set("Retry-After", retryAfter(wait))
 	errorReply(w, 429, "rate_limited")
+}
+
+// retryAfter is wait in whole seconds, rounded up (Retry-After).
+func retryAfter(wait time.Duration) string {
+	return strconv.Itoa(int((wait + time.Second - 1) / time.Second))
 }
 
 // login: every credential failure (unknown account, wrong password,

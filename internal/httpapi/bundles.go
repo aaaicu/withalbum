@@ -50,7 +50,7 @@ const bundleCompleteRoute = "POST /api/v1/folders/{folderID}/bundles/{bundleID}/
 // social.go), asset_camera (camera, width and height on assets) and
 // video_playback (playback on assets and GET .../assets/{aid}/playback,
 // playback.go).
-var ServerFeatures = []string{"live_photo_bundles", "folder_create_idempotency", "asset_duration", "asset_location", "reactions_comments", "asset_camera", "video_playback", "album_management"}
+var ServerFeatures = []string{"live_photo_bundles", "folder_create_idempotency", "asset_duration", "asset_location", "reactions_comments", "asset_camera", "video_playback", "album_management", "invitation_history", "invite_links"}
 
 func (s *Server) bundleRoutes(rt *router) {
 	rt.handleAlbum("POST /api/v1/folders/{folderID}/bundles", s.createBundle)

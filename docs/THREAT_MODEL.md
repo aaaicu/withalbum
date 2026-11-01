@@ -20,7 +20,7 @@ marks what is not mitigated or not tested.
 | Previews | `.system/previews` | derived, re-encoded without metadata |
 | Accounts, password hashes (Argon2id), sessions (token SHA-256 only), audit log | `.system/withalbum.db` | account takeover, repudiation |
 | TLS private key (SPKI pin) | `.system/tls/server.pem` (0600) | impersonating the server to every paired app |
-| Album membership and roles | `folders`, `folder_members`, `folder_invitations` | who may see what |
+| Album membership and roles | `folders`, `folder_members`, `folder_invitations`, `invite_links` (token SHA-256 only, M57) | who may see what; an invite link token admits any account that holds it (see `SECURITY.md`, "Album invite links") |
 | Backups | backup target (`snapshots/`, `pool/`) | same as the library, plus restore authority |
 | Availability of the home server | the Mac mini, its disk, the remote routes | family uploads and viewing |
 
