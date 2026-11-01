@@ -136,7 +136,10 @@ func TestInvitationFlow(t *testing.T) {
 	}
 	inv := mine[0].(map[string]any)
 	wantKeys(t, "invitation", inv, "id", "folder_id", "folder_name", "invitee_user_id", "invitee_display_name", "inviter_user_id",
-		"inviter_display_name", "role", "status", "created_at", "expires_at")
+		"inviter_display_name", "role", "status", "created_at", "expires_at", "answered_at", "reason", "member_now", "source")
+	if inv["answered_at"] != nil || inv["reason"] != nil || inv["member_now"] != false || inv["source"] != "direct" {
+		t.Fatalf("pending invitation %v", inv)
+	}
 	if inv["id"] != id || inv["folder_name"] != "family" || inv["role"] != "VIEWER" || inv["status"] != "pending" {
 		t.Fatalf("invitation %v", inv)
 	}
@@ -160,7 +163,7 @@ func TestInvitationFlow(t *testing.T) {
 	if r := e.as(t, "outsider", "GET", orig, nil, nil); r.Status != 200 {
 		t.Fatalf("member download %d", r.Status)
 	}
-	wantError(t, "accept again", e.as(t, "outsider", "POST", "/api/v1/invitations/"+id+"/accept", nil, nil), 410, "invitation_gone")
+	wantGone(t, "accept again", e.as(t, "outsider", "POST", "/api/v1/invitations/"+id+"/accept", nil, nil), "invitation_gone", "accepted")
 	wantError(t, "invite a member", e.asJSON(t, "owner", "POST", f+"/invitations", `{"invited_user_id":"`+e.ids["outsider"]+`","role":"VIEWER"}`), 409, "already_member")
 	if l := wantJSON(t, "after accept", e.as(t, "outsider", "GET", "/api/v1/invitations", nil, nil), 200)["invitations"].([]any); len(l) != 0 {
 		t.Fatalf("accepted invitation still listed %v", l)
@@ -210,8 +213,8 @@ func TestInvitationRevokedOrExpired(t *testing.T) {
 	if r := e.as(t, "owner", "DELETE", f+"/invitations/"+id, nil, nil); r.Status != 204 {
 		t.Fatalf("revoke %d %s", r.Status, r.Body)
 	}
-	wantError(t, "revoke twice", e.as(t, "owner", "DELETE", f+"/invitations/"+id, nil, nil), 410, "invitation_gone")
-	wantError(t, "accept revoked", e.as(t, "outsider", "POST", "/api/v1/invitations/"+id+"/accept", nil, nil), 410, "invitation_gone")
+	wantGone(t, "revoke twice", e.as(t, "owner", "DELETE", f+"/invitations/"+id, nil, nil), "invitation_gone", "revoked_by_owner")
+	wantGone(t, "accept revoked", e.as(t, "outsider", "POST", "/api/v1/invitations/"+id+"/accept", nil, nil), "invitation_gone", "revoked_by_owner")
 	wantError(t, "no access", e.as(t, "outsider", "GET", f, nil, nil), 404, "folder_not_found")
 	// Revoking through another folder does not find it.
 	id = e.invite(t, "outsider", "CONTRIBUTOR")
@@ -222,8 +225,8 @@ func TestInvitationRevokedOrExpired(t *testing.T) {
 	if l := wantJSON(t, "expired list", e.as(t, "outsider", "GET", "/api/v1/invitations", nil, nil), 200)["invitations"].([]any); len(l) != 0 {
 		t.Fatalf("expired invitation listed %v", l)
 	}
-	wantError(t, "accept expired", e.as(t, "outsider", "POST", "/api/v1/invitations/"+id+"/accept", nil, nil), 410, "invitation_gone")
-	wantError(t, "revoke expired", e.as(t, "owner", "DELETE", f+"/invitations/"+id, nil, nil), 410, "invitation_gone")
+	wantGone(t, "accept expired", e.as(t, "outsider", "POST", "/api/v1/invitations/"+id+"/accept", nil, nil), "invitation_gone", "expired")
+	wantGone(t, "revoke expired", e.as(t, "owner", "DELETE", f+"/invitations/"+id, nil, nil), "invitation_gone", "expired")
 	wantError(t, "no access", e.as(t, "outsider", "GET", f, nil, nil), 404, "folder_not_found")
 	again := e.invite(t, "outsider", "VIEWER")
 	wantJSON(t, "accept new", e.as(t, "outsider", "POST", "/api/v1/invitations/"+again+"/accept", nil, nil), 200)
@@ -329,7 +332,7 @@ func TestOwnershipTransfer(t *testing.T) {
 		wantError(t, "previous owner "+name, e.asJSON(t, "owner", req[0], req[1], req[2]), 403, "forbidden")
 	}
 	// The pending invitation died with the transfer.
-	wantError(t, "accept stale", e.as(t, "outsider", "POST", "/api/v1/invitations/"+pending+"/accept", nil, nil), 410, "invitation_gone")
+	wantGone(t, "accept stale", e.as(t, "outsider", "POST", "/api/v1/invitations/"+pending+"/accept", nil, nil), "invitation_gone", "owner_changed")
 	// The new owner manages the folder.
 	list := wantJSON(t, "members", e.as(t, "viewer", "GET", f+"/members", nil, nil), 200)["members"].([]any)
 	roles := map[string]string{}
@@ -507,9 +510,9 @@ func TestInvitationDecline(t *testing.T) {
 	if r := decline("outsider", id); r.Status != 204 || len(r.Body) != 0 {
 		t.Fatalf("decline %d %s", r.Status, r.Body)
 	}
-	wantError(t, "decline again", decline("outsider", id), 410, "invitation_gone")
-	wantError(t, "accept declined", e.as(t, "outsider", "POST", "/api/v1/invitations/"+id+"/accept", nil, nil), 410, "invitation_gone")
-	wantError(t, "revoke declined", e.as(t, "owner", "DELETE", f+"/invitations/"+id, nil, nil), 410, "invitation_gone")
+	wantGone(t, "decline again", decline("outsider", id), "invitation_gone", "declined")
+	wantGone(t, "accept declined", e.as(t, "outsider", "POST", "/api/v1/invitations/"+id+"/accept", nil, nil), "invitation_gone", "declined")
+	wantGone(t, "revoke declined", e.as(t, "owner", "DELETE", f+"/invitations/"+id, nil, nil), "invitation_gone", "declined")
 	wantError(t, "no access", e.as(t, "outsider", "GET", f, nil, nil), 404, "folder_not_found")
 	for who, path := range map[string]string{"outsider": "/api/v1/invitations", "owner": f + "/invitations"} {
 		if l := wantJSON(t, "list "+who, e.as(t, who, "GET", path, nil, nil), 200)["invitations"].([]any); len(l) != 0 {
@@ -541,7 +544,7 @@ func TestInvitationDecline(t *testing.T) {
 	wantJSON(t, "accept new", e.as(t, "outsider", "POST", "/api/v1/invitations/"+again+"/accept", nil, nil), 200)
 	// After accepting, declining the accepted invitation is 410 and the
 	// membership stays.
-	wantError(t, "decline accepted", decline("outsider", again), 410, "invitation_gone")
+	wantGone(t, "decline accepted", decline("outsider", again), "invitation_gone", "accepted")
 	if r := e.as(t, "outsider", "GET", f, nil, nil); r.Status != 200 {
 		t.Fatalf("member lost access: %d", r.Status)
 	}
@@ -552,12 +555,12 @@ func TestInvitationDecline(t *testing.T) {
 	if r := e.as(t, "owner", "DELETE", f+"/invitations/"+revoked, nil, nil); r.Status != 204 {
 		t.Fatalf("revoke %d", r.Status)
 	}
-	wantError(t, "decline revoked", decline("root", revoked), 410, "invitation_gone")
+	wantGone(t, "decline revoked", decline("root", revoked), "invitation_gone", "revoked_by_owner")
 	expired := e.invite(t, "root", "VIEWER")
 	if _, err := e.Meta.DB().Exec("UPDATE folder_invitations SET expires_at = '2020-01-01T00:00:00.000000000Z' WHERE invitation_id = ?", expired); err != nil {
 		t.Fatal(err)
 	}
-	wantError(t, "decline expired", decline("root", expired), 410, "invitation_gone")
+	wantGone(t, "decline expired", decline("root", expired), "invitation_gone", "expired")
 	var status string
 	if err := e.Meta.DB().QueryRow("SELECT status FROM folder_invitations WHERE invitation_id = ?", expired).Scan(&status); err != nil || status != "pending" {
 		t.Fatalf("expired invitation rewritten to %q, %v", status, err)
@@ -566,7 +569,7 @@ func TestInvitationDecline(t *testing.T) {
 	if r := e.as(t, "owner", "DELETE", f, nil, nil); r.Status != 204 {
 		t.Fatalf("archive %d", r.Status)
 	}
-	wantError(t, "decline archived", decline("root", archived), 410, "invitation_gone")
+	wantGone(t, "decline archived", decline("root", archived), "invitation_gone", "album_deleted")
 	if e.audits(t, "invitation.decline") != 1 {
 		t.Fatal("a refused decline was audited")
 	}

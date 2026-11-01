@@ -20,6 +20,13 @@
 
 첫 prerelease. 아래는 2026-10-18 첫 후보 초안 이후에 더해진 것과(앞부분), 그 초안의 내용("요약"부터)입니다. 실기기 검증 결과는 `docs/releases/v0.1.0-alpha.1.md`.
 
+### Added (invitation history and invite links, M57)
+- 초대함 기록: `GET /api/v1/invitations`와 `GET .../folders/{folder_id}/invitations`가 대기 초대를 **최신순**으로(이전: 오래된 순), `include=recent&days=N`(1~30, 기본 30)이면 최근 처리한 초대(수락·거절·만료·취소)도 처리 시각 최신순으로. 항목에 `answered_at`·`reason`(취소 사유 `revoked_by_owner`·`album_deleted`·`album_archived`·`owner_changed`)·`member_now`·`source`(`direct`|`link`). `limit`(1~100, 기본 100)·`cursor`/`next_cursor` 페이지. 오너 목록에서 거절은 `not_joined`.
+- 410 `invitation_gone`에 `reason`(`accepted`·`declined`·`expired`·`revoked`·`revoked_by_owner`·`album_deleted`·`album_archived`·`owner_changed`·`replaced`).
+- 초대 보내기 `"replace_pending": true`: 같은 사람의 대기 초대를 취소(사유 `replaced`, 목록에서 숨김)하고 새 초대.
+- 앨범 초대 링크(OWNER): `GET|POST .../folders/{folder_id}/invite-links`, `DELETE .../invite-links/{link_id}`(역할, 만료 1~30일 기본 7, 사용 1~20회 기본 1, 앨범당 사용 가능 링크 20개). 생성 응답에만 토큰·`app_link`(`withalbum://invite?…&token=…`, 페어링 필드 포함)·`web_url`(`/i/<token>`). 공개 `POST /api/v1/invitations/link-preview`(앨범 이름·초대한 사람·역할·만료, `sign_up_available: false`), 로그인 사용자 `POST /api/v1/invitations/link-redeem`(바로 멤버, 사용 1회 소모, 수락된 초대 기록, 같은 앨범 대기 초대는 `replaced`), 공개 안내 페이지 `GET /i/{token}`(스크립트 없음, Funnel·중계에서도). 토큰은 SHA-256만 저장, 로그·감사에 없음, 주소·계정별 속도 제한. 앨범 삭제·보관·오너 변경 시 링크도 취소.
+- `/me` `server_features`에 `invitation_history`, `invite_links`. 마이그레이션 **0019**(`folder_invitations.declined_at`·`revoked_at`·`revoke_reason`·`link_id`, `invite_links`). 이전 기록의 처리 시각·사유는 비워 둠(null).
+
 ### Added (album management, M51)
 - 앨범 삭제 `DELETE /api/v1/folders/{folder_id}`(OWNER): 모두에게서 즉시 사라지고(목록에서 빠지고 모든 앨범 경로 404) 대기 초대 취소, 오너만 30일 동안 `GET /api/v1/folders/deleted`로 보고 `POST /api/v1/folders/{folder_id}/restore`로 되살림(그 밖의 호출자는 404). 30일 뒤 6시간 주기 정리가 앨범 행·다른 앨범이 쓰지 않는 원본을 삭제(다른 앨범이 가진 원본은 유지, 원본은 커밋 직전 `.system/purge`로 옮기고 커밋 뒤 삭제, 기동 시 복구). **바뀐 점:** 이전의 `DELETE`(보관)는 `POST /api/v1/folders/{folder_id}/archive`로 이동.
 - 사진 삭제 권한: OWNER·**CONTRIBUTOR**가 앨범의 모든 사진을 앨범 휴지통으로 옮김(이전: OWNER만). 휴지통 `GET .../trash`·`GET .../trash/{asset_id}/preview`·`POST .../trash/{asset_id}/restore`(같은 asset id, 좋아요·댓글·비공개 상태 복구, `asset_added`; 같은 원본이 다시 올라와 있으면 409 `asset_conflict`). 30일 뒤 좋아요·댓글 삭제로 확정(원본 파일은 이전처럼 유지). **바뀐 점:** 제거 시 좋아요·댓글을 바로 지우지 않음.

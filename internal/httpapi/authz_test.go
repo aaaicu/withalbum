@@ -206,8 +206,8 @@ func TestUnauthenticatedRequestsAreRefused(t *testing.T) {
 		path = param.ReplaceAllString(path, "x")
 		paths = append(paths, [2]string{method, path})
 	}
-	if public != 6 {
-		t.Fatalf("%d public routes, want 6 (dashboard page, health, login, refresh, sign-in nonce, sign-in)", public)
+	if public != 8 {
+		t.Fatalf("%d public routes, want 8 (dashboard page, health, login, refresh, sign-in nonce, sign-in, invite link preview and landing page)", public)
 	}
 	paths = append(paths, [2]string{"GET", "/api/v1/assets/" + shaHex(e.pic) + "/original"}, [2]string{"DELETE", "/api/v1/folders/" + e.family},
 		[2]string{"GET", "/api/v1/nope"}, [2]string{"POST", "/api/v1/folders/" + e.family + "/sync"})

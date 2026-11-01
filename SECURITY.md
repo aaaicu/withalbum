@@ -304,6 +304,68 @@ as sensitive personal data.
   deleted from disk: their removal becomes final after 30 days (likes and
   comments deleted) and the original stays, as before.
 
+## Album invite links (M57): threat model
+
+An album's OWNER can create an invite link (role, expiry 1–30 days,
+default 7, 1–20 uses, default 1, at most 20 usable links per album) and
+share it through any messenger. Whoever redeems it with an account of
+this server joins the album with that role. The token is the only secret
+in the link; the rest is the public pairing information (server URL, TLS
+pin, relay and public route), the same as the pairing QR.
+
+- **The token is a bearer secret.** 32 random bytes (256 bits,
+  base64url); the server stores only its SHA-256 (`invite_links.token_sha256`,
+  like refresh tokens), returns the token once in the create reply
+  (`Cache-Control: no-store`) and never writes it to a log line, an audit
+  row or an error. Lookups are by hash (an index), so response times do
+  not depend on how much of a token matches.
+- **Forwarding.** Anyone the link is forwarded to can use it: that is what
+  a link is. The limits are the owner's choices (role, uses, expiry), the
+  requirement of an account on this server (a link never creates one:
+  there is no sign-up, the person asks the server's administrator), and
+  revocation (`DELETE .../invite-links/{id}`; deleting or archiving the
+  album or changing its owner revokes every link too). The owner sees
+  every account that joined through a link in the album's invitation
+  history (`source: "link"`) and in the member list, and can remove it.
+  Prefer one use per person, and an UPLOADER or VIEWER role for links
+  sent to groups.
+- **Leakage before redemption.** The preview (`POST
+  /api/v1/invitations/link-preview`) and the landing page (`GET
+  /i/<token>`) need no session and tell the holder of a usable token the
+  album's name, the inviter's display name, the role and the expiry —
+  never contents, members or remaining uses; an unusable or unknown token
+  shows nothing about the album. Neither spends a use, so link previewers
+  of messengers cannot consume a link (they may see the album name if
+  they can reach the server). The landing page has no script
+  (CSP `default-src 'none'` plus one hashed style), `X-Robots-Tag:
+  noindex`, `Referrer-Policy: no-referrer`, and is not cached. The
+  token is in the URL path of `web_url`; the server does not log request
+  paths, but a browser history or a forwarding proxy may record it.
+- **Brute force.** 2^256 tokens: guessing is hopeless; the limits keep
+  lookups cheap: per client address 10 at once and then one every 6 s,
+  and 10 unknown tokens per address per 15 minutes (preview, landing
+  page and redeem share the address budget); redeem also counts 30
+  unknown tokens per account from any address. Funnel connections without
+  a PROXY header share one address key, so their lookups share one budget
+  (only the link pages are affected). Limits are in memory.
+- **Races.** A redemption is one `BEGIN IMMEDIATE` transaction that
+  re-reads the account, the link and the album; the use is spent with a
+  conditional update and a `CHECK(use_count <= max_uses)`, so concurrent
+  redemptions of the last use admit exactly one account (tested). A
+  member or the owner redeeming spends nothing.
+- **Pins from links.** An app that pairs from an invite link trusts the
+  pin the link carries, as it trusts a QR code: a link from someone who
+  can tamper with the message can point the app at another server. The
+  landing page is served with the server's self-signed certificate, so a
+  browser shows a warning; someone who accepts it on a hostile network
+  may be shown a page whose "open in app" link carries another pin. Apps
+  should show the server's name and fingerprint on first pairing from a
+  link, and the people sharing links should use the message itself.
+- **Invitation history** shows the invitee its own invitations of the last
+  30 days with their outcome, and the owner the album's (a decline is
+  shown to the owner as the neutral `not_joined`). 410 answers name the
+  reason (`revoked_by_owner`, `album_deleted`, …) only to the invitee.
+
 ## Setup screen (M24): threat model
 
 The browser setup screen lets the person at the Mac pick the storage disk and create the first administrator without typing console commands. It runs **before any account exists**, so it is the most exposed moment of the server's life. Design and threat model, written before the implementation:
@@ -350,7 +412,7 @@ Anyone with console access to the server and write access to the storage can do 
 
 ## v1.4 계정/앨범 권한 설계 상태
 
-`internal/authz`의 정책은 HTTP 서버의 모든 관리자·앨범 라우트에서 매 요청 적용됩니다(`internal/httpapi/middleware_authz.go`). 최초 관리자는 콘솔 명령(`admin init`)으로만 만들 수 있고, 대시보드 페이지·health·login·refresh 외 모든 API는 세션이 필요합니다. 서버 관리자도 소유·멤버가 아닌 앨범의 데이터는 읽을 수 없습니다(404). 초대·역할 변경·추방·소유권 이전은 앨범 OWNER만 할 수 있고 같은 트랜잭션에서 감사 로그에 남습니다. LAN 공개는 위 조건(TLS + 관리자 + 명시적 플래그)에서만 가능하며, 인터넷 공개나 실사용 원본의 유일 저장소로 사용하면 안 됩니다.
+`internal/authz`의 정책은 HTTP 서버의 모든 관리자·앨범 라우트에서 매 요청 적용됩니다(`internal/httpapi/middleware_authz.go`). 최초 관리자는 콘솔 명령(`admin init`)으로만 만들 수 있고, 대시보드 페이지·health·login·refresh·초대 링크 미리보기·초대 링크 안내 페이지 외 모든 API는 세션이 필요합니다. 서버 관리자도 소유·멤버가 아닌 앨범의 데이터는 읽을 수 없습니다(404). 초대·역할 변경·추방·소유권 이전은 앨범 OWNER만 할 수 있고 같은 트랜잭션에서 감사 로그에 남습니다. LAN 공개는 위 조건(TLS + 관리자 + 명시적 플래그)에서만 가능하며, 인터넷 공개나 실사용 원본의 유일 저장소로 사용하면 안 됩니다.
 
 최종 정책은 [ACCESS_CONTROL_v1.4.md](docs/ACCESS_CONTROL_v1.4.md) 참조.
 

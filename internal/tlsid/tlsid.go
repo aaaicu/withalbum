@@ -138,6 +138,10 @@ type PairingExtras struct {
 // version stays 1: every extra field is optional and apps that do not know
 // it ignore it (they still pin the same key).
 func PairingPayloadWith(serverURL, spkiHex string, x PairingExtras) string {
+	return "withalbum://pair?" + pairingQuery(serverURL, spkiHex, x).Encode()
+}
+
+func pairingQuery(serverURL, spkiHex string, x PairingExtras) url.Values {
 	q := url.Values{"v": {"1"}, "url": {serverURL}, "spki_sha256": {spkiHex}}
 	if x.RelayAddr != "" {
 		q.Set("relay", x.RelayAddr)
@@ -147,7 +151,18 @@ func PairingPayloadWith(serverURL, spkiHex string, x PairingExtras) string {
 		q.Set("public_url", x.PublicURL)
 		q.Set("public_route", x.PublicRoute)
 	}
-	return "withalbum://pair?" + q.Encode()
+	return q
+}
+
+// InvitePayload is the app link of an album invite link (M57): the
+// pairing fields of PairingPayloadWith, so that a phone that never paired
+// with this server can connect and pin it, plus token=<invite token>:
+// withalbum://invite?v=1&url=…&spki_sha256=…[&relay=…&rid=…][&public_url=…&public_route=…]&token=…
+// The token is the only secret in it.
+func InvitePayload(serverURL, spkiHex string, x PairingExtras, token string) string {
+	q := pairingQuery(serverURL, spkiHex, x)
+	q.Set("token", token)
+	return "withalbum://invite?" + q.Encode()
 }
 
 // ServerConfig is the TLS configuration of the server: TLS 1.3 only (its
