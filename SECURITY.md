@@ -356,9 +356,16 @@ pin, relay and public route), the same as the pairing QR.
 - **Pins from links.** An app that pairs from an invite link trusts the
   pin the link carries, as it trusts a QR code: a link from someone who
   can tamper with the message can point the app at another server. The
-  landing page is served with the server's self-signed certificate, so a
+  server's own landing page uses its self-signed certificate, so a
   browser shows a warning; someone who accepts it on a hostile network
-  may be shown a page whose "open in app" link carries another pin. Apps
+  may be shown a page whose "open in app" link carries another pin. The
+  app therefore shares a static page on GitHub Pages
+  (https://aaaicu.github.io/withalbum/invite/) with the link fields in
+  the URL fragment, which browsers do not send to GitHub. That page has
+  a strict CSP (no external resources, no network access) and removes
+  the fragment after reading it, but whoever can push to that repository
+  could change it to read tokens: it is a trust point of its own. GitHub
+  sees the visitor's IP address and browser, not the invite. Apps
   should show the server's name and fingerprint on first pairing from a
   link, and the people sharing links should use the message itself.
 - **Invitation history** shows the invitee its own invitations of the last
