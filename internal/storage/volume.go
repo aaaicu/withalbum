@@ -85,6 +85,12 @@ type OpenOptions struct {
 	// IgnoreDiskUUID opens a root whose marker records another disk UUID.
 	// Only the -adopt-disk command sets it, to record the current one.
 	IgnoreDiskUUID bool
+	// UnreadableDiskOK opens a root whose marker records a disk UUID when
+	// no UUID can be read here at all (inside a container, where the bind
+	// mount is not a block device the process can see). A readable UUID
+	// that differs is still refused, and the marker and volume ID are still
+	// checked.
+	UnreadableDiskOK bool
 }
 
 // Volume is a verified storage root. It is safe for concurrent use.
@@ -192,7 +198,7 @@ func writeMarker(dir, name string, m Marker) error {
 // A root holding RestoreJournalName is refused with ErrRestorePending unless
 // opt.AllowPendingRestore is set.
 func Open(root string, opt OpenOptions) (*Volume, error) {
-	v, err := open(root, MarkerName, ".system", opt.ExpectedVolumeID, true, opt.IgnoreDiskUUID)
+	v, err := open(root, MarkerName, ".system", opt.ExpectedVolumeID, true, opt.IgnoreDiskUUID, opt.UnreadableDiskOK)
 	if err != nil {
 		return nil, err
 	}
@@ -210,10 +216,10 @@ func Open(root string, opt OpenOptions) (*Volume, error) {
 // writable=false skips the write probe, for reading a backup from a
 // read-only disk. Its instance lock (Lock) lives in the directory itself.
 func OpenBackupTarget(dir string, writable bool) (*Volume, error) {
-	return open(dir, BackupMarkerName, ".", "", writable, false)
+	return open(dir, BackupMarkerName, ".", "", writable, false, false)
 }
 
-func open(root, marker, lockDir, expectedID string, writable, ignoreDisk bool) (*Volume, error) {
+func open(root, marker, lockDir, expectedID string, writable, ignoreDisk, unreadableOK bool) (*Volume, error) {
 	resolved, err := resolveDir(root)
 	if err != nil {
 		return nil, err
@@ -233,6 +239,7 @@ func open(root, marker, lockDir, expectedID string, writable, ignoreDisk bool) (
 			switch {
 			case derr != nil:
 				return nil, fmt.Errorf("%w: %w", ErrDiskUnknown, derr)
+			case cur == "" && unreadableOK:
 			case cur == "":
 				return nil, ErrDiskUnknown
 			case !strings.EqualFold(cur, m.DiskUUID):

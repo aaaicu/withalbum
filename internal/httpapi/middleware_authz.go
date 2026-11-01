@@ -19,8 +19,11 @@ import (
 type Access string
 
 const (
-	// AccessPublic: no session. Only the dashboard page (static, no data), health
-	// and the login and refresh endpoints.
+	// AccessPublic: no session. Only the dashboard page (static, no data), health,
+	// the login, refresh and sign-in (nonce, Google/Apple) endpoints, and the
+	// invite link preview and landing page (what the holder of a link's token
+	// may know: the album's name, the inviter's name, the role and the
+	// expiry; rate limited).
 	AccessPublic Access = "public"
 	// AccessSession: any valid session; the handler only touches the caller's
 	// own data (own account, own devices, own folder list).
@@ -58,6 +61,10 @@ var routePolicies = []RoutePolicy{
 	{"GET /api/v1/health", AccessPublic, ""},
 	{"POST /api/v1/auth/login", AccessPublic, ""},
 	{"POST /api/v1/auth/refresh", AccessPublic, ""},
+	// Sign in with Google or Apple (signin.go, M54): a one-attempt nonce,
+	// then an ID token the server verifies itself.
+	{"POST /api/v1/auth/sign-in/nonce", AccessPublic, ""},
+	{"POST /api/v1/auth/sign-in", AccessPublic, ""},
 	{"/api/v1/", AccessSession, ""},
 	{"POST /api/v1/auth/logout", AccessSession, ""},
 	{"GET /api/v1/me", AccessSession, ""},
@@ -66,6 +73,9 @@ var routePolicies = []RoutePolicy{
 	{"GET /api/v1/me/devices", AccessSession, ""},
 	{"DELETE /api/v1/me/devices/{deviceID}", AccessSession, ""},
 	{"POST /api/v1/me/devices/revoke-others", AccessSession, ""},
+	{"GET /api/v1/me/sign-ins", AccessSession, ""},
+	{"POST /api/v1/me/sign-ins", AccessSession, ""},
+	{"DELETE /api/v1/me/sign-ins/{provider}", AccessSession, ""},
 	{"GET /api/v1/admin/users", AccessServer, authz.ManageAccounts},
 	{"POST /api/v1/admin/users", AccessServer, authz.ManageAccounts},
 	{"GET /api/v1/admin/users/{userID}", AccessServer, authz.ManageAccounts},
@@ -74,11 +84,16 @@ var routePolicies = []RoutePolicy{
 	{"GET /api/v1/admin/users/{userID}/devices", AccessServer, authz.ManageAccounts},
 	{"DELETE /api/v1/admin/users/{userID}/devices/{deviceID}", AccessServer, authz.ManageAccounts},
 	{"GET /api/v1/admin/users/{userID}/folders", AccessServer, authz.ManageAccounts},
+	{"GET /api/v1/admin/users/{userID}/sign-ins", AccessServer, authz.ManageAccounts},
+	{"DELETE /api/v1/admin/users/{userID}/sign-ins/{provider}", AccessServer, authz.ManageAccounts},
 	// Archived folders only; the handler and the transaction refuse others
 	// as unknown (admin.go). No access to the folder follows from it.
 	{"POST /api/v1/admin/folders/{folderID}/owner", AccessServer, authz.ManageAccounts},
 	{"GET /api/v1/admin/server/tls", AccessServer, authz.ManageServer},
 	{"GET /api/v1/admin/server/storage", AccessServer, authz.ManageServer},
+	// One state for all the caller's folders (sync_state.go): each one
+	// listed only as authz allows (GetAlbumMetadata, ListAlbumAssets).
+	{"GET /api/v1/sync/state", AccessSession, ""},
 	{"GET /api/v1/folders", AccessSession, ""},
 	{"POST /api/v1/folders", AccessServer, authz.CreateAlbum},
 	{"GET /api/v1/folders/{folderID}", AccessAlbum, authz.GetAlbumMetadata},
@@ -150,6 +165,16 @@ var routePolicies = []RoutePolicy{
 	{"GET /api/v1/invitations", AccessSession, ""},
 	{"POST /api/v1/invitations/{invitationID}/accept", AccessSession, ""},
 	{"POST /api/v1/invitations/{invitationID}/decline", AccessSession, ""},
+	// Invite links (invite_links.go): the owner manages them; anyone
+	// holding a token may preview it (public, rate limited, never spends
+	// a use) and any signed-in account may redeem it (the store decides
+	// the link, the folder and the caller in one transaction).
+	{"GET /api/v1/folders/{folderID}/invite-links", AccessAlbum, authz.InviteMember},
+	{"POST /api/v1/folders/{folderID}/invite-links", AccessAlbum, authz.InviteMember},
+	{"DELETE /api/v1/folders/{folderID}/invite-links/{linkID}", AccessAlbum, authz.InviteMember},
+	{"POST /api/v1/invitations/link-preview", AccessPublic, ""},
+	{"POST /api/v1/invitations/link-redeem", AccessSession, ""},
+	{"GET /i/{token}", AccessPublic, ""},
 }
 
 // Routes returns the declared protection of every route (for tests and

@@ -46,7 +46,7 @@ func openSource(cmd string, stderr io.Writer) (*storage.Volume, bool) {
 		fmt.Fprintf(stderr, "%s: %v\n", cmd, err)
 		return nil, false
 	}
-	vol, err := storage.Open(root, storage.OpenOptions{ExpectedVolumeID: expectedVolumeID()})
+	vol, err := storage.Open(root, storage.OpenOptions{ExpectedVolumeID: expectedVolumeID(), UnreadableDiskOK: containerSetting(os.Getenv)})
 	if err != nil {
 		fmt.Fprintf(stderr, "%s: STORAGE: %s (%v)\n", cmd, openStorageHint(root, err), err)
 		return nil, false

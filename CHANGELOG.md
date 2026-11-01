@@ -2,7 +2,30 @@
 
 ## [Unreleased]
 
-아직 없음.
+## [0.1.0-alpha.2] — 2026-10-31 (prerelease)
+
+Docker 격리 구성(M58), Google·Apple 로그인(M54), 빠른 동기화 상태(M53), 초대함 기록·초대 링크(M57). 실기기 검증 결과는 `docs/releases/v0.1.0-alpha.2.md`.
+
+### Added (invitation history and invite links, M57)
+- 초대함 기록: `GET /api/v1/invitations`와 `GET .../folders/{folder_id}/invitations`가 대기 초대를 **최신순**으로(이전: 오래된 순), `include=recent&days=N`(1~30, 기본 30)이면 최근 처리한 초대(수락·거절·만료·취소)도 처리 시각 최신순으로. 항목에 `answered_at`·`reason`(취소 사유 `revoked_by_owner`·`album_deleted`·`album_archived`·`owner_changed`)·`member_now`·`source`(`direct`|`link`). `limit`(1~100, 기본 100)·`cursor`/`next_cursor` 페이지. 오너 목록에서 거절은 `not_joined`.
+- 410 `invitation_gone`에 `reason`(`accepted`·`declined`·`expired`·`revoked`·`revoked_by_owner`·`album_deleted`·`album_archived`·`owner_changed`·`replaced`).
+- 초대 보내기 `"replace_pending": true`: 같은 사람의 대기 초대를 취소(사유 `replaced`, 목록에서 숨김)하고 새 초대.
+- 앨범 초대 링크(OWNER): `GET|POST .../folders/{folder_id}/invite-links`, `DELETE .../invite-links/{link_id}`(역할, 만료 1~30일 기본 7, 사용 1~20회 기본 1, 앨범당 사용 가능 링크 20개). 생성 응답에만 토큰·`app_link`(`withalbum://invite?…&token=…`, 페어링 필드 포함)·`web_url`(`/i/<token>`). 공개 `POST /api/v1/invitations/link-preview`(앨범 이름·초대한 사람·역할·만료, `sign_up_available: false`), 로그인 사용자 `POST /api/v1/invitations/link-redeem`(바로 멤버, 사용 1회 소모, 수락된 초대 기록, 같은 앨범 대기 초대는 `replaced`), 공개 안내 페이지 `GET /i/{token}`(스크립트 없음, Funnel·중계에서도). 토큰은 SHA-256만 저장, 로그·감사에 없음, 주소·계정별 속도 제한. 앨범 삭제·보관·오너 변경 시 링크도 취소.
+- `/me` `server_features`에 `invitation_history`, `invite_links`. 마이그레이션 **0019**(`folder_invitations.declined_at`·`revoked_at`·`revoke_reason`·`link_id`, `invite_links`). 이전 기록의 처리 시각·사유는 비워 둠(null).
+
+### Added (Docker, M58)
+- `Dockerfile`·`compose.yaml`·`docker.env.example`·[`docs/DOCKER.md`](docs/DOCKER.md)(시험판, 실제 Docker 미검증): 서버 컨테이너는 바깥으로 나가는 길이 없는 Docker `internal` 네트워크에만(공유기 설정 없이 서버 → 홈캠·공유기·다른 기기·인터넷 차단), 휴대폰·Funnel 연결은 같은 이미지의 전달 컨테이너가 받음. uid 10001, 읽기 전용 FS, capability 전부 제거, `no-new-privileges`. 미리보기 도구 ffmpeg·libheif.
+- `WITHALBUM_CONTAINER=1`(이미지가 설정): Funnel 리스너를 컨테이너 주소(`0.0.0.0:8788`)에 열 수 있음, 디스크 UUID를 읽을 수 없으면 그 확인만 건너뜀(읽히는 UUID가 다르면 여전히 거부, 마커·볼륨 ID는 확인).
+- `WITHALBUM_LAN_URL`: 와일드카드 리스너의 연결 QR 주소(`https://<사설 IP>:<포트>`, 쉼표로 여러 개) — 컨테이너 안 주소 대신 호스트의 집 주소.
+- `withalbum-server forward -map listen=target`(바이트만 옮기는 TCP 전달기), `withalbum-server reach <host:port>...`(격리 확인: 연결 1회씩, `blocked`/`route`/`OPEN`, 모두 막혀야 종료 코드 0).
+- HEIC/HEIF/AVIF 미리보기를 libheif `heif-dec`(옛 이름 `heif-convert`)로도 만듦(Linux에는 `sips`가 없음): 파일 머리의 크기로 1억 2천만 화소 상한을 먼저 확인, 크기를 모르면 실행하지 않음. `WITHALBUM_HEIFDEC`. 순서 sips → heif-dec → ffmpeg.
+
+### Added (sign in with Google or Apple, M54)
+- 계정에 Google·Apple 계정을 하나씩 연결하고 비밀번호 대신 로그인: `POST /api/v1/auth/sign-in/nonce`(공개, 1회용 nonce 10분 + 이 서버가 받는 제공자), `POST /api/v1/auth/sign-in`(공개, 연결된 계정으로 비밀번호 로그인과 같은 토큰 응답), `GET|POST /api/v1/me/sign-ins`(목록·연결 — **현재 비밀번호 필요**), `DELETE /api/v1/me/sign-ins/{provider}`, 관리자용 `GET /api/v1/admin/users/{user_id}/sign-ins`·`DELETE …/sign-ins/{provider}`(연결 보기·해제만, 관리자가 연결을 만들 수는 없음). 서버가 ID 토큰을 직접 검증(RS256 서명·발급자·앱 클라이언트 ID·만료·서버가 낸 nonce, 공개키는 요청 시 받아 캐시) — 제공자 비밀값 없음. 계정은 `sub`로만 찾고(이메일로 찾지 않음) 로그인으로 계정을 만들지 않음(`401 identity_not_linked`). 실패는 주소·제공자별 속도 제한(비밀번호 로그인 잠금 없음), 감사 `account.identity_link`·`account.identity_unlink`·`auth.login`의 `method`.
+- 설정 `-google-client-ids`/`WITHALBUM_GOOGLE_CLIENT_IDS`(기본 꺼짐, 릴리스 빌드는 ldflags로 내장 가능), `-apple-client-ids`/`WITHALBUM_APPLE_CLIENT_IDS`(기본 `aaaicu.withalbum.app`), `off`로 끔. `/me` `server_features`에 `sign_in`. 공개 라우트 4개 → 6개. 마이그레이션 **0018**(`user_identities`). 설명 [`docs/SIGN_IN.md`](docs/SIGN_IN.md).
+
+### Added (fast sync state, M53)
+- `GET /api/v1/sync/state`: 읽을 수 있는 모든 앨범의 피드 끝 커서(호출자 보기 기준)를 한 번에 — 앱이 앨범마다 묻지 않고 커서가 바뀐 앨범만 받음. `albums_tag`(앨범 목록·이름·역할·설정 변화), `tag`=ETag(`If-None-Match`면 304). `wait=1..25`초 롱폴(1초마다 확인, 동시 대기 64개 상한, 넘으면 바로 응답). `digests=1`이면 앨범별 내용 해시 `digest`·`count`(자산 id 순 `id sha256 like_count liked_by_me comment_count` 줄의 SHA-256, 같은 트랜잭션에서 읽은 커서와 함께) — 앱이 로컬 인덱스와 비교해 어긋나면 그 앨범만 다시 받음. 중계·Funnel 허용, `/me` `server_features`에 `sync_state`.
 
 ## [0.1.0-alpha.1] — 2026-10-28 (prerelease)
 

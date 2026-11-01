@@ -58,7 +58,10 @@ info:
 
 
     Access. Only the dashboard page (GET /), GET /api/v1/health,
-    /api/v1/auth/login and /api/v1/auth/refresh work without a session;
+    /api/v1/auth/login, /api/v1/auth/refresh, /api/v1/auth/sign-in,
+    /api/v1/auth/sign-in/nonce, the invite link preview
+    (POST /api/v1/invitations/link-preview) and the invite link landing
+    page (GET /i/{token}) work without a session;
     every other path under /api/v1/, including unknown ones, answers 401
     without a valid session. While the storage disk is unavailable (see
     /api/v1/health), a session cannot be checked and authenticated routes
@@ -352,6 +355,45 @@ info:
     pending invitations. An UPLOADER gets 403.
 
 
+    Invitation history ("invitation_history" in server_features). GET
+    /api/v1/invitations and GET .../invitations list pending invitations
+    newest first; with include=recent&days=N (1..30, default 30) they also
+    list the invitations answered in the last N days (accepted, declined,
+    expired, revoked), most recently answered first, after the pending
+    ones. Each carries status, reason (why a revoked one was revoked:
+    revoked_by_owner, album_deleted, album_archived, owner_changed),
+    answered_at, member_now and source (direct or link). Invitations a
+    newer one replaced are never listed. The owner's list shows a declined
+    invitation as status not_joined. Pages: limit (1..100, default 100)
+    and the opaque next_cursor (null on the last page) passed back as
+    cursor. A 410 invitation_gone carries "reason": accepted, declined,
+    expired, revoked (revoked before the server recorded reasons),
+    revoked_by_owner, album_deleted, album_archived, owner_changed or
+    replaced.
+
+
+    Invite links ("invite_links" in server_features). The OWNER creates a
+    link (POST .../invite-links: role, expires_in_days 1..30 default 7,
+    max_uses 1..20 default 1; at most 20 usable links per album) and gets
+    its token once, with app_link
+    withalbum://invite?v=1&url=<https origin>&spki_sha256=<64 hex>[&relay=<host:port>&rid=<rid>][&public_url=<https origin>&public_route=funnel]&token=<43 base64url>
+    (the pairing fields of withalbum://pair, so that a phone that never
+    paired can connect and pin the server, plus the token) and web_url
+    <public or LAN https origin>/i/<token> (a landing page served by this
+    server with its self-signed certificate: browsers warn). Only the
+    token's SHA-256 is stored; it is never logged or audited. Anyone
+    holding the token may preview it (POST /api/v1/invitations/link-preview,
+    public) and any signed-in account may redeem it (POST
+    /api/v1/invitations/link-redeem): it becomes a member with the link's
+    role, one use is spent, and an accepted invitation with source "link"
+    appears in both histories. Links are revoked by the owner, and like
+    pending invitations when the album is deleted, archived or changes
+    owner. Lookups by token are rate limited (429 rate_limited with
+    Retry-After). There is no sign-up through a link yet:
+    sign_up_available is false and a person without an account asks this
+    server's administrator for one.
+
+
     Errors are {"error": "<code>"}. 401 responses carry
     WWW-Authenticate: Bearer. API responses are Cache-Control: no-store.
 servers:
@@ -480,6 +522,77 @@ paths:
         '401': {description: 'unauthorized: expired, revoked, unknown or reused refresh token, or account disabled'}
         '403': {description: 'csrf_failed (cookie refresh without a valid X-CSRF-Token; nothing changed)'}
         '415': {description: json_required}
+  /api/v1/auth/sign-in/nonce:
+    post:
+      tags: [Auth]
+      security: []
+      summary: One-attempt nonce for signing in or linking with Google or Apple (M54)
+      description: >-
+        Returns a random nonce that one sign-in or link request may use
+        within 10 minutes, and the providers this server accepts (those
+        with a configured client ID; may be empty). The app passes the nonce
+        to the provider's sign-in (Google: as is; Apple: its SHA-256 in
+        hex), so the ID token it gets back names it. Nonces live in memory
+        only; at most 32 outstanding per client address, the oldest is
+        dropped. No body is needed.
+      responses:
+        '200':
+          description: Nonce issued
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [nonce, expires_at, providers]
+                properties:
+                  nonce: {type: string}
+                  expires_at: {type: string, format: date-time}
+                  providers:
+                    type: array
+                    items: {type: string, enum: [google, apple]}
+  /api/v1/auth/sign-in:
+    post:
+      tags: [Auth]
+      security: []
+      summary: Sign in with a linked Google or Apple identity (M54, rate-limited)
+      description: >-
+        The server verifies the ID token itself against the provider's
+        published keys (RS256 signature, issuer, audience = this app's client
+        ID, expiry, and the nonce from POST /auth/sign-in/nonce, which is
+        used up by this request whatever the result). It then signs in the
+        account that linked this identity (POST /me/sign-ins) and answers
+        like a password login. No account is ever created here. Failures
+        count against the client address like login failures, per provider,
+        never against an account's password login.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider, id_token, nonce, device_name, platform]
+              properties:
+                provider: {type: string, enum: [google, apple]}
+                id_token: {type: string, description: the provider's OpenID Connect ID token (JWT)}
+                nonce: {type: string}
+                device_name: {type: string, minLength: 1, maxLength: 64}
+                platform: {type: string, enum: [ios, android, macos, web]}
+      responses:
+        '200':
+          description: Session created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TokenResponse'}
+        '400': {description: 'invalid_json, invalid_request, invalid_device, provider_disabled (no client ID configured for it)'}
+        '401': {description: 'invalid_identity_token (bad, expired, for another app, or unknown/used nonce), identity_not_linked, invalid_credentials (the linked account is disabled)'}
+        '415': {description: json_required}
+        '429':
+          description: rate_limited
+          headers:
+            Retry-After: {schema: {type: integer}, description: seconds}
+        '503':
+          description: provider_unavailable (the provider's keys could not be fetched)
+          headers:
+            Retry-After: {schema: {type: integer}, description: seconds}
   /api/v1/auth/logout:
     post:
       tags: [Auth]
@@ -508,7 +621,7 @@ paths:
                   server_features:
                     type: array
                     items: {type: string}
-                    examples: [[live_photo_bundles, folder_create_idempotency, asset_duration, asset_location, reactions_comments, asset_camera, video_playback]]
+                    examples: [[live_photo_bundles, folder_create_idempotency, asset_duration, asset_location, reactions_comments, asset_camera, video_playback, album_management, invitation_history, invite_links]]
                     description: >-
                       Optional abilities of this server. "live_photo_bundles":
                       POST .../bundles stores Live Photos (still and video as
@@ -524,6 +637,10 @@ paths:
                       "asset_camera": assets carry camera, width and height.
                       "video_playback": assets carry playback and GET
                       .../assets/{asset_id}/playback serves the copy.
+                      "invitation_history": invitation lists take
+                      include=recent, paging and replace_pending, and 410
+                      bodies carry reason. "invite_links": album invite
+                      links (create, preview, redeem, landing page).
                       Absent on older servers; clients must ignore unknown
                       values.
                   relay:
@@ -657,6 +774,81 @@ paths:
                   revoked: {type: integer, minimum: 0}
         '401': {description: unauthorized}
         '403': {description: csrf_failed}
+  /api/v1/me/sign-ins:
+    get:
+      tags: [Me]
+      summary: Google and Apple identities linked to the own account (M54)
+      description: >-
+        The provider's account identifier is never shown; email is what the
+        ID token carried when the identity was linked (Apple may give a
+        relay address or none). providers lists what this server accepts.
+      responses:
+        '200':
+          description: Linked identities
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, providers]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/SignInLink'}
+                  providers:
+                    type: array
+                    items: {type: string, enum: [google, apple]}
+        '401': {description: unauthorized}
+    post:
+      tags: [Me]
+      summary: Link a Google or Apple identity to the own account (M54)
+      description: >-
+        Needs the current password (a session alone must not add a lasting
+        way in) and a fresh ID token with a nonce from POST
+        /auth/sign-in/nonce. One identity per provider per account; an
+        identity belongs to one account. Linking the same identity again
+        returns the existing link. Audited as "account.identity_link".
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider, id_token, nonce, current_password]
+              properties:
+                provider: {type: string, enum: [google, apple]}
+                id_token: {type: string}
+                nonce: {type: string}
+                current_password: {type: string, format: password}
+      responses:
+        '201':
+          description: Linked
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SignInLink'}
+        '400': {description: 'invalid_json, invalid_request, provider_disabled, invalid_identity_token (bad, expired, for another app, or unknown/used nonce; not 401, which means the session ended)'}
+        '401': {description: unauthorized}
+        '403': {description: 'invalid_credentials (wrong current password) or csrf_failed'}
+        '409': {description: 'identity_in_use (linked to another account), provider_linked (unlink the other identity of this provider first)'}
+        '429': {description: rate_limited}
+        '503': {description: 'busy, provider_unavailable'}
+  /api/v1/me/sign-ins/{provider}:
+    delete:
+      tags: [Me]
+      summary: Unlink the own Google or Apple identity (M54)
+      description: >-
+        Sessions already made with it stay valid; revoke devices to end
+        them. The password keeps working. Audited as
+        "account.identity_unlink".
+      parameters:
+        - in: path
+          name: provider
+          required: true
+          schema: {type: string, enum: [google, apple]}
+      responses:
+        '204': {description: Unlinked}
+        '401': {description: unauthorized}
+        '403': {description: csrf_failed}
+        '404': {description: not_found (nothing linked for this provider)}
   /api/v1/admin/users:
     post:
       tags: [Server Admin]
@@ -806,6 +998,52 @@ paths:
         '401': {description: unauthorized}
         '403': {description: 'forbidden (not SERVER_ADMIN) or csrf_failed'}
         '404': {description: 'user_not_found, device_not_found (not a live device of this account)'}
+  /api/v1/admin/users/{user_id}/sign-ins:
+    get:
+      tags: [Server Admin]
+      summary: Google and Apple identities linked to an account (SERVER_ADMIN only, M54)
+      description: Same fields as GET /me/sign-ins; never the provider's account identifier.
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+      responses:
+        '200':
+          description: Linked identities
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, providers]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/SignInLink'}
+                  providers:
+                    type: array
+                    items: {type: string, enum: [google, apple]}
+        '401': {description: unauthorized}
+        '403': {description: forbidden (not SERVER_ADMIN)}
+        '404': {description: user_not_found}
+  /api/v1/admin/users/{user_id}/sign-ins/{provider}:
+    delete:
+      tags: [Server Admin]
+      summary: Unlink a Google or Apple identity of an account (SERVER_ADMIN only, M54)
+      description: >-
+        For a lost or taken-over provider account. An administrator can
+        remove a link but never add one (linking needs the holder's password
+        and their own ID token). Sessions already made with it stay valid;
+        revoke devices to end them. Audited as "account.identity_unlink"
+        with the administrator as actor.
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+        - in: path
+          name: provider
+          required: true
+          schema: {type: string, enum: [google, apple]}
+      responses:
+        '204': {description: Unlinked}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (not SERVER_ADMIN) or csrf_failed'}
+        '404': {description: 'user_not_found, not_found (nothing linked for this provider)'}
   /api/v1/admin/users/{user_id}/folders:
     get:
       tags: [Server Admin]
@@ -1238,22 +1476,26 @@ paths:
       - $ref: '#/components/parameters/FolderID'
     get:
       tags: [Invitations]
-      summary: Pending, unexpired invitations of the album (OWNER only)
+      summary: Invitations of the album, pending and recently answered (OWNER only)
       description: >-
-        Only invitations still waiting for an answer. Accepted ones show up
-        as members; revoked, expired and declined ones are left out.
+        Pending, unexpired invitations, newest first. With include=recent
+        also those answered in the last days (see "Invitation history"),
+        including the ones made by redeeming an invite link (source link).
+        A declined invitation is shown as status not_joined. Before
+        "invitation_history" this was the pending ones only, oldest first,
+        without paging.
+      parameters:
+        - $ref: '#/components/parameters/InvitationInclude'
+        - $ref: '#/components/parameters/InvitationDays'
+        - $ref: '#/components/parameters/InvitationLimit'
+        - $ref: '#/components/parameters/InvitationCursor'
       responses:
         '200':
-          description: Oldest first
+          description: Pending first (newest first), then answered (most recently answered first)
           content:
             application/json:
-              schema:
-                type: object
-                required: [invitations]
-                properties:
-                  invitations:
-                    type: array
-                    items: {$ref: '#/components/schemas/Invitation'}
+              schema: {$ref: '#/components/schemas/InvitationPage'}
+        '400': {description: 'invalid_filter (include other than recent, days out of 1..30 or without include), invalid_limit, invalid_cursor'}
         '401': {description: unauthorized}
         '403': {description: forbidden (member, not owner)}
         '404': {description: folder_not_found}
@@ -1266,7 +1508,10 @@ paths:
         accepted once, only by that account with its own session. It carries
         no secret token. Unknown, disabled and locked accounts are the same
         404 invitee_not_found. One pending invitation per album and account;
-        an expired one is replaced. Never creates an account. Audited.
+        an expired one is replaced. With replace_pending true a pending one
+        is revoked (reason replaced, no longer listed) and the new one
+        created in the same transaction, e.g. to change the role. Never
+        creates an account. Audited.
       requestBody:
         required: true
         content:
@@ -1277,6 +1522,7 @@ paths:
               properties:
                 invited_user_id: {type: string}
                 role: {type: string, enum: [VIEWER, UPLOADER, CONTRIBUTOR]}
+                replace_pending: {type: boolean, default: false, description: '"invitation_history" servers; older ones ignore it and answer 409 invitation_pending'}
       responses:
         '201':
           description: Pending invitation created
@@ -1287,7 +1533,7 @@ paths:
         '401': {description: unauthorized}
         '403': {description: 'forbidden (member, not owner) or csrf_failed'}
         '404': {description: 'folder_not_found, invitee_not_found'}
-        '409': {description: 'already_member (the owner or a member), invitation_pending'}
+        '409': {description: 'already_member (the owner or a member), invitation_pending (without replace_pending)'}
         '415': {description: json_required}
         '503': {description: 'storage_unavailable, storage_io_error, busy'}
   /api/v1/folders/{folder_id}/invitations/{invitation_id}:
@@ -1302,27 +1548,31 @@ paths:
         '401': {description: unauthorized}
         '403': {description: 'forbidden (member, not owner) or csrf_failed'}
         '404': {description: 'folder_not_found, invitation_not_found (unknown or of another album)'}
-        '410': {description: 'invitation_gone (already accepted, revoked, expired or declined)'}
+        '410': {description: 'invitation_gone {reason} (already accepted, revoked, expired or declined)', content: {application/json: {schema: {$ref: '#/components/schemas/Gone'}}}}
   /api/v1/invitations:
     get:
       tags: [Invitations]
-      summary: Pending invitations addressed to the current account
+      summary: Invitations addressed to the current account, pending and recently answered
       description: >-
-        Only the caller's own invitations that can still be accepted:
-        pending, unexpired, for an album that is not archived and written by
-        its current owner.
+        The caller's own invitations that can still be accepted (pending,
+        unexpired, for an album in use, written by its current owner),
+        newest first; with include=recent also those answered in the last
+        days (see "Invitation history"): accepted (member_now tells whether
+        the caller is still in the album), declined, expired, revoked with
+        reason. Before "invitation_history" this was the pending ones only,
+        oldest first, without paging.
+      parameters:
+        - $ref: '#/components/parameters/InvitationInclude'
+        - $ref: '#/components/parameters/InvitationDays'
+        - $ref: '#/components/parameters/InvitationLimit'
+        - $ref: '#/components/parameters/InvitationCursor'
       responses:
         '200':
-          description: Own invitations only, oldest first
+          description: Own invitations only; pending first (newest first), then answered (most recently answered first)
           content:
             application/json:
-              schema:
-                type: object
-                required: [invitations]
-                properties:
-                  invitations:
-                    type: array
-                    items: {$ref: '#/components/schemas/Invitation'}
+              schema: {$ref: '#/components/schemas/InvitationPage'}
+        '400': {description: 'invalid_filter, invalid_limit, invalid_cursor'}
         '401': {description: unauthorized}
   /api/v1/invitations/{invitation_id}/accept:
     post:
@@ -1345,7 +1595,7 @@ paths:
         '403': {description: 'forbidden (the invitation names another account; administrators included) or csrf_failed'}
         '404': {description: invitation_not_found}
         '409': {description: already_member}
-        '410': {description: 'invitation_gone (accepted, revoked, expired, declined, album archived or owner changed)'}
+        '410': {description: 'invitation_gone {reason}: accepted, declined, expired, revoked, revoked_by_owner, album_deleted, album_archived, owner_changed, replaced', content: {application/json: {schema: {$ref: '#/components/schemas/Gone'}}}}
   /api/v1/invitations/{invitation_id}/decline:
     post:
       tags: [Invitations]
@@ -1365,8 +1615,193 @@ paths:
         '401': {description: unauthorized}
         '403': {description: 'forbidden (the invitation names another account; administrators included) or csrf_failed'}
         '404': {description: invitation_not_found}
-        '410': {description: 'invitation_gone (accepted, revoked, expired, already declined, album archived or owner changed)'}
+        '410': {description: 'invitation_gone {reason} (as accept)', content: {application/json: {schema: {$ref: '#/components/schemas/Gone'}}}}
         '503': {description: 'storage_unavailable, storage_io_error, busy'}
+  /api/v1/folders/{folder_id}/invite-links:
+    parameters:
+      - $ref: '#/components/parameters/FolderID'
+    get:
+      tags: [Invitations]
+      summary: Invite links of the album (OWNER only)
+      description: >-
+        Usable links and those that stopped being usable in the last 30 days
+        (expired, used up, revoked), newest first, at most 100. Never a token:
+        a link can only be shared from the create reply.
+      responses:
+        '200':
+          description: Newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [invite_links]
+                properties:
+                  invite_links:
+                    type: array
+                    items: {$ref: '#/components/schemas/InviteLink'}
+        '401': {description: unauthorized}
+        '403': {description: forbidden (member, not owner)}
+        '404': {description: folder_not_found}
+    post:
+      tags: [Invitations]
+      summary: Create an invite link (OWNER only)
+      description: >-
+        A link anyone signed in to this server can redeem to join with role,
+        until it expires or was redeemed max_uses times. The reply is the
+        only place its token ever appears (Cache-Control: no-store); share
+        app_link (and web_url for people without the app). Audited
+        (invite_link.create, without the token).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role: {type: string, enum: [VIEWER, UPLOADER, CONTRIBUTOR]}
+                expires_in_days: {type: integer, minimum: 1, maximum: 30, default: 7}
+                max_uses: {type: integer, minimum: 1, maximum: 20, default: 1}
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [invite_link, token, app_link, web_url]
+                properties:
+                  invite_link: {$ref: '#/components/schemas/InviteLink'}
+                  token: {type: string, pattern: '^[A-Za-z0-9_-]{43}$', description: 'the secret; 32 random bytes, base64url'}
+                  app_link: {type: [string, 'null'], description: 'withalbum://invite?v=1&url=…&spki_sha256=…[&relay=…&rid=…][&public_url=…&public_route=funnel]&token=…; null without TLS'}
+                  web_url: {type: [string, 'null'], description: '<public_url or first LAN https origin>/i/<token>; null without TLS. Self-signed certificate: browsers warn'}
+        '400': {description: 'invalid_json, invalid_role, invalid_invite_link (expires_in_days or max_uses out of range)'}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (member, not owner) or csrf_failed'}
+        '404': {description: folder_not_found}
+        '409': {description: too_many_invite_links (20 usable links)}
+        '415': {description: json_required}
+        '503': {description: 'storage_unavailable, storage_io_error, busy'}
+  /api/v1/folders/{folder_id}/invite-links/{link_id}:
+    delete:
+      tags: [Invitations]
+      summary: Revoke an invite link (OWNER only)
+      description: Also an expired or used up one. Audited (invite_link.revoke).
+      parameters:
+        - $ref: '#/components/parameters/FolderID'
+        - in: path
+          name: link_id
+          required: true
+          schema: {type: string}
+      responses:
+        '204': {description: Revoked}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (member, not owner) or csrf_failed'}
+        '404': {description: 'folder_not_found, invite_link_not_found (unknown or of another album)'}
+        '410': {description: 'invite_link_gone {reason} (revoked already)', content: {application/json: {schema: {$ref: '#/components/schemas/Gone'}}}}
+  /api/v1/invitations/link-preview:
+    post:
+      tags: [Invitations]
+      summary: What an invite link invites to (public)
+      description: >-
+        No session. What the holder of a usable link may know before
+        signing in: album name, inviter, role, expiry. Never spends a use.
+        Unknown and malformed tokens count against the client address (10
+        per 15 minutes), and every lookup against its rate (10 at once,
+        then one every 6 s): 429. sign_up_available is false on this
+        version (accounts come from the server's administrator; reserved
+        for sign-up through a link).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: {type: string}
+      responses:
+        '200':
+          description: The link can be redeemed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [folder_name, inviter_display_name, role, expires_at, sign_up_available]
+                properties:
+                  folder_name: {type: string}
+                  inviter_display_name: {type: string}
+                  role: {type: string, enum: [VIEWER, UPLOADER, CONTRIBUTOR]}
+                  expires_at: {type: string, format: date-time}
+                  sign_up_available: {type: boolean}
+        '400': {description: invalid_json}
+        '404': {description: invite_link_not_found}
+        '410': {description: 'invite_link_gone {reason}: expired, used_up, revoked_by_owner, album_deleted, album_archived, owner_changed (no album details)', content: {application/json: {schema: {$ref: '#/components/schemas/Gone'}}}}
+        '415': {description: json_required}
+        '429': {description: rate_limited (Retry-After)}
+  /api/v1/invitations/link-redeem:
+    post:
+      tags: [Invitations]
+      summary: Join an album with an invite link
+      description: >-
+        Any signed-in account; the app shows the preview and asks first.
+        One transaction: membership with the link's role, one use spent, an
+        accepted invitation with source link (a pending invitation of the
+        same album for this account is revoked as replaced), audit row
+        invite_link.redeem (never the token). Two accounts racing for the
+        last use: one joins, the other gets 410 used_up. Unknown tokens
+        count against the account (30 per 15 minutes from any address) and
+        the address (10). Cookie sessions need X-CSRF-Token.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: {type: string}
+      responses:
+        '200':
+          description: Joined; the album as the caller now sees it
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Folder'}
+        '400': {description: invalid_json}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (account not active) or csrf_failed'}
+        '404': {description: invite_link_not_found}
+        '409': {description: 'already_member {folder_id} (the owner or a member; nothing spent)'}
+        '410': {description: 'invite_link_gone {reason} (as preview)', content: {application/json: {schema: {$ref: '#/components/schemas/Gone'}}}}
+        '415': {description: json_required}
+        '429': {description: rate_limited (Retry-After)}
+        '503': {description: 'storage_unavailable, storage_io_error, busy'}
+  /i/{token}:
+    get:
+      tags: [Invitations]
+      summary: Landing page of an invite link (public HTML)
+      description: >-
+        For a person who opened web_url in a browser. A usable link shows
+        the album name, the inviter, the role, the expiry, a button opening
+        app_link and how to join (install the app; an account comes from
+        this server's administrator). Unknown, malformed and unusable links
+        show that the link cannot be used, without album details. Never
+        spends a use. Served on the funnel and relay routes too.
+        Content-Security-Policy without script (one hashed inline style),
+        X-Robots-Tag noindex, Cache-Control no-store, Referrer-Policy
+        no-referrer. Rate limited like the preview (429 page).
+      security: []
+      parameters:
+        - in: path
+          name: token
+          required: true
+          schema: {type: string}
+      responses:
+        '200': {description: 'text/html, usable link'}
+        '404': {description: 'text/html, unknown or malformed token'}
+        '410': {description: 'text/html, expired, used up or revoked'}
+        '429': {description: 'text/html, rate limited'}
   /api/v1/folders/{folder_id}/members/{user_id}:
     parameters:
       - $ref: '#/components/parameters/FolderID'
@@ -2179,6 +2614,67 @@ paths:
         '404': {description: 'folder_not_found, asset_not_found (not in the trash: unknown, not removed, purged or removed more than 30 days ago)'}
         '409': {description: 'asset_conflict (the album holds the same original again, uploaded since the removal)'}
         '503': {description: 'storage_unavailable, storage_io_error, busy'}
+  /api/v1/sync/state:
+    get:
+      tags: [Sync]
+      summary: Every readable folder's feed position in one request, with a long poll (server_features sync_state)
+      description: >-
+        For each folder the caller can read (OWNER, CONTRIBUTOR, VIEWER; an
+        UPLOADER's folders are not listed) the cursor where its feed ends
+        for the caller (the next_cursor GET .../sync would return at the
+        end, in the caller's view). A client pulls only the folders whose
+        cursor differs from its stored one. "albums_tag" changes whenever
+        GET /folders would answer differently (an album added or lost, a
+        name, role or setting). "tag", also sent as the ETag, changes
+        whenever albums_tag or a cursor does. With If-None-Match equal to
+        the current tag the answer is 304 without a body; with wait=N as
+        well the server waits up to N seconds for a change (checked every
+        second) before answering 304, and answers 200 as soon as the tag
+        changes (a long poll; a busy server may answer without waiting).
+        With digests=1 each folder also has "digest" and "count": the
+        lowercase hex SHA-256, over the folder's assets in ascending id
+        order as the caller sees them, of the lines
+        "<id> <sha256> <like_count> <liked_by_me 0|1> <comment_count>\n"
+        (the Asset fields), read together with that folder's cursor. A
+        client whose index is at that cursor and computes another digest
+        missed a change: it reloads that folder from the snapshot.
+        Available on relay and funnel routes.
+      parameters:
+        - in: query
+          name: wait
+          schema: {type: integer, minimum: 0, maximum: 25}
+          description: seconds to wait for a change when If-None-Match is the current tag
+        - in: query
+          name: digests
+          schema: {type: string, enum: ['0', '1']}
+        - in: header
+          name: If-None-Match
+          schema: {type: string}
+          description: the tag of a previous answer, quoted
+      responses:
+        '200':
+          description: The current state (ETag = tag, Cache-Control no-store)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tag, albums_tag, folders]
+                properties:
+                  tag: {type: string}
+                  albums_tag: {type: string}
+                  folders:
+                    type: array
+                    items:
+                      type: object
+                      required: [folder_id, cursor]
+                      properties:
+                        folder_id: {type: string}
+                        cursor: {type: string}
+                        digest: {type: string, description: 'digests=1 only'}
+                        count: {type: integer, description: 'digests=1 only: assets in the digest'}
+        '304': {description: 'unchanged (If-None-Match), also after waiting'}
+        '400': {description: 'invalid_wait, invalid_digests'}
+        '401': {description: unauthorized}
   /api/v1/folders/{folder_id}/sync:
     get:
       tags: [Sync]
@@ -2677,6 +3173,25 @@ components:
       name: upload_id
       required: true
       schema: {type: string, pattern: '^[0-9a-f]{32}$'}
+    InvitationInclude:
+      in: query
+      name: include
+      schema: {type: string, enum: [recent]}
+      description: recent adds the invitations answered in the last days
+    InvitationDays:
+      in: query
+      name: days
+      schema: {type: integer, minimum: 1, maximum: 30, default: 30}
+      description: With include=recent only
+    InvitationLimit:
+      in: query
+      name: limit
+      schema: {type: integer, minimum: 1, maximum: 100, default: 100}
+    InvitationCursor:
+      in: query
+      name: cursor
+      schema: {type: string}
+      description: next_cursor of the previous page (opaque)
     InvitationID:
       in: path
       name: invitation_id
@@ -3204,9 +3719,44 @@ components:
         inviter_user_id: {type: string}
         inviter_display_name: {type: string}
         role: {type: string, enum: [VIEWER, UPLOADER, CONTRIBUTOR]}
-        status: {type: string, enum: [pending]}
+        status: {type: string, enum: [pending, accepted, declined, expired, revoked, not_joined], description: 'pending only in lists without include=recent; not_joined is how the owner sees declined'}
         created_at: {type: string, format: date-time}
-        expires_at: {type: string, format: date-time, description: created_at + 7 days}
+        expires_at: {type: string, format: date-time, description: 'created_at + 7 days (for source link: the link''s expiry)'}
+        answered_at: {type: [string, 'null'], format: date-time, description: 'accepted, declined or revoked at, or expires_at when expired; null while pending and when unknown (answered before the server recorded it)'}
+        reason: {type: [string, 'null'], enum: [revoked_by_owner, album_deleted, album_archived, owner_changed, null], description: 'status revoked only; null when unknown'}
+        member_now: {type: boolean, description: 'the invitee is the owner or a member of the album now (history lists; false in the create reply and the member list)'}
+        source: {type: string, enum: [direct, link]}
+    InvitationPage:
+      type: object
+      required: [invitations, next_cursor]
+      properties:
+        invitations:
+          type: array
+          items: {$ref: '#/components/schemas/Invitation'}
+        next_cursor: {type: [string, 'null'], description: 'pass as cursor for the next page; null on the last page'}
+    Gone:
+      type: object
+      required: [error]
+      properties:
+        error: {type: string, enum: [invitation_gone, invite_link_gone]}
+        reason: {type: string, description: 'accepted, declined, expired, used_up, revoked, revoked_by_owner, album_deleted, album_archived, owner_changed, replaced; ignore unknown values'}
+    InviteLink:
+      type: object
+      required: [id, folder_id, role, max_uses, use_count, created_at, expires_at, last_used_at, revoked_at, status, reason, creator_user_id, creator_display_name]
+      properties:
+        id: {type: string}
+        folder_id: {type: string}
+        role: {type: string, enum: [VIEWER, UPLOADER, CONTRIBUTOR]}
+        max_uses: {type: integer}
+        use_count: {type: integer}
+        created_at: {type: string, format: date-time}
+        expires_at: {type: string, format: date-time}
+        last_used_at: {type: [string, 'null'], format: date-time}
+        revoked_at: {type: [string, 'null'], format: date-time}
+        status: {type: string, enum: [active, expired, used_up, revoked]}
+        reason: {type: [string, 'null'], enum: [revoked_by_owner, album_deleted, album_archived, owner_changed, null]}
+        creator_user_id: {type: string}
+        creator_display_name: {type: string}
     Member:
       type: object
       required: [user_id, display_name, role, active, joined_at]
@@ -3218,6 +3768,14 @@ components:
         joined_at: {type: string, description: 'album creation time for the owner'}
         is_me: {type: boolean, description: 'the caller ("album_management" servers)'}
         is_owner: {type: boolean, description: 'the album''s owner, role OWNER ("album_management" servers)'}
+    SignInLink:
+      type: object
+      required: [provider, email, linked_at, last_used_at]
+      properties:
+        provider: {type: string, enum: [google, apple]}
+        email: {type: [string, 'null']}
+        linked_at: {type: string, format: date-time}
+        last_used_at: {type: [string, 'null'], format: date-time, description: last sign-in with it}
     Device:
       type: object
       required: [device_id, device_name, platform, created_at, last_used_at, expires_at, current]

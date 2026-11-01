@@ -3,6 +3,9 @@ package httpapi
 import (
 	"errors"
 	"net/http"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/aaaicu/withalbum/internal/auth/session"
 	"github.com/aaaicu/withalbum/internal/authz"
@@ -29,6 +32,7 @@ func (s *Server) memberRoutes(rt *router) {
 	rt.handleAlbum("POST /api/v1/folders/{folderID}/invitations", s.createInvitation)
 	rt.handleAlbum("DELETE /api/v1/folders/{folderID}/invitations/{invitationID}", s.revokeInvitation)
 	rt.handle("GET /api/v1/invitations", s.listMyInvitations)
+	s.inviteLinkRoutes(rt)
 	rt.handle("POST /api/v1/invitations/{invitationID}/accept", s.acceptInvitation)
 	rt.handle("POST /api/v1/invitations/{invitationID}/decline", s.declineInvitation)
 }
@@ -45,12 +49,51 @@ type invitationJSON struct {
 	Status      string `json:"status"`
 	CreatedAt   string `json:"created_at"`
 	ExpiresAt   string `json:"expires_at"`
+	// AnsweredAt: when it stopped being pending (accepted, declined or
+	// revoked at, or its expiry); null while pending and when unknown
+	// (answered before the server recorded it).
+	AnsweredAt *string `json:"answered_at"`
+	// Reason: why a revoked invitation was revoked (meta.Reason*); null
+	// otherwise and when unknown.
+	Reason *string `json:"reason"`
+	// MemberNow: the invitee is the owner or a member of the album now.
+	MemberNow bool `json:"member_now"`
+	// Source: "direct" (addressed to the account) or "link" (an invite
+	// link the account redeemed).
+	Source string `json:"source"`
+}
+
+func optString(v string) *string {
+	if v == "" {
+		return nil
+	}
+	return &v
 }
 
 func invitationView(inv meta.Invitation) invitationJSON {
-	return invitationJSON{ID: inv.ID, FolderID: inv.FolderID, FolderName: inv.FolderName, InviteeID: inv.InviteeID,
+	v := invitationJSON{ID: inv.ID, FolderID: inv.FolderID, FolderName: inv.FolderName, InviteeID: inv.InviteeID,
 		InviteeName: inv.InviteeName, InviterID: inv.InviterID, InviterName: inv.InviterName, Role: string(inv.Role),
-		Status: inv.Status, CreatedAt: inv.CreatedAt, ExpiresAt: inv.ExpiresAt}
+		Status: inv.Status, CreatedAt: inv.CreatedAt, ExpiresAt: inv.ExpiresAt, AnsweredAt: optString(inv.AnsweredAt),
+		MemberNow: inv.MemberNow, Source: "direct"}
+	if inv.Status == meta.InvitationRevoked {
+		v.Reason = optString(inv.Reason)
+	}
+	if inv.LinkID != "" {
+		v.Source = "link"
+	}
+	return v
+}
+
+// ownerInvitationView is an invitation as the album's owner sees it: a
+// declined one is "not_joined", the neutral word the owner also reads for
+// one that expired (the owner learns the account did not join, not how
+// it answered).
+func ownerInvitationView(inv meta.Invitation) invitationJSON {
+	v := invitationView(inv)
+	if v.Status == meta.InvitationDeclined {
+		v.Status = meta.InvitationNotJoined
+	}
+	return v
 }
 
 func invitationsView(list []meta.Invitation) []invitationJSON {
@@ -98,7 +141,15 @@ func membershipError(w http.ResponseWriter, what string, err error) {
 	case errors.Is(err, meta.ErrInvitationNotFound):
 		errorReply(w, 404, "invitation_not_found")
 	case errors.Is(err, meta.ErrInvitationGone):
-		errorReply(w, 410, "invitation_gone")
+		goneReply(w, "invitation_gone", err)
+	case errors.Is(err, meta.ErrInviteLinkGone):
+		goneReply(w, "invite_link_gone", err)
+	case errors.Is(err, meta.ErrInviteLinkNotFound):
+		errorReply(w, 404, "invite_link_not_found")
+	case errors.Is(err, meta.ErrTooManyInviteLinks):
+		errorReply(w, 409, "too_many_invite_links")
+	case errors.Is(err, meta.ErrInvalidInviteLink):
+		errorReply(w, 400, "invalid_invite_link")
 	case errors.Is(err, meta.ErrAlreadyMember):
 		errorReply(w, 409, "already_member")
 	case errors.Is(err, meta.ErrInvitationPending):
@@ -210,20 +261,98 @@ func (s *Server) transferOwner(w http.ResponseWriter, r *http.Request, a albumRe
 	jsonReply(w, 200, folderView(a.P, fa))
 }
 
-func (s *Server) listFolderInvitations(w http.ResponseWriter, r *http.Request, a albumRequest) {
-	list, err := s.members.ListFolderInvitations(r.Context(), a.Folder.Folder.ID)
+// goneReply answers 410 code with the reason of a meta.GoneError.
+func goneReply(w http.ResponseWriter, code string, err error) {
+	body := map[string]string{"error": code}
+	if reason := meta.GoneReason(err); reason != "" {
+		body["reason"] = reason
+	}
+	jsonReply(w, 410, body)
+}
+
+// Invitation history pages (GET /invitations, GET /folders/{id}/invitations).
+const (
+	defaultInvitationLimit = 100
+	maxInvitationLimit     = 100
+	defaultHistoryDays     = meta.MaxHistoryDays
+)
+
+// invitationQuery parses include=recent, days, limit and cursor into q. On
+// error it replies 400 and returns false.
+func invitationQuery(w http.ResponseWriter, r *http.Request, q *meta.InvitationQuery) bool {
+	v := r.URL.Query()
+	number := func(name string, def, hi int) (int, bool) {
+		s := v.Get(name)
+		if s == "" {
+			return def, true
+		}
+		n, err := strconv.Atoi(s)
+		if err != nil || n < 1 || n > hi || strings.TrimLeft(s, "0123456789") != "" {
+			return 0, false
+		}
+		return n, true
+	}
+	switch v.Get("include") {
+	case "":
+	case "recent":
+		q.Recent = true
+	default:
+		errorReply(w, 400, "invalid_filter")
+		return false
+	}
+	days, ok := number("days", defaultHistoryDays, meta.MaxHistoryDays)
+	if !ok || (v.Has("days") && !q.Recent) {
+		errorReply(w, 400, "invalid_filter")
+		return false
+	}
+	if q.Limit, ok = number("limit", defaultInvitationLimit, maxInvitationLimit); !ok {
+		errorReply(w, 400, "invalid_limit")
+		return false
+	}
+	q.Now = time.Now()
+	q.Since = q.Now.Add(-time.Duration(days) * 24 * time.Hour)
+	q.After = v.Get("cursor")
+	return true
+}
+
+// invitationPage replies with one history page, each invitation shown by
+// view.
+func (s *Server) invitationPage(w http.ResponseWriter, r *http.Request, q meta.InvitationQuery, view func(meta.Invitation) invitationJSON) {
+	page, err := s.members.InvitationHistory(r.Context(), q)
+	if errors.Is(err, meta.ErrInvalidCursor) {
+		errorReply(w, 400, "invalid_cursor")
+		return
+	}
 	if err != nil {
 		metaReadFailed(w, err)
 		return
 	}
-	jsonReply(w, 200, map[string]any{"invitations": invitationsView(list)})
+	out := make([]invitationJSON, 0, len(page.Invitations))
+	for _, inv := range page.Invitations {
+		out = append(out, view(inv))
+	}
+	body := map[string]any{"invitations": out, "next_cursor": optString(page.NextCursor)}
+	jsonReply(w, 200, body)
 }
 
-// createInvitation: {"invited_user_id": ..., "role": ...}, valid 7 days.
+// listFolderInvitations: the album's pending invitations, newest first,
+// and with include=recent also those answered in the last days (OWNER).
+func (s *Server) listFolderInvitations(w http.ResponseWriter, r *http.Request, a albumRequest) {
+	q := meta.InvitationQuery{FolderID: a.Folder.Folder.ID}
+	if !invitationQuery(w, r, &q) {
+		return
+	}
+	s.invitationPage(w, r, q, ownerInvitationView)
+}
+
+// createInvitation: {"invited_user_id": ..., "role": ..., "replace_pending":
+// bool}, valid 7 days. With replace_pending a pending invitation of the
+// same account is revoked (reason replaced) instead of 409.
 func (s *Server) createInvitation(w http.ResponseWriter, r *http.Request, a albumRequest) {
 	var req struct {
-		InviteeID string `json:"invited_user_id"`
-		Role      string `json:"role"`
+		InviteeID      string `json:"invited_user_id"`
+		Role           string `json:"role"`
+		ReplacePending bool   `json:"replace_pending"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -236,7 +365,7 @@ func (s *Server) createInvitation(w http.ResponseWriter, r *http.Request, a albu
 		return
 	}
 	c := s.change(a, authz.InviteMember, req.InviteeID)
-	c.Role = authz.AlbumRole(req.Role)
+	c.Role, c.ReplacePending = authz.AlbumRole(req.Role), req.ReplacePending
 	inv, err := s.members.CreateInvitation(r.Context(), c)
 	if err != nil {
 		membershipError(w, "create invitation", err)
@@ -256,15 +385,16 @@ func (s *Server) revokeInvitation(w http.ResponseWriter, r *http.Request, a albu
 	w.WriteHeader(204)
 }
 
-// listMyInvitations: the pending invitations addressed to the caller.
+// listMyInvitations: the pending invitations addressed to the caller,
+// newest first, and with include=recent also those answered in the last
+// days (most recently answered first).
 func (s *Server) listMyInvitations(w http.ResponseWriter, r *http.Request) {
 	id, _ := IdentityFrom(r.Context())
-	list, err := s.members.ListInvitationsFor(r.Context(), id.UserID)
-	if err != nil {
-		metaReadFailed(w, err)
+	q := meta.InvitationQuery{InviteeID: id.UserID}
+	if !invitationQuery(w, r, &q) {
 		return
 	}
-	jsonReply(w, 200, map[string]any{"invitations": invitationsView(list)})
+	s.invitationPage(w, r, q, invitationView)
 }
 
 // inviteeChange is the AlbumChange of the invitee's answer to invitation

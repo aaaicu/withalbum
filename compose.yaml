@@ -1,0 +1,61 @@
+# WithAlbum Server with Docker Compose (docs/DOCKER.md).
+#
+#   cp docker.env.example .env      # then edit .env
+#   docker compose build
+#   docker compose run --rm withalbum -init-storage
+#   docker compose run --rm withalbum admin init -login <name>
+#   docker compose up -d
+#
+# Two containers from the same image:
+#   withalbum  the server, ONLY on the "internal" network, which Docker gives
+#              no route out: it cannot connect to the home network (cameras,
+#              router, other computers), the host or the internet.
+#   edge       `withalbum-server forward`: copies bytes between the published
+#              ports and the server. TLS stays between the app and the server.
+name: withalbum
+
+x-hardening: &hardening
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  restart: unless-stopped
+
+services:
+  withalbum:
+    <<: *hardening
+    image: withalbum-server:local
+    build: .
+    environment:
+      # The address phones use: this computer's home-network IP and port.
+      WITHALBUM_LAN_URL: ${WITHALBUM_LAN_URL:?set WITHALBUM_LAN_URL in .env}
+      # Optional: https://<machine>.<tailnet>.ts.net (docs/FUNNEL.md); empty = off.
+      WITHALBUM_FUNNEL_URL: ${WITHALBUM_FUNNEL_URL:-}
+      WITHALBUM_VOLUME_ID: ${WITHALBUM_VOLUME_ID:-}
+      TZ: ${TZ:-Asia/Seoul}
+    volumes:
+      - ${WITHALBUM_DATA:?set WITHALBUM_DATA in .env}:/data
+    tmpfs:
+      - /tmp:size=64m
+    networks: [internal]
+    pids_limit: 256
+    mem_limit: ${WITHALBUM_MEMORY:-2g}
+    stop_grace_period: 30s
+
+  edge:
+    <<: *hardening
+    image: withalbum-server:local
+    command: ["forward", "-map", "0.0.0.0:8787=withalbum:8787", "-map", "0.0.0.0:8788=withalbum:8788"]
+    ports:
+      # Phones on the home network. ${WITHALBUM_LAN_BIND} can pin one host address.
+      - "${WITHALBUM_LAN_BIND:-0.0.0.0}:${WITHALBUM_LAN_PORT:-8787}:8787"
+      # Tailscale Funnel on this computer connects here (loopback only).
+      - "127.0.0.1:8788:8788"
+    networks: [internal, edge]
+    depends_on: [withalbum]
+    pids_limit: 64
+    mem_limit: 128m
+
+networks:
+  internal:
+    internal: true
+  edge: {}

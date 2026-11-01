@@ -84,11 +84,11 @@ func TestCheckFunnel(t *testing.T) {
 // TestFunnelListenerLoopbackOnly: whatever address it is given, the
 // funnel listener refuses to serve on a non-loopback socket.
 func TestFunnelListenerLoopbackOnly(t *testing.T) {
-	if ln, err := listenFunnel("0.0.0.0:0"); err == nil {
+	if ln, err := listenFunnel("0.0.0.0:0", false); err == nil {
 		ln.Close()
 		t.Fatal("wildcard funnel listener accepted")
 	}
-	ln, err := listenFunnel("127.0.0.1:0")
+	ln, err := listenFunnel("127.0.0.1:0", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +257,7 @@ func newFunnelFixture(t *testing.T) *funnelFixture {
 	urls := pairingURLs("127.0.0.1:8787", pub, nil)
 	a.api.SetTLSInfo(tlsInfo(id, urls, rr))
 	handler := a.api.Handler()
-	ln, err := listenFunnel("127.0.0.1:0")
+	ln, err := listenFunnel("127.0.0.1:0", false)
 	if err != nil {
 		t.Fatal(err)
 	}

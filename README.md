@@ -22,13 +22,13 @@
 - **부분 구현:** 계정 코어. Argon2id 비밀번호 해시(`internal/auth/password`), 사용자 저장소(`internal/users`, 마지막 활성 관리자 보호·감사 로그), 콘솔 명령 `withalbum-server admin init | create-user | reset-password`.
 - **부분 구현(테스트·로컬 바이너리 스모크 검증, Mac 브라우저 점검 전):** 설치 화면(M24). 저장소가 없거나 관리자가 없으면 서버가 **이 컴퓨터의 평문 루프백 리스너에서만** 설치 모드로 뜨고, 콘솔에 1회용 설치 코드(12자, 30분, 5회 오입력 시 잠김)를 출력합니다. 브라우저 `http://127.0.0.1:8787/setup`에서 코드 → 저장장치 선택(macOS `/Volumes`·홈 폴더·직접 경로, 쓰기 테스트) → 관리자 계정 → 같은 프로세스에서 정상 모드로 전환(설치 라우트 404). 선택한 루트와 볼륨 ID는 사용자 설정 파일(`WITHALBUM_CONFIG`, 기본 `~/Library/Application Support/WithAlbum/server.json`)에 고정됩니다. TLS·LAN 리스너에는 설치 라우트가 없고, 콘솔 경로(`-init-storage`, `admin init`)는 그대로입니다. 위협 모델: [`SECURITY.md`](SECURITY.md#setup-screen-m24-threat-model).
 - **부분 구현:** HTTP 로그인·기기 세션·계정 관리 API(`/api/v1/auth/login|refresh|logout`, `/api/v1/me`, `/api/v1/me/password`, `/api/v1/me/devices`, `/api/v1/admin/users*`, 규격 [`docs/API_v2.yaml`](docs/API_v2.yaml)). access 15분/refresh 30일 회전(로그인 후 최대 90일)·재사용 감지(앱 응답 유실 30초 유예 1회), Bearer(앱)·HttpOnly 쿠키+CSRF(웹), 로그인 속도 제한·실패 감사, 비밀번호 재설정·계정 비활성화 시 세션 회수.
-- **부분 구현(테스트·로컬 바이너리 스모크 검증):** 앨범 ACL. 대시보드 페이지·health·login·refresh를 뺀 모든 API는 세션 필요(없으면 401). 폴더·업로드·동기화·원본/프리뷰는 요청마다 DB의 소유자·멤버십으로 `internal/authz` 판정(`internal/httpapi/middleware_authz.go`, 라우트별 정책 표, 미선언 라우트는 기동 시 panic). 관리자라도 소유·멤버가 아닌 앨범은 404, 역할 부족은 403, 다른 폴더의 자산 ID는 404. UPLOADER는 업로드만 가능하고 응답은 항상 같은 202 영수증. 업로드는 커밋 직전 DB 트랜잭션 안에서 권한을 재확인. 기본 USER는 앨범 생성 불가(`can_create_albums`). 무인증 `/api/v1/assets/{sha}/*`는 제거. 앨범 공유(OWNER만): 등록 계정 초대(7일, 대상 본인만 수락), 초대 취소, 역할 변경·추방(다음 요청부터 반영), 소유권 이전(이전 오너는 CONTRIBUTOR, 1 트랜잭션, 실패 시 롤백), 앨범 보관. 모든 변경은 같은 트랜잭션에서 감사 로그. 관리자는 **보관된 앨범만** 다른 활성 계정에 재배정할 수 있음(탈퇴 계정 비활성화용, 접근 권한은 생기지 않음, M17). 앨범 관리(M51): 앨범 삭제(오너, 30일 동안 오너만 복구, 그 뒤 다른 앨범이 쓰지 않는 원본까지 정리)·보관(`POST .../archive`), CONTRIBUTOR의 사진 삭제(앨범 휴지통 30일·복구), OWNER·CONTRIBUTOR의 비공개 사진(VIEWER에게 모든 읽기 경로에서 숨김, 원본은 디스크에 그대로), 멤버 목록은 읽기 권한자 모두, `liked_by_me` 필터.
+- **부분 구현(테스트·로컬 바이너리 스모크 검증):** 앨범 ACL. 대시보드 페이지·health·login·refresh를 뺀 모든 API는 세션 필요(없으면 401). 폴더·업로드·동기화·원본/프리뷰는 요청마다 DB의 소유자·멤버십으로 `internal/authz` 판정(`internal/httpapi/middleware_authz.go`, 라우트별 정책 표, 미선언 라우트는 기동 시 panic). 관리자라도 소유·멤버가 아닌 앨범은 404, 역할 부족은 403, 다른 폴더의 자산 ID는 404. UPLOADER는 업로드만 가능하고 응답은 항상 같은 202 영수증. 업로드는 커밋 직전 DB 트랜잭션 안에서 권한을 재확인. 기본 USER는 앨범 생성 불가(`can_create_albums`). 무인증 `/api/v1/assets/{sha}/*`는 제거. 앨범 공유(OWNER만): 등록 계정 초대(7일, 대상 본인만 수락), 초대 취소, 역할 변경·추방(다음 요청부터 반영), 소유권 이전(이전 오너는 CONTRIBUTOR, 1 트랜잭션, 실패 시 롤백), 앨범 보관. 초대 기록·초대 링크(M57): 받은/보낸 초대의 최근 30일 결과와 사유, 같은 사람 초대 대체, OWNER의 초대 링크(역할·만료·사용 횟수, 토큰 해시만 저장, 앱 링크 `withalbum://invite`·안내 페이지 `/i/<token>`, 이 서버 계정으로 로그인해야 참여, 계정 생성 없음). 모든 변경은 같은 트랜잭션에서 감사 로그. 관리자는 **보관된 앨범만** 다른 활성 계정에 재배정할 수 있음(탈퇴 계정 비활성화용, 접근 권한은 생기지 않음, M17). 앨범 관리(M51): 앨범 삭제(오너, 30일 동안 오너만 복구, 그 뒤 다른 앨범이 쓰지 않는 원본까지 정리)·보관(`POST .../archive`), CONTRIBUTOR의 사진 삭제(앨범 휴지통 30일·복구), OWNER·CONTRIBUTOR의 비공개 사진(VIEWER에게 모든 읽기 경로에서 숨김, 원본은 디스크에 그대로), 멤버 목록은 읽기 권한자 모두, `liked_by_me` 필터.
 - **별도 비공개 저장소:** iOS/Android 앱(Flutter). 이 서버의 공개 규격 [`docs/API_v2.yaml`](docs/API_v2.yaml)만 사용하며(공유 시트 인입·업로드 큐·역방향 동기화·QR 페어링·앨범 만들기, 서버 없이 쓰는 Google Drive 모드 PoC), 이 저장소에는 앱 코드가 없습니다. 실제 휴대폰 검증·스토어 배포 전입니다.
 - **부분 구현(로컬 빌드·실행 확인, 서명·공증·다른 Mac 미검증):** Mac 메뉴 막대 앱 "WithAlbum Server"(M32, `macos/`, macOS 13+). 앱 안에 유니버설 서버 바이너리를 담고, `scripts/install-macos.sh`와 같은 사용자 LaunchAgent(`org.withalbum.server`)를 등록·시작·멈춤·다시 시작합니다. 상태(정상 실행 중·설치 필요·저장 중단·멈춤), 관리 화면 열기, 설치 코드 보기(이 Mac의 로그에서만 읽음), 로그 폴더, 로그인 시 시작, LAN 접속 허용(`-tls -allow-lan`, 사설 주소만, 서버 게이트 그대로), 페어링 QR. DMG는 `scripts/build-macos-app.sh`(서명 없음), 배포용 서명·공증은 관리자가 `scripts/sign-notarize-macos.sh`로 직접. 설치: [`docs/INSTALL_MACOS.md`](docs/INSTALL_MACOS.md).
 - **아직 없음:** 서명·공증된 DMG 배포본(스크립트만 있음), 검증된 Google Drive OAuth 연결, 배포된 모바일 앱, 프로덕션 안정성 보장.
 - **부분 구현(테스트·LAN 바이너리 스모크 검증, 실기기 앱 미검증):** TLS·LAN 게이트(M15). 기본은 `127.0.0.1` 평문 HTTP. LAN 주소(사설 IP 또는 와일드카드)는 `-allow-lan` + `-tls` + 로그인 가능한 활성 SERVER_ADMIN이 모두 있을 때만 listen하고, 하나라도 없으면 기동을 거부합니다. 공인 IP·호스트 이름은 항상 거부. `-tls`는 자체 서명 인증서(`.system/tls/server.pem`, 0600, ECDSA P-256, TLS 1.3 전용)를 만들고, 앱은 공개키 지문(SPKI SHA-256)을 핀닝합니다(`withalbum-server tls`, 대시보드 관리자 화면에 페어링 페이로드). 보안 헤더·원본 다운로드 sandbox·IPv6 /64 속도 제한 키·루프백 Host 검사. 자세한 내용과 보안 점검 결과: [`SECURITY.md`](SECURITY.md).
 - **부분 구현(Go 통합 테스트 검증, 공인 서버·실기기·앱 미검증):** 집 밖 접속 E2EE 중계(M35, 기본 꺼짐). 서버는 `-tls -relay host:port`로 중계에 바깥쪽 연결만 맺고(수신 포트 없음), 앱은 중계 위에서 LAN과 같은 핀 TLS를 쓰므로 중계는 암호문만 전달합니다. 관리 화면·관리 API는 중계로 제공하지 않음. 중계 프로그램 `withalbum-relay`(`./relay`). 설계·위협 모델: [`docs/RELAY_DESIGN.md`](docs/RELAY_DESIGN.md), 운영: [`docs/RELAY_OPERATIONS.md`](docs/RELAY_OPERATIONS.md).
-- **부분 구현(가짜 Funnel 통합 테스트·로컬 바이너리 검증, 실제 Tailscale·실기기·앱 미검증):** 집 밖 접속 Tailscale Funnel 경로(M47, 기본 꺼짐). `-tls -funnel-url https://<machine>.<tailnet>.ts.net`이면 루프백 전용 리스너를 열고 Funnel TCP 전달로 앱의 핀 TLS가 서버까지 그대로 옵니다(포트포워딩·가족 VPN 불필요, 관리 화면은 403). 메뉴 막대 앱에서 켜기·끄기, 내부망 격리 점검. 안내: [`docs/FUNNEL.md`](docs/FUNNEL.md), [`docs/HOME_NETWORK_ISOLATION.md`](docs/HOME_NETWORK_ISOLATION.md).
+- **부분 구현(가짜 Funnel 통합 테스트·로컬 바이너리 검증, 실제 Tailscale·실기기·앱 미검증):** 집 밖 접속 Tailscale Funnel 경로(M47, 기본 꺼짐). `-tls -funnel-url https://<machine>.<tailnet>.ts.net`이면 루프백 전용 리스너를 열고 Funnel TCP 전달로 앱의 핀 TLS가 서버까지 그대로 옵니다(포트포워딩·가족 VPN 불필요, 관리 화면은 403). 메뉴 막대 앱에서 켜기·끄기, 내부망 격리 점검. 안내: [`docs/FUNNEL.md`](docs/FUNNEL.md), [`docs/HOME_NETWORK_ISOLATION.md`](docs/HOME_NETWORK_ISOLATION.md). 공유기에서 망을 나눌 수 없으면 Docker 구성([`docs/DOCKER.md`](docs/DOCKER.md), 실제 Docker 미검증)으로 서버 → 홈캠 경로를 막을 수 있습니다.
 - **내부 보안 리뷰(M41, 외부 리뷰 전):** 위협 모델 [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md), 결과·외부 리뷰어 안내 [`docs/SECURITY_REVIEW_2026-10.md`](docs/SECURITY_REVIEW_2026-10.md). 원격 로그인 실패가 집 로그인을 막지 않도록 계정 한도를 분리, CI에 govulncheck·staticcheck·gosec, 라우트 권한 전수 매트릭스 테스트. 서버는 root로 기동하지 않습니다.
 - **보안 경고:** **인터넷에 공개(포트포워딩·공개 리버스 프록시)하거나 대체할 수 없는 원본 사진의 단일 보관소로 사용하지 마세요.**
 
@@ -52,7 +52,8 @@ SQLite 스키마와 YAML API 문서는 목표 규격으로만 분류할 것. 결
 | Mac 메뉴 막대 앱 DMG | `WithAlbumServer_<버전>.dmg`(서명·공증본)은 관리자가 macOS에서 만들어 Release에 직접 올림([`docs/RELEASING.md`](docs/RELEASING.md#macos-dmg)) | **미게시** — 지금은 `scripts/build-macos-app.sh`로 서명 없는 DMG만 |
 | [Linux·Raspberry Pi 설치](docs/INSTALL_LINUX.md) | Linux AMD64/ARM64/ARMv7, systemd | 개발자용 |
 | [배포 파이프라인](docs/RELEASING.md) | GitHub Actions · GoReleaser · checksum · `scripts/release-dryrun.sh` | prerelease(초안)만, dry-run 검증 |
-| [v0.1.0-alpha.1 릴리스 노트](docs/releases/v0.1.0-alpha.1.md) | 첫 prerelease 후보 | **초안, 미발행** |
+| [v0.1.0-alpha.2 릴리스 노트](docs/releases/v0.1.0-alpha.2.md) | 두 번째 prerelease 후보 (Docker 격리, Google·Apple 로그인, 빠른 동기화) | **후보, 미발행** |
+| [v0.1.0-alpha.1 릴리스 노트](docs/releases/v0.1.0-alpha.1.md) | 첫 prerelease | 태그 발행 |
 | [Mac mini 실기기 점검](docs/MACMINI_E2E_CHECKLIST.md) | 설치·자동 시작·디스크 분리·재부팅·전원 차단·백업·LAN TLS | 절차만, 실기기 결과 없음 |
 
 <!-- 릴리스 요구사항:
@@ -343,7 +344,7 @@ CAS pool 원본에 대해 해시가 같더라도 멀티파일 Live Photo, 메타
 | `GET` | `/api/v1/folders/{folderID}/assets/{assetID}/original` | 원본(그 폴더에 연결된 자산만) | OWNER·CONTRIBUTOR·VIEWER |
 | `GET` | `/api/v1/folders/{folderID}/assets/{assetID}/preview` | JPEG 프리뷰(`preview_status` = ready일 때) | OWNER·CONTRIBUTOR·VIEWER |
 
-나머지 `/api/v1/me*`, `/api/v1/admin/users*`(관리자의 타인 기기 목록·해지 포함)는 [`docs/API_v2.yaml`](docs/API_v2.yaml) 참조. 소유·멤버가 아닌 폴더(관리자 포함)는 존재하지 않는 폴더와 똑같이 404, 멤버인데 역할이 부족하면 403. 이 표는 실제 `internal/httpapi`(라우트 정책 표 `middleware_authz.go`)를 기준으로 합니다. 초대·멤버·소유권 이전·삭제·보관·휴지통 라우트(`/api/v1/folders/{id}/invitations*`, `/members*`, `/owner`, `DELETE /api/v1/folders/{id}`, `.../archive`, `.../restore`, `/api/v1/folders/deleted`, `.../trash*`, `/api/v1/invitations*`)도 같은 규격 파일에 있습니다.
+나머지 `/api/v1/me*`, `/api/v1/admin/users*`(관리자의 타인 기기 목록·해지 포함)는 [`docs/API_v2.yaml`](docs/API_v2.yaml) 참조. 소유·멤버가 아닌 폴더(관리자 포함)는 존재하지 않는 폴더와 똑같이 404, 멤버인데 역할이 부족하면 403. 이 표는 실제 `internal/httpapi`(라우트 정책 표 `middleware_authz.go`)를 기준으로 합니다. 초대·멤버·소유권 이전·삭제·보관·휴지통 라우트(`/api/v1/folders/{id}/invitations*`, `/members*`, `/owner`, `DELETE /api/v1/folders/{id}`, `.../archive`, `.../restore`, `/api/v1/folders/deleted`, `.../trash*`, `/api/v1/invitations*`, `.../invite-links*`, 공개 `/i/{token}`)도 같은 규격 파일에 있습니다.
 
 **미디어 목표:** HEIC/HEIF, JPG, PNG, RAW, Live Photo(HEIC+MOV 묶음), MP4/MOV, 4K/HDR, EXIF 및 촬영 날짜 유지. 원본 바이트는 변환하지 않고 보존, 프리뷰만 별도 생성. 현재 JPEG/PNG/GIF는 업로드 중 내장 디코더로 간이 JPEG 미리보기를 만들고, HEIC/HEIF/AVIF 등 정지 이미지(macOS `sips`)와 영상(`ffmpeg`, 대표 프레임 1장)은 **선택적 외부 도구**가 있을 때 커밋 후 백그라운드 워커가 만듭니다(M22: `preview_status` pending → ready/failed, 폴더 피드에 `asset_updated`). 도구가 없으면 원본만 보존하고 `unsupported`로 표시합니다. 도구는 셸 없이 인자 배열로만, 최소 환경·시간 제한·프로세스 그룹·격리된 작업 디렉터리(`.system/work`)에서 실행하고, 출력은 JPEG로 디코드·재인코드한 뒤에만 저장합니다. Live Photo는 사진+영상 묶음 업로드(M26: `POST /folders/{id}/bundles`, 두 원본 검증 후 한 트랜잭션 커밋, Apple content identifier 짝 확인, 영상은 `components/paired_video`로 다운로드)로 원본 그대로 보관합니다(실기기 iPhone 파일 대조 미검증). 동영상은 재생용 경량본(M50: H.264+AAC MP4, 최대 1080p, fast start, `GET .../assets/{id}/playback`)을 커밋 후 백그라운드에서 따로 만들고 원본은 그대로 둡니다. RAW는 미구현입니다.
 
@@ -363,7 +364,7 @@ LAN은 TLS(자체 서명 + SPKI 핀닝) + 관리자 + -allow-lan일 때만(M15).
 | Intel Mac | 동일 사용자 흐름 | 크로스빌드 대상 |
 | Linux x86-64 | tar.gz / 장차 `.deb` 또는 systemd | 기본 스크립트 존재 |
 | Raspberry Pi 64/32-bit | ARM64/ARMv7 바이너리, 메모리 경량화 | 크로스빌드 대상 |
-| NAS | Docker/Compose와 스토리지 볼륨 명시 | 미구현 |
+| NAS | Docker/Compose와 스토리지 볼륨 명시 | 부분 구현 — `Dockerfile`·`compose.yaml`, [`docs/DOCKER.md`](docs/DOCKER.md) (실제 Docker 미검증) |
 
 `GitHub Actions` CI는 테스트 및 5개 아키텍처 크로스빌드를 의도하고, `GoReleaser`는 태그 기반 릴리스/체크섬을 생성하도록 구성했습니다. 그러나 실제 Mac mini·Pi에서 설치/실행/재부팅 복구한 실기기 테스트는 여전히 필요합니다. **Releases의 프리릴리스와 정식 배포를 구분**하세요.
 
@@ -394,7 +395,7 @@ macOS 서명/공증은 Apple Developer 권한과 실기기 검증이 필요하�
 
 ### P2 — 플랫폼 및 서비스 확장
 
-- [ ] Linux/Pi/NAS 실제 구동/설치/업데이트/자원 제한 검증, Docker Compose.
+- [ ] Linux/Pi/NAS 실제 구동/설치/업데이트/자원 제한 검증, Docker Compose 실제 기동·격리 확인([`docs/DOCKER.md`](docs/DOCKER.md)).
 - [ ] Google Drive 다중 계정/실제 초대/OAuth `drive.file`/용량 차감/변경 추적 PoC 통과.
 - [ ] Google Drive가 지원하는 역할만 표시하며 미지원 기능 안내; 서버와 Drive 간 수동 이관은 후속.
 - [ ] 감사 로그, 운영 진단, 릴리스 노트, SBOM, 업데이트/롤백.

@@ -13,11 +13,13 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/aaaicu/withalbum/internal/capturetime"
 )
 
 // Previews of types the Go standard library cannot decode (HEIC/HEIF/AVIF
-// stills, videos) are made by optional external tools: macOS sips and
-// ffmpeg. They are found at startup (FindConverters); when a tool is
+// stills, videos) are made by optional external tools: macOS sips, libheif's
+// heif-dec and ffmpeg. They are found at startup (FindConverters); when a tool is
 // missing, its types simply have no preview ("unsupported") and the
 // original is stored as always. A tool:
 //
@@ -43,7 +45,7 @@ import (
 
 // Converter runs one external preview tool.
 type Converter struct {
-	Name string // "sips" or "ffmpeg"
+	Name string // "sips", "heif-dec" or "ffmpeg"
 	Path string // absolute path of the executable
 	// Types are the media types (SniffMIME) it converts; an entry ending in
 	// "/" is a prefix.
@@ -126,6 +128,52 @@ func (s *Store) PreviewMode(mime string) string {
 // sipsTypes are the still image types sips (ImageIO) reads.
 var sipsTypes = []string{"image/heic", "image/heif", "image/avif", "image/webp", "image/tiff", "image/bmp"}
 
+// heifTypes are the still image types libheif's heif-dec reads (Linux,
+// where there is no sips).
+var heifTypes = []string{"image/heic", "image/heif", "image/avif"}
+
+// NewHeifDec returns the libheif converter (heif-dec, or the older name
+// heif-convert) for the executable at path. heif-dec does not scale and
+// has no size query, so the canvas size is read from the file's own
+// headers first (capturetime, the same bounded reader as capture times)
+// and an image whose size is unknown or above maxConvertPixels is not
+// given to the tool; the full-size JPEG it writes is scaled down by the
+// common re-encoding.
+func NewHeifDec(path string) Converter {
+	return Converter{Name: "heif-dec", Path: path, Types: heifTypes, MaxInput: maxConvertInput,
+		attempts: func(_ context.Context, src, out, _ string) ([][]string, error) {
+			w, h, err := heifSize(src)
+			if err != nil {
+				return nil, err
+			}
+			if int64(w)*int64(h) > maxConvertPixels {
+				return nil, fmt.Errorf("image of %dx%d pixels is above the %d limit", w, h, maxConvertPixels)
+			}
+			return [][]string{{"-q", "90", src, out}}, nil
+		}}
+}
+
+// heifSize is the displayed size of the HEIF/AVIF still at path.
+func heifSize(path string) (int, int, error) {
+	f, err := os.Open(path) // #nosec G304 -- the pooled original being converted
+	if err != nil {
+		return 0, 0, err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return 0, 0, err
+	}
+	m, err := capturetime.ExtractMediaInfo(f, fi.Size())
+	if err != nil {
+		return 0, 0, err
+	}
+	if m.Width <= 0 || m.Height <= 0 {
+		return 0, 0, errors.New("cannot read the image size from the file")
+	}
+	return m.Width, m.Height, nil
+}
+
 // ffmpegFormats are the demuxers ffmpeg may use for an original.
 const ffmpegFormats = "mov,mp4,m4a,3gp,3g2,mj2,matroska,webm,avi"
 
@@ -193,8 +241,10 @@ func NewFFmpeg(path string) Converter {
 // minimal PATH without Homebrew.
 var toolDirs = []string{"/usr/bin", "/opt/homebrew/bin", "/usr/local/bin"}
 
-// FindConverters looks for sips and ffmpeg. getenv("WITHALBUM_PREVIEW_TOOLS")
-// == "off" disables both; WITHALBUM_SIPS / WITHALBUM_FFMPEG name an
+// FindConverters looks for sips, heif-dec (libheif, for HEIC on Linux) and
+// ffmpeg, in that order of preference. getenv("WITHALBUM_PREVIEW_TOOLS")
+// == "off" disables all; WITHALBUM_SIPS / WITHALBUM_HEIFDEC /
+// WITHALBUM_FFMPEG name an
 // executable explicitly ("" searches PATH and the usual directories, "off"
 // disables that tool). Only absolute paths of regular executable files are
 // accepted.
@@ -205,6 +255,11 @@ func FindConverters(getenv func(string) string) []Converter {
 	var out []Converter
 	if p := findTool("sips", getenv("WITHALBUM_SIPS")); p != "" {
 		out = append(out, NewSips(p))
+	}
+	if p := findTool("heif-dec", getenv("WITHALBUM_HEIFDEC")); p != "" {
+		out = append(out, NewHeifDec(p))
+	} else if p := findTool("heif-convert", getenv("WITHALBUM_HEIFDEC")); p != "" {
+		out = append(out, NewHeifDec(p))
 	}
 	if p := findTool("ffmpeg", getenv("WITHALBUM_FFMPEG")); p != "" {
 		out = append(out, NewFFmpeg(p))

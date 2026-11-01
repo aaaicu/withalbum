@@ -69,7 +69,7 @@ Re-check these pages before release; Funnel is beta and may change.
 - **Route classification**: connections on the funnel listener are marked
   `funnel` and served exactly like relay connections: only `GET
   /api/v1/health`, `/api/v1/auth/*`, `/api/v1/me*`, `/api/v1/folders*`,
-  `/api/v1/invitations*`; the dashboard, the setup screen and
+  `/api/v1/invitations*`, `/api/v1/sync/state`; the dashboard, the setup screen and
   `/api/v1/admin/*` answer `403 {"error":"not_available_via_relay","route":"funnel"}`,
   also for administrators; a non-canonical path is refused (shared
   `relayAllowed` table, one test covers every route).
@@ -241,4 +241,4 @@ https://login.tailscale.com/admin 에서:
 
 - 공개 주소는 인터넷의 누구나 접속을 **시도**할 수 있습니다. 가족 계정 비밀번호를 길게 하세요.
 - 휴대폰을 잃어버리면 다른 기기의 앱에서 "내 다른 기기 로그아웃"을 하거나, 집에서 관리 화면 → 사용자 → 기기에서 지우세요.
-- 홈캠·Home Assistant와 이 Mac을 네트워크에서 떼어 놓으세요: [`HOME_NETWORK_ISOLATION.md`](HOME_NETWORK_ISOLATION.md), 메뉴의 **내부망 격리 점검…**.
+- 홈캠·Home Assistant와 이 Mac을 네트워크에서 떼어 놓으세요: [`HOME_NETWORK_ISOLATION.md`](HOME_NETWORK_ISOLATION.md), 메뉴의 **내부망 격리 점검…**. 공유기로 나눌 수 없으면 Docker 구성([`DOCKER.md`](DOCKER.md) "Tailscale Funnel과 함께").

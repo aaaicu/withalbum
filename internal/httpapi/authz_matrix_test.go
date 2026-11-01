@@ -62,38 +62,46 @@ var (
 
 // matrixClasses classifies every route of the policy table.
 var matrixClasses = map[string]matrixClass{
-	"GET /{$}":                         classPage,
-	"GET /api/v1/health":               classPublic,
-	"POST /api/v1/auth/login":          classPublic,
-	"POST /api/v1/auth/refresh":        classPublic,
-	"/api/v1/":                         classCatchAll,
-	"POST /api/v1/auth/logout":         classSession,
-	"GET /api/v1/me":                   classSession,
-	"PATCH /api/v1/me/settings":        classSession,
-	"POST /api/v1/me/password":         classSession,
-	"GET /api/v1/me/devices":           classSession,
-	"GET /api/v1/me/activity":          classSession,
-	"GET /api/v1/folders":              classSession,
-	"GET /api/v1/folders/deleted":      classSession,
-	"GET /api/v1/invitations":          classSession,
-	"POST /api/v1/folders":             classCreate,
-	"GET /api/v1/admin/users":          classAdmin,
-	"POST /api/v1/admin/users":         classAdmin,
-	"GET /api/v1/admin/server/tls":     classAdmin,
-	"GET /api/v1/admin/server/storage": classAdmin,
+	"GET /{$}":                              classPage,
+	"GET /api/v1/health":                    classPublic,
+	"POST /api/v1/auth/login":               classPublic,
+	"POST /api/v1/auth/refresh":             classPublic,
+	"POST /api/v1/auth/sign-in/nonce":       classPublic,
+	"POST /api/v1/auth/sign-in":             classPublic,
+	"/api/v1/":                              classCatchAll,
+	"POST /api/v1/auth/logout":              classSession,
+	"GET /api/v1/me":                        classSession,
+	"PATCH /api/v1/me/settings":             classSession,
+	"POST /api/v1/me/password":              classSession,
+	"GET /api/v1/me/devices":                classSession,
+	"GET /api/v1/me/sign-ins":               classSession,
+	"POST /api/v1/me/sign-ins":              classSession,
+	"DELETE /api/v1/me/sign-ins/{provider}": classSession,
+	"GET /api/v1/me/activity":               classSession,
+	"GET /api/v1/folders":                   classSession,
+	"GET /api/v1/sync/state":                classSession,
+	"GET /api/v1/folders/deleted":           classSession,
+	"GET /api/v1/invitations":               classSession,
+	"POST /api/v1/folders":                  classCreate,
+	"GET /api/v1/admin/users":               classAdmin,
+	"POST /api/v1/admin/users":              classAdmin,
+	"GET /api/v1/admin/server/tls":          classAdmin,
+	"GET /api/v1/admin/server/storage":      classAdmin,
 
 	"DELETE /api/v1/me/devices/{deviceID}":            classSession,
 	"POST /api/v1/me/devices/revoke-others":           classSession,
 	"POST /api/v1/invitations/{invitationID}/accept":  classSession,
 	"POST /api/v1/invitations/{invitationID}/decline": classSession,
 
-	"GET /api/v1/admin/users/{userID}":                       classAdmin,
-	"PATCH /api/v1/admin/users/{userID}":                     classAdmin,
-	"PATCH /api/v1/admin/users/{userID}/permissions":         classAdmin,
-	"GET /api/v1/admin/users/{userID}/devices":               classAdmin,
-	"DELETE /api/v1/admin/users/{userID}/devices/{deviceID}": classAdmin,
-	"GET /api/v1/admin/users/{userID}/folders":               classAdmin,
-	"POST /api/v1/admin/folders/{folderID}/owner":            classAdmin,
+	"GET /api/v1/admin/users/{userID}":                        classAdmin,
+	"PATCH /api/v1/admin/users/{userID}":                      classAdmin,
+	"PATCH /api/v1/admin/users/{userID}/permissions":          classAdmin,
+	"GET /api/v1/admin/users/{userID}/devices":                classAdmin,
+	"DELETE /api/v1/admin/users/{userID}/devices/{deviceID}":  classAdmin,
+	"GET /api/v1/admin/users/{userID}/folders":                classAdmin,
+	"GET /api/v1/admin/users/{userID}/sign-ins":               classAdmin,
+	"DELETE /api/v1/admin/users/{userID}/sign-ins/{provider}": classAdmin,
+	"POST /api/v1/admin/folders/{folderID}/owner":             classAdmin,
 
 	"GET /api/v1/folders/{folderID}":                                          classMeta,
 	"PATCH /api/v1/folders/{folderID}":                                        classOwner,
@@ -138,6 +146,15 @@ var matrixClasses = map[string]matrixClass{
 	"GET /api/v1/folders/{folderID}/invitations":                              classOwner,
 	"POST /api/v1/folders/{folderID}/invitations":                             classOwner,
 	"DELETE /api/v1/folders/{folderID}/invitations/{invitationID}":            classOwner,
+	"GET /api/v1/folders/{folderID}/invite-links":                             classOwner,
+	"POST /api/v1/folders/{folderID}/invite-links":                            classOwner,
+	"DELETE /api/v1/folders/{folderID}/invite-links/{linkID}":                 classOwner,
+	// Invite links: anyone holding a token may preview it and open its
+	// landing page (also from outside the home: the link is shared through
+	// messengers); any signed-in account may redeem one.
+	"POST /api/v1/invitations/link-preview": classPublic,
+	"POST /api/v1/invitations/link-redeem":  classSession,
+	"GET /i/{token}":                        classPublic,
 }
 
 func TestAuthzMatrixCoversEveryRoute(t *testing.T) {
@@ -241,7 +258,7 @@ func probePath(pattern, folder string) (method, path string) {
 	path = strings.ReplaceAll(path, "{$}", "")
 	path = strings.ReplaceAll(path, "{folderID}", folder)
 	path = strings.ReplaceAll(path, "{role}", "paired_video")
-	for _, p := range []string{"{assetID}", "{uploadID}", "{bundleID}", "{commentID}", "{userID}", "{deviceID}", "{invitationID}"} {
+	for _, p := range []string{"{assetID}", "{uploadID}", "{bundleID}", "{commentID}", "{userID}", "{deviceID}", "{invitationID}", "{linkID}", "{token}"} {
 		path = strings.ReplaceAll(path, p, randomHexID())
 	}
 	return method, path

@@ -38,6 +38,11 @@ type listenConfig struct {
 	Addr     string // WITHALBUM_LISTEN
 	AllowLAN bool   // -allow-lan
 	TLS      bool   // -tls
+	// Container is WITHALBUM_CONTAINER=1 (container.go).
+	Container bool
+	// LANURLs are WITHALBUM_LAN_URL (container.go): the pairing addresses
+	// of a non-loopback listener, when set.
+	LANURLs []string
 }
 
 // listenScope classifies the host of a listen address.
@@ -210,7 +215,7 @@ func pairingURLs(addr, public string, interfaceAddrs func() ([]net.Addr, error))
 // tlsInfo is what the dashboard shows administrators about id. With a
 // relay or a public route, every pairing payload also names it.
 func tlsInfo(id *tlsid.Identity, urls []string, rr remoteRoutes) *httpapi.TLSInfo {
-	info := &httpapi.TLSInfo{SPKISHA256: id.SPKIHex(), CertSHA256: id.CertHex(), NotAfter: id.Leaf.NotAfter}
+	info := &httpapi.TLSInfo{SPKISHA256: id.SPKIHex(), CertSHA256: id.CertHex(), NotAfter: id.Leaf.NotAfter, Extras: rr.extras()}
 	for _, u := range urls {
 		info.Pairing = append(info.Pairing, httpapi.Pairing{URL: u, Payload: tlsid.PairingPayloadWith(u, id.SPKIHex(), rr.extras())})
 	}
@@ -315,7 +320,12 @@ func runTLSInfo(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "tls: %v\n", err)
 		return exitProblems
 	}
-	urls := pairingURLs(listenAddr(), public, net.InterfaceAddrs)
+	lan, err := lanURLsSetting(os.Getenv)
+	if err != nil {
+		fmt.Fprintf(stderr, "tls: %v\n", err)
+		return exitUsage
+	}
+	urls := listenConfig{Addr: listenAddr(), LANURLs: lan}.pairing(public, net.InterfaceAddrs)
 	rt := relayTargetFor(id, relayAddr)
 	rr := remoteRoutes{Relay: rt, Public: public}
 	if *asJSON {

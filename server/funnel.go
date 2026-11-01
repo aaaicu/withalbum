@@ -36,7 +36,8 @@ import (
 //
 // Connections on this listener are classified like relay connections: only
 // app routes are served (relayAllowed), administration answers 403. The
-// listener never binds to anything but loopback; a LAN listener still needs
+// listener never binds to anything but loopback (in a container: see
+// container.go); a LAN listener still needs
 // -allow-lan with its own rules. Like the relay it needs -tls and an
 // administrator who can log in.
 
@@ -120,7 +121,12 @@ func checkFunnel(c listenConfig, funnelURL, funnelListen string) (string, error)
 	if err != nil {
 		return "", fmt.Errorf("funnel listen address %q (want 127.0.0.1:<port>): %v", funnelListen, err)
 	}
-	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
+	if c.Container {
+		// container.go: reachable only from the internal network.
+		if _, err := scopeOf(funnelListen); err != nil || host != "" && net.ParseIP(host) == nil {
+			return "", fmt.Errorf("funnel listen address %q must be an IP address of the container (e.g. 0.0.0.0:8788)", funnelListen)
+		}
+	} else if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
 		return "", fmt.Errorf("funnel listen address %q must be a loopback IP address (127.0.0.1 or ::1): only tailscaled on this Mac may connect to it", funnelListen)
 	}
 	if funnelListen == c.Addr {
@@ -144,13 +150,14 @@ func (a *app) setupFunnel(ctx context.Context, pub string) error {
 }
 
 // listenFunnel opens the funnel listener: loopback only (verified after
-// binding), with an optional PROXY protocol header per connection.
-func listenFunnel(addr string) (net.Listener, error) {
+// binding) unless in a container, with an optional PROXY protocol header
+// per connection.
+func listenFunnel(addr string, container bool) (net.Listener, error) {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, err
 	}
-	if err := checkBoundAddr(ln.Addr(), false); err != nil {
+	if err := checkBoundAddr(ln.Addr(), container); err != nil {
 		ln.Close()
 		return nil, err
 	}
