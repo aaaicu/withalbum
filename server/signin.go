@@ -13,12 +13,15 @@ import (
 // provider secret exists on the server.
 //
 // defaultAppleClientIDs is the app's bundle ID (native Sign in with Apple
-// on iOS). defaultGoogleClientIDs is empty in source builds; release builds
-// may set the app's OAuth client IDs with
-// -ldflags "-X main.defaultGoogleClientIDs=<ios-client-id>,<web-client-id>".
+// on iOS). defaultGoogleClientIDs are the official WithAlbum app's public
+// OAuth client IDs (M62): the iOS client, and the web client the Android
+// app requests ID tokens for (the token's aud). Client IDs are public, not
+// secrets. A build of the app with its own Google project sets
+// WITHALBUM_GOOGLE_CLIENT_IDS (or -google-client-ids) instead.
 var (
-	defaultGoogleClientIDs = ""
-	defaultAppleClientIDs  = "aaaicu.withalbum.app"
+	defaultGoogleClientIDs = "110003080291-pj82htebqabur4hm4gf6n1aigmfld5ad.apps.googleusercontent.com," +
+		"110003080291-ob9cfo55485rvp4298igcijadti3e180.apps.googleusercontent.com"
+	defaultAppleClientIDs = "aaaicu.withalbum.app"
 )
 
 // clientIDsSetting: the flag, else the environment variable, else the

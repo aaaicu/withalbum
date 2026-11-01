@@ -23,7 +23,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends ffmpeg libheif-examples ca-certificates tzdata \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --system --uid 10001 --home-dir /nonexistent --shell /usr/sbin/nologin withalbum \
- && mkdir /data && chown 10001:10001 /data
+ && mkdir /data /keys && chown 10001:10001 /data /keys
 COPY --from=build /out/withalbum-server /usr/local/bin/withalbum-server
 COPY LICENSE NOTICE /usr/share/doc/withalbum-server/
 ENV WITHALBUM_CONTAINER=1 \

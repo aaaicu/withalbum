@@ -4,6 +4,11 @@
 // client IDs), expiry and the nonce the server handed out. No provider
 // secret is needed or kept; the only outbound request is fetching the
 // public keys (JWKS), cached and refreshed at most once a minute.
+//
+// With Config.KeysDir set the server makes no request at all: it reads the
+// key sets from files that a separate process (withalbum-server oidc-keys,
+// the "keys" container of compose.yaml) fetches and writes, so the server
+// can stay on a network with no route out (M62).
 package oidc
 
 import (
@@ -20,6 +25,8 @@ import (
 	"io"
 	"math/big"
 	"net/http"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -73,6 +80,10 @@ type Config struct {
 	HTTPClient *http.Client
 	// KeysURL overrides the key set URL per provider (tests).
 	KeysURL map[Provider]string
+	// KeysDir: read the key sets from <KeysDir>/<provider>.json (written
+	// by WriteKeySet) instead of fetching them. A file older than
+	// KeysFileMaxAge counts as unavailable.
+	KeysDir string
 	Now     func() time.Time // tests; nil means time.Now
 }
 
@@ -87,6 +98,7 @@ type Claims struct {
 type Verifier struct {
 	aud    map[Provider][]string
 	urls   map[Provider]string
+	dir    string
 	client *http.Client
 	now    func() time.Time
 
@@ -108,10 +120,17 @@ const (
 	maxTokenBytes = 8 << 10
 )
 
+// KeysFileMaxAge: a key file not rewritten for this long is not trusted
+// (the fetcher refreshes every few hours; providers rotate keys over weeks).
+const KeysFileMaxAge = 72 * time.Hour
+
+// KeysURLs are the fixed key set addresses the fetcher may contact.
+var KeysURLs = map[Provider]string{Google: GoogleKeysURL, Apple: AppleKeysURL}
+
 // New returns a Verifier for cfg.
 func New(cfg Config) *Verifier {
 	v := &Verifier{aud: map[Provider][]string{}, urls: map[Provider]string{Google: GoogleKeysURL, Apple: AppleKeysURL},
-		client: cfg.HTTPClient, now: cfg.Now, sets: map[Provider]*keySet{}}
+		client: cfg.HTTPClient, now: cfg.Now, sets: map[Provider]*keySet{}, dir: cfg.KeysDir}
 	for p, list := range map[Provider][]string{Google: cfg.GoogleAudiences, Apple: cfg.AppleAudiences} {
 		for _, a := range list {
 			if a = strings.TrimSpace(a); a != "" {
@@ -282,7 +301,13 @@ func (v *Verifier) key(ctx context.Context, p Provider, kid string) (*rsa.Public
 		v.sets[p] = ks
 	}
 	ks.fetched = now
-	keys, err := v.fetch(ctx, v.urls[p])
+	var keys map[string]*rsa.PublicKey
+	var err error
+	if v.dir != "" {
+		keys, err = v.readFile(p, now)
+	} else {
+		keys, err = v.fetch(ctx, v.urls[p])
+	}
 	if err != nil {
 		if k := ks.keys[kid]; k != nil && now.Sub(ks.ok) < 2*keysMaxAge {
 			return k, nil // provider unreachable: keep using recent keys
@@ -311,6 +336,43 @@ func (v *Verifier) fetch(ctx context.Context, url string) (map[string]*rsa.Publi
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("keys: HTTP %d", resp.StatusCode)
 	}
+	keys, _, err := ParseKeySet(resp.Body)
+	return keys, err
+}
+
+// readFile reads <dir>/<p>.json; a missing, unreadable, invalid or stale
+// file is an error (ErrKeys to the caller).
+func (v *Verifier) readFile(p Provider, now time.Time) (map[string]*rsa.PublicKey, error) {
+	f, err := os.Open(filepath.Join(v.dir, string(p)+".json"))
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !st.Mode().IsRegular() {
+		return nil, errors.New("keys: not a regular file")
+	}
+	if now.Sub(st.ModTime()) > KeysFileMaxAge {
+		return nil, fmt.Errorf("keys: %s.json is older than %s", p, KeysFileMaxAge)
+	}
+	keys, _, err := ParseKeySet(f)
+	return keys, err
+}
+
+// ParseKeySet reads a JWKS document (at most 64 KiB) and returns its usable
+// RSA signing keys (2048 bits or more) and the document's bytes. A document
+// without one usable key is an error.
+func ParseKeySet(r io.Reader) (map[string]*rsa.PublicKey, []byte, error) {
+	raw, err := io.ReadAll(io.LimitReader(r, maxKeysBody+1))
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(raw) > maxKeysBody {
+		return nil, nil, errors.New("keys: document too large")
+	}
 	var set struct {
 		Keys []struct {
 			Kty string `json:"kty"`
@@ -320,8 +382,8 @@ func (v *Verifier) fetch(ctx context.Context, url string) (map[string]*rsa.Publi
 			E   string `json:"e"`
 		} `json:"keys"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxKeysBody)).Decode(&set); err != nil {
-		return nil, err
+	if err := json.Unmarshal(raw, &set); err != nil {
+		return nil, nil, err
 	}
 	out := map[string]*rsa.PublicKey{}
 	for _, k := range set.Keys {
@@ -344,9 +406,69 @@ func (v *Verifier) fetch(ctx context.Context, url string) (map[string]*rsa.Publi
 		out[k.Kid] = &rsa.PublicKey{N: n, E: e}
 	}
 	if len(out) == 0 {
-		return nil, errors.New("keys: no usable RSA key")
+		return nil, nil, errors.New("keys: no usable RSA key")
 	}
-	return out, nil
+	return out, raw, nil
+}
+
+// FetchKeySet downloads the key set of p from its fixed address and checks
+// it (the fetcher; the server itself only reads files when KeysDir is set).
+func FetchKeySet(ctx context.Context, client *http.Client, p Provider) ([]byte, error) {
+	url, ok := KeysURLs[p]
+	if !ok {
+		return nil, fmt.Errorf("keys: unknown provider %q", p)
+	}
+	return FetchKeySetFrom(ctx, client, url)
+}
+
+// FetchKeySetFrom is FetchKeySet for a given address (tests).
+func FetchKeySetFrom(ctx context.Context, client *http.Client, url string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("keys: %s: HTTP %d", url, resp.StatusCode)
+	}
+	_, raw, err := ParseKeySet(resp.Body)
+	return raw, err
+}
+
+// WriteKeySet atomically replaces <dir>/<p>.json with raw (checked again),
+// readable by everyone (the server reads it with another user ID).
+func WriteKeySet(dir string, p Provider, raw []byte) error {
+	if _, _, err := ParseKeySet(strings.NewReader(string(raw))); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, "."+string(p)+"-*.tmp")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if _, err := tmp.Write(raw); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0o444); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(name, filepath.Join(dir, string(p)+".json"))
 }
 
 // Issuer is the canonical issuer of p.
