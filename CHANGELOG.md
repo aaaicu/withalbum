@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.1.0-alpha.4] — 2026-11-02 (prerelease)
+
+alpha.3에서 Google 계정을 고른 뒤 앱이 무반응이고 서버에 기록이 없던 문제를 가를 수 있게 함(M62 후속). 자세한 내용은 `docs/releases/v0.1.0-alpha.4.md`.
+
+### Changed (sign-in diagnostics)
+- Google·Apple 로그인·연결이 거절되면 이유를 서버 로그에 남김: nonce 발급, 토큰 형식·서명·만료·발급자·audience·nonce 불일치, `provider_disabled`·`provider_unavailable`, 연결 안 된 계정, 연결 시 비밀번호 불일치. audience가 다르면 토큰의 audience(공개 클라이언트 ID)를 함께 적음. 토큰 자체는 남기지 않음.
+
 ## [0.1.0-alpha.3] — 2026-11-02 (prerelease)
 
 alpha.2를 Docker로 돌릴 때 Google 로그인이 안 되던 문제 수정(M62). 실기기 검증 결과는 `docs/releases/v0.1.0-alpha.3.md`.
