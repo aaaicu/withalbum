@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -147,6 +148,7 @@ func (s *Server) signInNonce(w http.ResponseWriter, r *http.Request) {
 		internalError(w, "sign-in nonce", err)
 		return
 	}
+	log.Printf("sign-in: nonce issued (providers %v)", providersJSON(s.auth.SignIn))
 	jsonReply(w, 200, map[string]any{"nonce": n, "expires_at": ts(exp), "providers": providersJSON(s.auth.SignIn)})
 }
 
@@ -155,12 +157,18 @@ func (s *Server) signInNonce(w http.ResponseWriter, r *http.Request) {
 // signing in; 400 on a session route, where 401 means the session ended).
 func (s *Server) verifyIdentity(w http.ResponseWriter, r *http.Request, provider, token, nonce string, badStatus int) (oidc.Claims, bool) {
 	p := oidc.Provider(provider)
+	// Rejections are logged (never the token) so an admin can tell "the
+	// app never reached the server" from "the server refused the token".
+	reject := func(status int, code string, why any) {
+		log.Printf("sign-in: %s %q rejected: %s (%v)", r.URL.Path, provider, code, why)
+		errorReply(w, status, code)
+	}
 	if !p.Valid() || token == "" || nonce == "" {
-		errorReply(w, 400, "invalid_request")
+		reject(400, "invalid_request", "missing provider, token or nonce")
 		return oidc.Claims{}, false
 	}
 	if !s.auth.nonces.take(nonce) {
-		errorReply(w, badStatus, "invalid_identity_token")
+		reject(badStatus, "invalid_identity_token", "nonce unknown, used or expired")
 		return oidc.Claims{}, false
 	}
 	c, err := s.auth.SignIn.Verify(r.Context(), p, token, nonce)
@@ -168,12 +176,12 @@ func (s *Server) verifyIdentity(w http.ResponseWriter, r *http.Request, provider
 	case err == nil:
 		return c, true
 	case errors.Is(err, oidc.ErrDisabled):
-		errorReply(w, 400, "provider_disabled")
+		reject(400, "provider_disabled", err)
 	case errors.Is(err, oidc.ErrKeys):
 		w.Header().Set("Retry-After", "30")
-		errorReply(w, 503, "provider_unavailable")
+		reject(503, "provider_unavailable", err)
 	default:
-		errorReply(w, badStatus, "invalid_identity_token")
+		reject(badStatus, "invalid_identity_token", err)
 	}
 	return oidc.Claims{}, false
 }
@@ -218,6 +226,7 @@ func (s *Server) signIn(w http.ResponseWriter, r *http.Request) {
 		s.tokenReply(w, r, t, id)
 	case errors.Is(err, session.ErrNotLinked):
 		s.auth.Limiter.FailureIn(sc, rateKey(c.IP), key)
+		log.Printf("sign-in: %s account is not linked to any user (no account is created)", claims.Provider)
 		errorReply(w, 401, "identity_not_linked")
 	case errors.Is(err, session.ErrInvalidCredentials):
 		errorReply(w, 401, "invalid_credentials")
@@ -286,6 +295,7 @@ func (s *Server) linkSignIn(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case errors.Is(err, session.ErrInvalidCredentials):
 		s.auth.Limiter.FailureIn(sc, rateKey(c.IP), id.LoginName)
+		log.Printf("sign-in: link %q rejected: current password does not match", req.Provider)
 		errorReply(w, 403, "invalid_credentials")
 		return
 	case errors.Is(err, password.ErrBusy):
