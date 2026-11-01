@@ -43,7 +43,7 @@ Google or Apple is ever on the home server.
 
 | Setting | Flag | Environment | Default |
 |---|---|---|---|
-| Google | `-google-client-ids` | `WITHALBUM_GOOGLE_CLIENT_IDS` | empty in source builds (off); release builds may embed the app's IDs with `-ldflags "-X main.defaultGoogleClientIDs=..."` |
+| Google | `-google-client-ids` | `WITHALBUM_GOOGLE_CLIENT_IDS` | the WithAlbum app's public client IDs (built in since M62: the iOS client and the web client Android requests tokens for) |
 | Apple | `-apple-client-ids` | `WITHALBUM_APPLE_CLIENT_IDS` | `aaaicu.withalbum.app` (the app's bundle ID) |
 
 Values are comma-separated; `off` turns a provider off. For Google, list the
@@ -56,6 +56,25 @@ The only outbound connections are the two key set URLs above, made when
 someone signs in or links. If they cannot be reached and no recent key is
 cached, sign-in answers `503 provider_unavailable` and the password login
 still works.
+
+### A server with no route out (Docker, M62)
+
+`-oidc-keys-dir <dir>` / `WITHALBUM_OIDC_KEYS_DIR` makes the server read
+`<dir>/google.json` and `<dir>/apple.json` instead of fetching — it then
+makes no outbound connection at all. Another process keeps the files fresh:
+
+```sh
+withalbum-server oidc-keys -out <dir>            # every 6 hours (-every), forever
+withalbum-server oidc-keys -out <dir> -once      # one refresh, exit 1 on failure
+```
+
+It contacts only the two fixed key set URLs (no redirects), checks that each
+document has a usable RSA key of 2048 bits or more, and atomically replaces
+the file (mode 0444); a failed download keeps the old file and retries in 5
+minutes. The server re-reads a file at most once a minute (when a token names
+an unknown key) and every 6 hours, and does not trust a file older than 72
+hours (`503 provider_unavailable`). In `compose.yaml` this is the `keys`
+container, which shares only the read-only key volume with the server.
 
 ## Security notes
 

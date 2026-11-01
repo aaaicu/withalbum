@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added (sign in with Google in the isolated Docker setup, M62)
+- `withalbum-server oidc-keys -out DIR [-every 6h] [-once]`: Google·Apple 공개 서명 키(JWKS)를 정해진 두 주소에서만 받아(전달 따라가지 않음) 검사하고 `DIR/google.json`·`apple.json`을 원자적으로 교체(0444). 실패하면 옛 파일 유지·5분 뒤 다시.
+- `-oidc-keys-dir`/`WITHALBUM_OIDC_KEYS_DIR`: 서버가 키를 그 파일에서 읽고 외부에 묻지 않음. 72시간 넘게 갱신되지 않은 파일은 믿지 않음(`503 provider_unavailable`).
+- `compose.yaml`: `keys` 컨테이너(자기 네트워크, 바깥 길 있음) + `oidc-keys` 볼륨(서버는 읽기 전용) — 서버는 계속 `internal` 네트워크에만. 이미지에 `/keys`.
+
+### Changed (M62)
+- 위드앨범 앱의 **공개** Google 클라이언트 ID(iOS, Android가 토큰을 요청하는 웹 클라이언트)를 서버에 내장 — 설정 없이 Google 로그인이 켜짐(`WITHALBUM_GOOGLE_CLIENT_IDS=off`로 끔, 직접 만든 앱이면 그 ID로). 이전: 소스 빌드는 꺼짐.
+
 ## [0.1.0-alpha.2] — 2026-10-31 (prerelease)
 
 Docker 격리 구성(M58), Google·Apple 로그인(M54), 빠른 동기화 상태(M53), 초대함 기록·초대 링크(M57). 실기기 검증 결과는 `docs/releases/v0.1.0-alpha.2.md`.

@@ -6,12 +6,17 @@
 #   docker compose run --rm withalbum admin init -login <name>
 #   docker compose up -d
 #
-# Two containers from the same image:
+# Three containers from the same image:
 #   withalbum  the server, ONLY on the "internal" network, which Docker gives
 #              no route out: it cannot connect to the home network (cameras,
 #              router, other computers), the host or the internet.
 #   edge       `withalbum-server forward`: copies bytes between the published
 #              ports and the server. TLS stays between the app and the server.
+#   keys       `withalbum-server oidc-keys`: downloads Google's and Apple's
+#              public sign-in keys (two fixed https addresses) every 6 hours
+#              into the "oidc-keys" volume, which the server mounts read-only.
+#              It shares a volume, not a network, with the server; it listens
+#              on nothing and the server still has no route out (M62).
 name: withalbum
 
 x-hardening: &hardening
@@ -31,9 +36,15 @@ services:
       # Optional: https://<machine>.<tailnet>.ts.net (docs/FUNNEL.md); empty = off.
       WITHALBUM_FUNNEL_URL: ${WITHALBUM_FUNNEL_URL:-}
       WITHALBUM_VOLUME_ID: ${WITHALBUM_VOLUME_ID:-}
+      # Sign in with Google: empty = the WithAlbum app's built-in public client
+      # IDs; "off" turns it off; or your own app build's IDs (comma-separated).
+      WITHALBUM_GOOGLE_CLIENT_IDS: ${WITHALBUM_GOOGLE_CLIENT_IDS:-}
+      # Keys come from the "keys" container, not from the internet.
+      WITHALBUM_OIDC_KEYS_DIR: /keys
       TZ: ${TZ:-Asia/Seoul}
     volumes:
       - ${WITHALBUM_DATA:?set WITHALBUM_DATA in .env}:/data
+      - oidc-keys:/keys:ro
     tmpfs:
       - /tmp:size=64m
     networks: [internal]
@@ -55,7 +66,23 @@ services:
     pids_limit: 64
     mem_limit: 128m
 
+  keys:
+    <<: *hardening
+    image: withalbum-server:local
+    command: ["oidc-keys", "-out", "/keys", "-every", "6h"]
+    volumes:
+      - oidc-keys:/keys
+    # Its own network with a route out; NOT "internal", so the server is not on it.
+    networks: [keys]
+    pids_limit: 32
+    mem_limit: 64m
+
 networks:
   internal:
     internal: true
   edge: {}
+  keys: {}
+
+volumes:
+  # Public keys only (no secrets); written by "keys", read-only for the server.
+  oidc-keys: {}

@@ -169,3 +169,46 @@ func TestNonceMatches(t *testing.T) {
 		}
 	}
 }
+
+// M62: key sets from files written by the fetcher; the verifier makes no
+// request at all.
+func TestVerifyFromKeysDir(t *testing.T) {
+	ti := oidctest.NewTestIssuer()
+	defer ti.Close()
+	dir := t.TempDir()
+	ctx := context.Background()
+	raw, err := oidc.FetchKeySetFrom(ctx, ti.Server.Client(), ti.Server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := ti.Fetches.Load()
+	now := time.Now()
+	v := oidc.New(oidc.Config{GoogleAudiences: []string{googleAud}, KeysDir: dir,
+		KeysURL: map[oidc.Provider]string{oidc.Google: "http://127.0.0.1:1/never"}, Now: func() time.Time { return now }})
+	token := ti.Sign(oidc.Google, oidctest.TokenFields{Sub: "g-1", Aud: googleAud, Nonce: nonce})
+
+	// No file yet: provider unavailable (not "invalid token").
+	if _, err := v.Verify(ctx, oidc.Google, token, nonce); !errors.Is(err, oidc.ErrKeys) {
+		t.Fatalf("no file: %v, want ErrKeys", err)
+	}
+	if err := oidc.WriteKeySet(dir, oidc.Google, []byte(`{"keys":[]}`)); err == nil {
+		t.Fatal("an empty key set must not be written")
+	}
+	if err := oidc.WriteKeySet(dir, oidc.Google, raw); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(2 * time.Minute) // past the once-a-minute retry
+	if c, err := v.Verify(ctx, oidc.Google, token, nonce); err != nil || c.Subject != "g-1" {
+		t.Fatalf("from file: %+v, %v", c, err)
+	}
+	if ti.Fetches.Load() != before {
+		t.Fatal("the verifier must not fetch when KeysDir is set")
+	}
+
+	// A file the fetcher stopped refreshing is not trusted.
+	stale := oidc.New(oidc.Config{GoogleAudiences: []string{googleAud}, KeysDir: dir,
+		Now: func() time.Time { return time.Now().Add(oidc.KeysFileMaxAge + time.Hour) }})
+	if _, err := stale.Verify(ctx, oidc.Google, token, nonce); !errors.Is(err, oidc.ErrKeys) {
+		t.Fatalf("stale file: %v, want ErrKeys", err)
+	}
+}
