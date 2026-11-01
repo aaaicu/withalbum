@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aaaicu/withalbum/internal/auth/ratelimit"
 	"github.com/aaaicu/withalbum/internal/authz"
 	"github.com/aaaicu/withalbum/internal/blobstore"
 	"github.com/aaaicu/withalbum/internal/meta"
@@ -96,6 +97,9 @@ type Config struct {
 	// nil: Meta, which must then implement meta.AlbumManagement (Handler
 	// panics otherwise).
 	Albums meta.AlbumManagement
+	// Invites serves album invite links. nil: Meta, which must then
+	// implement meta.InviteLinks (Handler panics otherwise).
+	Invites meta.InviteLinks
 	// TLS is the server's TLS identity shown to administrators (nil: no
 	// TLS). It can also be set later with SetTLSInfo.
 	TLS *TLSInfo
@@ -118,6 +122,8 @@ type Server struct {
 	members          meta.Memberships
 	social           meta.Social
 	albums           meta.AlbumManagement
+	invites          meta.InviteLinks
+	linkLimit        *ratelimit.Limiter // invite link token lookups
 	socialLimit      *socialLimiter
 	tls              *TLSInfo
 	relay            *RelayInfo
@@ -139,7 +145,8 @@ func New(cfg Config) *Server {
 	s := &Server{vol: cfg.Volume, meta: cfg.Meta, blobs: cfg.Blobs, version: cfg.Version,
 		minFree: max(cfg.MinFreeBytes, 0), freeBytes: cfg.FreeBytes, integrityWarning: cfg.IntegrityWarning, faults: cfg.Faults, auth: cfg.Auth,
 		members: cfg.Members, tls: cfg.TLS, startup: cfg.StartupCheck, previewKick: make(chan struct{}, 1),
-		captureKick: make(chan struct{}, 1), playbackKick: make(chan struct{}, 1), social: cfg.Social, albums: cfg.Albums, socialLimit: newSocialLimiter()}
+		captureKick: make(chan struct{}, 1), playbackKick: make(chan struct{}, 1), social: cfg.Social, albums: cfg.Albums, socialLimit: newSocialLimiter(),
+		invites: cfg.Invites, linkLimit: newLinkLimiter()}
 	s.playbackDefaults()
 	if s.members == nil {
 		s.members, _ = cfg.Meta.(meta.Memberships)
@@ -149,6 +156,9 @@ func New(cfg Config) *Server {
 	}
 	if s.albums == nil {
 		s.albums, _ = cfg.Meta.(meta.AlbumManagement)
+	}
+	if s.invites == nil {
+		s.invites, _ = cfg.Meta.(meta.InviteLinks)
 	}
 	if s.freeBytes == nil {
 		s.freeBytes = cfg.Volume.FreeBytes
@@ -190,6 +200,9 @@ func (s *Server) Handler() http.Handler {
 	}
 	if s.albums == nil {
 		panic("httpapi: Config.Albums is required")
+	}
+	if s.invites == nil {
+		panic("httpapi: Config.Invites is required")
 	}
 	rt := newRouter(s)
 	rt.handle("GET /{$}", func(w http.ResponseWriter, r *http.Request) {

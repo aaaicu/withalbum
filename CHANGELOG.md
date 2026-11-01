@@ -4,7 +4,14 @@
 
 ## [0.1.0-alpha.2] — 2026-10-31 (prerelease)
 
-Docker 격리 구성(M58), Google·Apple 로그인(M54), 빠른 동기화 상태(M53). 실기기 검증 결과는 `docs/releases/v0.1.0-alpha.2.md`.
+Docker 격리 구성(M58), Google·Apple 로그인(M54), 빠른 동기화 상태(M53), 초대함 기록·초대 링크(M57). 실기기 검증 결과는 `docs/releases/v0.1.0-alpha.2.md`.
+
+### Added (invitation history and invite links, M57)
+- 초대함 기록: `GET /api/v1/invitations`와 `GET .../folders/{folder_id}/invitations`가 대기 초대를 **최신순**으로(이전: 오래된 순), `include=recent&days=N`(1~30, 기본 30)이면 최근 처리한 초대(수락·거절·만료·취소)도 처리 시각 최신순으로. 항목에 `answered_at`·`reason`(취소 사유 `revoked_by_owner`·`album_deleted`·`album_archived`·`owner_changed`)·`member_now`·`source`(`direct`|`link`). `limit`(1~100, 기본 100)·`cursor`/`next_cursor` 페이지. 오너 목록에서 거절은 `not_joined`.
+- 410 `invitation_gone`에 `reason`(`accepted`·`declined`·`expired`·`revoked`·`revoked_by_owner`·`album_deleted`·`album_archived`·`owner_changed`·`replaced`).
+- 초대 보내기 `"replace_pending": true`: 같은 사람의 대기 초대를 취소(사유 `replaced`, 목록에서 숨김)하고 새 초대.
+- 앨범 초대 링크(OWNER): `GET|POST .../folders/{folder_id}/invite-links`, `DELETE .../invite-links/{link_id}`(역할, 만료 1~30일 기본 7, 사용 1~20회 기본 1, 앨범당 사용 가능 링크 20개). 생성 응답에만 토큰·`app_link`(`withalbum://invite?…&token=…`, 페어링 필드 포함)·`web_url`(`/i/<token>`). 공개 `POST /api/v1/invitations/link-preview`(앨범 이름·초대한 사람·역할·만료, `sign_up_available: false`), 로그인 사용자 `POST /api/v1/invitations/link-redeem`(바로 멤버, 사용 1회 소모, 수락된 초대 기록, 같은 앨범 대기 초대는 `replaced`), 공개 안내 페이지 `GET /i/{token}`(스크립트 없음, Funnel·중계에서도). 토큰은 SHA-256만 저장, 로그·감사에 없음, 주소·계정별 속도 제한. 앨범 삭제·보관·오너 변경 시 링크도 취소.
+- `/me` `server_features`에 `invitation_history`, `invite_links`. 마이그레이션 **0019**(`folder_invitations.declined_at`·`revoked_at`·`revoke_reason`·`link_id`, `invite_links`). 이전 기록의 처리 시각·사유는 비워 둠(null).
 
 ### Added (Docker, M58)
 - `Dockerfile`·`compose.yaml`·`docker.env.example`·[`docs/DOCKER.md`](docs/DOCKER.md)(시험판, 실제 Docker 미검증): 서버 컨테이너는 바깥으로 나가는 길이 없는 Docker `internal` 네트워크에만(공유기 설정 없이 서버 → 홈캠·공유기·다른 기기·인터넷 차단), 휴대폰·Funnel 연결은 같은 이미지의 전달 컨테이너가 받음. uid 10001, 읽기 전용 FS, capability 전부 제거, `no-new-privileges`. 미리보기 도구 ffmpeg·libheif.

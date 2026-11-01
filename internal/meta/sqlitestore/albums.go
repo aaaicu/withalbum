@@ -53,12 +53,12 @@ func (s *Store) DeleteFolder(ctx context.Context, c meta.AlbumChange) error {
 		} else if n != 1 {
 			return meta.ErrFolderNotFound
 		}
-		n, err := revokePending(ctx, tx, c.FolderID)
+		n, nl, err := revokePending(ctx, tx, c.FolderID, meta.ReasonAlbumDeleted)
 		if err != nil {
 			return err
 		}
 		return recordAlbum(ctx, tx, c.ActorID, "folder.delete", "folder", c.FolderID,
-			map[string]any{"folder_name": fa.Folder.Name, "invitations_revoked": n})
+			map[string]any{"folder_name": fa.Folder.Name, "invitations_revoked": n, "invite_links_revoked": nl})
 	})
 }
 

@@ -89,36 +89,93 @@ func recordAlbum(ctx context.Context, tx *sql.Tx, actor, action, targetType, tar
 		TargetID: targetID, Result: audit.Allowed, Details: details})
 }
 
-// invitationQuery selects a meta.Invitation (scanInvitation). It is
+// invitationQuery selects an invitationRow (scanInvitation). It is
 // completed by a WHERE clause.
 const invitationQuery = `SELECT i.invitation_id, i.folder_id, f.folder_name, i.invited_user_id, ue.display_name,
-		i.inviter_user_id, ur.display_name, i.role, i.status, i.created_at, i.expires_at, COALESCE(i.accepted_at, '')
+		i.inviter_user_id, ur.display_name, i.role, i.status, i.created_at, i.expires_at, COALESCE(i.accepted_at, ''),
+		COALESCE(i.declined_at, ''), COALESCE(i.revoked_at, ''), COALESCE(i.revoke_reason, ''), COALESCE(i.link_id, ''),
+		f.owner_user_id, f.archived_at IS NOT NULL, f.deleted_at IS NOT NULL,
+		f.archived_at IS NULL AND f.deleted_at IS NULL AND (f.owner_user_id = i.invited_user_id OR
+			EXISTS(SELECT 1 FROM folder_members mm WHERE mm.folder_id = i.folder_id AND mm.user_id = i.invited_user_id))
 	FROM folder_invitations i
 	JOIN folders f ON f.folder_id = i.folder_id
 	JOIN users ue ON ue.user_id = i.invited_user_id
 	JOIN users ur ON ur.user_id = i.inviter_user_id
 	WHERE `
 
-func scanInvitation(row scanner, t time.Time) (meta.Invitation, error) {
-	var inv meta.Invitation
+// invitationRow is an invitation with the state of its folder.
+type invitationRow struct {
+	meta.Invitation
+	ownerID                       string
+	folderArchived, folderDeleted bool
+}
+
+// gone is why the invitation can no longer be answered, or "" while it
+// can: its stored status, or a folder that was archived, deleted or
+// changed owner since (those revoke pending invitations in the same
+// transaction; this also covers rows written otherwise).
+func (r invitationRow) gone() string {
+	switch r.Status {
+	case meta.InvitationAccepted:
+		return meta.GoneAccepted
+	case meta.InvitationDeclined:
+		return meta.GoneDeclined
+	case meta.InvitationExpired:
+		return meta.GoneExpired
+	case meta.InvitationRevoked:
+		if r.Reason != "" {
+			return r.Reason
+		}
+		return meta.GoneRevoked
+	}
+	switch {
+	case r.folderDeleted:
+		return meta.ReasonAlbumDeleted
+	case r.folderArchived:
+		return meta.ReasonAlbumArchived
+	case r.InviterID != r.ownerID:
+		return meta.ReasonOwnerChanged
+	}
+	return ""
+}
+
+func scanInvitation(row scanner, t time.Time) (invitationRow, error) {
+	var r invitationRow
+	inv := &r.Invitation
 	var role string
 	err := row.Scan(&inv.ID, &inv.FolderID, &inv.FolderName, &inv.InviteeID, &inv.InviteeName,
-		&inv.InviterID, &inv.InviterName, &role, &inv.Status, &inv.CreatedAt, &inv.ExpiresAt, &inv.AcceptedAt)
+		&inv.InviterID, &inv.InviterName, &role, &inv.Status, &inv.CreatedAt, &inv.ExpiresAt, &inv.AcceptedAt,
+		&inv.DeclinedAt, &inv.RevokedAt, &inv.Reason, &inv.LinkID, &r.ownerID, &r.folderArchived, &r.folderDeleted, &inv.MemberNow)
 	if errors.Is(err, sql.ErrNoRows) {
-		return meta.Invitation{}, meta.ErrInvitationNotFound
+		return invitationRow{}, meta.ErrInvitationNotFound
 	}
 	if err != nil {
-		return meta.Invitation{}, err
+		return invitationRow{}, err
 	}
 	inv.Role = authz.AlbumRole(role)
 	if inv.Status == meta.InvitationPending && expiredAt(inv.ExpiresAt, t) {
 		inv.Status = meta.InvitationExpired
 	}
-	return inv, nil
+	switch inv.Status {
+	case meta.InvitationAccepted:
+		inv.AnsweredAt = inv.AcceptedAt
+	case meta.InvitationDeclined:
+		inv.AnsweredAt = inv.DeclinedAt
+	case meta.InvitationRevoked:
+		inv.AnsweredAt = inv.RevokedAt
+	case meta.InvitationExpired:
+		inv.AnsweredAt = inv.ExpiresAt
+	}
+	return r, nil
+}
+
+func getInvitationRow(ctx context.Context, q queryer, id string) (invitationRow, error) {
+	return scanInvitation(q.QueryRowContext(ctx, invitationQuery+"i.invitation_id = ?", id), time.Now())
 }
 
 func getInvitation(ctx context.Context, q queryer, id string) (meta.Invitation, error) {
-	return scanInvitation(q.QueryRowContext(ctx, invitationQuery+"i.invitation_id = ?", id), time.Now())
+	r, err := getInvitationRow(ctx, q, id)
+	return r.Invitation, err
 }
 
 func (s *Store) listInvitations(ctx context.Context, where string, args ...any) ([]meta.Invitation, error) {
@@ -130,12 +187,12 @@ func (s *Store) listInvitations(ctx context.Context, where string, args ...any) 
 	t := time.Now()
 	out := []meta.Invitation{}
 	for rows.Next() {
-		inv, err := scanInvitation(rows, t)
+		r, err := scanInvitation(rows, t)
 		if err != nil {
 			return nil, err
 		}
-		if inv.Status == meta.InvitationPending {
-			out = append(out, inv)
+		if r.Status == meta.InvitationPending {
+			out = append(out, r.Invitation)
 		}
 	}
 	return out, rows.Err()
@@ -174,13 +231,25 @@ func memberRole(ctx context.Context, q queryer, folderID, userID string) (authz.
 	return authz.AlbumRole(role), err
 }
 
-// revokePending revokes every pending invitation of a folder.
-func revokePending(ctx context.Context, tx *sql.Tx, folderID string) (int64, error) {
-	res, err := tx.ExecContext(ctx, "UPDATE folder_invitations SET status = 'revoked' WHERE folder_id = ? AND status = 'pending'", folderID)
+// revokePending revokes every pending invitation and every invite link of
+// a folder that is not revoked yet, recording reason, and returns how many
+// of each.
+func revokePending(ctx context.Context, tx *sql.Tx, folderID, reason string) (invites, links int64, err error) {
+	ts := now()
+	res, err := tx.ExecContext(ctx, "UPDATE folder_invitations SET status = 'revoked', revoked_at = ?, revoke_reason = ? WHERE folder_id = ? AND status = 'pending'",
+		ts, reason, folderID)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	return res.RowsAffected()
+	if invites, err = res.RowsAffected(); err != nil {
+		return 0, 0, err
+	}
+	if res, err = tx.ExecContext(ctx, "UPDATE invite_links SET revoked_at = ?, revoke_reason = ? WHERE folder_id = ? AND revoked_at IS NULL",
+		ts, reason, folderID); err != nil {
+		return 0, 0, err
+	}
+	links, err = res.RowsAffected()
+	return invites, links, err
 }
 
 // CreateInvitation implements meta.Memberships.
@@ -214,8 +283,14 @@ func (s *Store) CreateInvitation(ctx context.Context, c meta.AlbumChange) (meta.
 		err := tx.QueryRowContext(ctx, "SELECT invitation_id, expires_at FROM folder_invitations WHERE folder_id = ? AND invited_user_id = ? AND status = 'pending'",
 			c.FolderID, c.TargetID).Scan(&oldID, &oldExpires)
 		switch {
-		case err == nil && !expiredAt(oldExpires, created):
+		case err == nil && !expiredAt(oldExpires, created) && !c.ReplacePending:
 			return meta.ErrInvitationPending
+		case err == nil && !expiredAt(oldExpires, created):
+			if _, err := tx.ExecContext(ctx, "UPDATE folder_invitations SET status = 'revoked', revoked_at = ?, revoke_reason = ? WHERE invitation_id = ?",
+				created.Format(timeLayout), meta.ReasonReplaced, oldID); err != nil {
+				return err
+			}
+			details["replaced_invitation_id"] = oldID
 		case err == nil:
 			// Expiry is decided when read; record it before replacing.
 			if _, err := tx.ExecContext(ctx, "UPDATE folder_invitations SET status = 'expired' WHERE invitation_id = ?", oldID); err != nil {
@@ -253,9 +328,10 @@ func (s *Store) RevokeInvitation(ctx context.Context, c meta.AlbumChange) error 
 			return meta.ErrInvitationNotFound
 		}
 		if inv.Status != meta.InvitationPending {
-			return meta.ErrInvitationGone
+			return &meta.GoneError{Err: meta.ErrInvitationGone, Reason: invitationRow{Invitation: inv}.gone()}
 		}
-		if _, err := tx.ExecContext(ctx, "UPDATE folder_invitations SET status = 'revoked' WHERE invitation_id = ?", inv.ID); err != nil {
+		if _, err := tx.ExecContext(ctx, "UPDATE folder_invitations SET status = 'revoked', revoked_at = ?, revoke_reason = ? WHERE invitation_id = ?",
+			now(), meta.ReasonRevokedByOwner, inv.ID); err != nil {
 			return err
 		}
 		return recordAlbum(ctx, tx, c.ActorID, "invitation.revoke", "invitation", inv.ID,
@@ -296,13 +372,13 @@ func decideInvitee(ctx context.Context, tx *sql.Tx, c meta.AlbumChange) (meta.In
 	if err != nil {
 		return meta.Invitation{}, meta.FolderAccess{}, err
 	}
-	inv, err := getInvitation(ctx, tx, c.TargetID)
+	row, err := getInvitationRow(ctx, tx, c.TargetID)
 	if err != nil {
 		return meta.Invitation{}, meta.FolderAccess{}, err
 	}
+	inv := row.Invitation
 	fa, err := getFolderAccess(ctx, tx, inv.FolderID, c.ActorID)
-	archived := errors.Is(err, meta.ErrFolderNotFound)
-	if err != nil && !archived {
+	if err != nil && !errors.Is(err, meta.ErrFolderNotFound) {
 		return meta.Invitation{}, meta.FolderAccess{}, err
 	}
 	if err := c.Authorize(p, fa.Access); err != nil {
@@ -312,9 +388,9 @@ func decideInvitee(ctx context.Context, tx *sql.Tx, c meta.AlbumChange) (meta.In
 		return meta.Invitation{}, meta.FolderAccess{}, meta.ErrNotInvitee
 	}
 	// Only the folder's current owner can have invited: a transfer revokes
-	// pending invitations, and this also covers rows written otherwise.
-	if archived || inv.Status != meta.InvitationPending || inv.InviterID != fa.Access.OwnerID {
-		return meta.Invitation{}, meta.FolderAccess{}, meta.ErrInvitationGone
+	// pending invitations, and gone also covers rows written otherwise.
+	if reason := row.gone(); reason != "" {
+		return meta.Invitation{}, meta.FolderAccess{}, &meta.GoneError{Err: meta.ErrInvitationGone, Reason: reason}
 	}
 	return inv, fa, nil
 }
@@ -377,7 +453,7 @@ func (s *Store) declineInvitation(ctx context.Context, c meta.AlbumChange) error
 		return err
 	}
 	defer tx.Rollback()
-	res, err := tx.ExecContext(ctx, "UPDATE folder_invitations SET status = 'declined' WHERE invitation_id = ? AND status = 'pending'", inv.ID)
+	res, err := tx.ExecContext(ctx, "UPDATE folder_invitations SET status = 'declined', declined_at = ? WHERE invitation_id = ? AND status = 'pending'", now(), inv.ID)
 	if err != nil {
 		return err
 	}
@@ -540,13 +616,13 @@ func (s *Store) TransferOwnership(ctx context.Context, c meta.AlbumChange) error
 			c.FolderID, prev, string(PreviousOwnerRole), now()); err != nil {
 			return err
 		}
-		n, err := revokePending(ctx, tx, c.FolderID)
+		n, nl, err := revokePending(ctx, tx, c.FolderID, meta.ReasonOwnerChanged)
 		if err != nil {
 			return err
 		}
 		return recordAlbum(ctx, tx, c.ActorID, "folder.transfer_owner", "folder", c.FolderID, map[string]any{
 			"previous_owner_id": prev, "new_owner_id": c.TargetID, "new_owner_previous_role": string(oldRole),
-			"previous_owner_role": string(PreviousOwnerRole), "invitations_revoked": n})
+			"previous_owner_role": string(PreviousOwnerRole), "invitations_revoked": n, "invite_links_revoked": nl})
 	})
 }
 
@@ -557,11 +633,11 @@ func (s *Store) ArchiveFolder(ctx context.Context, c meta.AlbumChange) error {
 		if _, err := tx.ExecContext(ctx, "UPDATE folders SET archived_at = ? WHERE folder_id = ? AND archived_at IS NULL", now(), c.FolderID); err != nil {
 			return err
 		}
-		n, err := revokePending(ctx, tx, c.FolderID)
+		n, nl, err := revokePending(ctx, tx, c.FolderID, meta.ReasonAlbumArchived)
 		if err != nil {
 			return err
 		}
 		return recordAlbum(ctx, tx, c.ActorID, "folder.archive", "folder", c.FolderID,
-			map[string]any{"folder_name": fa.Folder.Name, "invitations_revoked": n})
+			map[string]any{"folder_name": fa.Folder.Name, "invitations_revoked": n, "invite_links_revoked": nl})
 	})
 }

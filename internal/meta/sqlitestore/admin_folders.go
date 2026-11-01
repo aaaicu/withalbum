@@ -107,13 +107,13 @@ func (s *Store) reassignArchivedOwner(ctx context.Context, c meta.AlbumChange) (
 	if n, err := res.RowsAffected(); err != nil || n != 1 {
 		return meta.Reassignment{}, fmt.Errorf("reassign owner: %d rows changed: %v", n, err)
 	}
-	n, err := revokePending(ctx, tx, c.FolderID)
+	n, nl, err := revokePending(ctx, tx, c.FolderID, meta.ReasonOwnerChanged)
 	if err != nil {
 		return meta.Reassignment{}, err
 	}
 	if err := recordAlbum(ctx, tx, c.ActorID, "folder.reassign_archived_owner", "folder", c.FolderID, map[string]any{
 		"previous_owner_id": prev, "new_owner_id": c.TargetID, "new_owner_previous_role": string(oldRole),
-		"invitations_revoked": n}); err != nil {
+		"invitations_revoked": n, "invite_links_revoked": nl}); err != nil {
 		return meta.Reassignment{}, err
 	}
 	if c.BeforeCommit != nil {

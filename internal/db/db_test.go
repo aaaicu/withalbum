@@ -38,8 +38,8 @@ func TestEmbeddedMigrationsAreContiguous(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ms) != 18 || LatestVersion() != 18 {
-		t.Fatalf("got %d migrations, LatestVersion %d; want 18", len(ms), LatestVersion())
+	if len(ms) != 19 || LatestVersion() != 19 {
+		t.Fatalf("got %d migrations, LatestVersion %d; want 19", len(ms), LatestVersion())
 	}
 }
 
@@ -817,4 +817,53 @@ func TestMigration0017AlbumManagement(t *testing.T) {
 	expectReject(t, sqlDB, "transfer owned albums before disabling account", "UPDATE users SET status = 'disabled' WHERE user_id = 'owner'")
 	mustExec(t, sqlDB, "UPDATE folders SET deleted_at = 't' WHERE folder_id = 'f1'")
 	mustExec(t, sqlDB, "UPDATE users SET status = 'disabled' WHERE user_id = 'owner'")
+}
+
+// TestMigration0019InvitationHistoryLinks: existing invitations keep every
+// value and get no invented answer time or reason; the new columns and the
+// invite_links table hold their constraints; deleting a folder deletes its
+// links and a link's deletion leaves its invitations.
+func TestMigration0019InvitationHistoryLinks(t *testing.T) {
+	ctx := context.Background()
+	sqlDB, _ := openTemp(t)
+	migrateTo(t, sqlDB, 18)
+	addUser(t, sqlDB, "owner", "active")
+	addUser(t, sqlDB, "alice", "active")
+	mustExec(t, sqlDB, "INSERT INTO folders(folder_id, folder_name, owner_user_id) VALUES ('f1', 'Trip', 'owner')")
+	mustExec(t, sqlDB, `INSERT INTO folder_invitations(invitation_id, folder_id, invited_user_id, inviter_user_id, role, status, expires_at, created_at) VALUES
+		('i1', 'f1', 'alice', 'owner', 'VIEWER', 'declined', 'e1', 'c1'),
+		('i2', 'f1', 'alice', 'owner', 'VIEWER', 'revoked', 'e2', 'c2')`)
+	if err := Migrate(ctx, sqlDB); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := sqlDB.QueryRow(`SELECT count(*) FROM folder_invitations WHERE declined_at IS NULL AND revoked_at IS NULL
+		AND revoke_reason IS NULL AND link_id IS NULL AND status IN ('declined','revoked')`).Scan(&n); err != nil || n != 2 {
+		t.Fatalf("rows after migration: %d, %v", n, err)
+	}
+	expectReject(t, sqlDB, "CHECK constraint", "UPDATE folder_invitations SET revoke_reason = 'bogus' WHERE invitation_id = 'i2'")
+	mustExec(t, sqlDB, "UPDATE folder_invitations SET revoke_reason = 'replaced', revoked_at = 'r' WHERE invitation_id = 'i2'")
+	hash := strings.Repeat("ab", 32)
+	insert := `INSERT INTO invite_links(link_id, folder_id, creator_user_id, role, token_sha256, max_uses, use_count, created_at, expires_at, revoked_at, revoke_reason)
+		VALUES (?, 'f1', 'owner', ?, ?, ?, ?, 'c', 'e', ?, ?)`
+	mustExec(t, sqlDB, insert, "l1", "VIEWER", hash, 2, 0, nil, nil)
+	expectReject(t, sqlDB, "UNIQUE constraint", insert, "l2", "VIEWER", hash, 2, 0, nil, nil)
+	expectReject(t, sqlDB, "CHECK constraint", insert, "l2", "OWNER", strings.Repeat("cd", 32), 2, 0, nil, nil)
+	expectReject(t, sqlDB, "CHECK constraint", insert, "l2", "VIEWER", "short", 2, 0, nil, nil)
+	expectReject(t, sqlDB, "CHECK constraint", insert, "l2", "VIEWER", strings.Repeat("cd", 32), 21, 0, nil, nil)
+	expectReject(t, sqlDB, "CHECK constraint", insert, "l2", "VIEWER", strings.Repeat("cd", 32), 2, 3, nil, nil)
+	expectReject(t, sqlDB, "CHECK constraint", insert, "l2", "VIEWER", strings.Repeat("cd", 32), 2, 0, "r", nil)
+	expectReject(t, sqlDB, "CHECK constraint", insert, "l2", "VIEWER", strings.Repeat("cd", 32), 2, 0, "r", "replaced")
+	expectReject(t, sqlDB, "CHECK constraint", "UPDATE invite_links SET use_count = 3 WHERE link_id = 'l1'")
+	expectReject(t, sqlDB, "FOREIGN KEY", "UPDATE folder_invitations SET link_id = 'nope' WHERE invitation_id = 'i1'")
+	mustExec(t, sqlDB, "UPDATE folder_invitations SET link_id = 'l1' WHERE invitation_id = 'i1'")
+	mustExec(t, sqlDB, "DELETE FROM invite_links WHERE link_id = 'l1'")
+	if err := sqlDB.QueryRow("SELECT count(*) FROM folder_invitations WHERE invitation_id = 'i1' AND link_id IS NULL").Scan(&n); err != nil || n != 1 {
+		t.Fatalf("ON DELETE SET NULL: %d, %v", n, err)
+	}
+	mustExec(t, sqlDB, insert, "l3", "UPLOADER", hash, 1, 1, "r", "album_deleted")
+	mustExec(t, sqlDB, "DELETE FROM folders WHERE folder_id = 'f1'")
+	if err := sqlDB.QueryRow("SELECT count(*) FROM invite_links").Scan(&n); err != nil || n != 0 {
+		t.Fatalf("links after folder delete: %d, %v", n, err)
+	}
 }

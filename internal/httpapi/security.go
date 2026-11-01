@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/aaaicu/withalbum/internal/auth/ratelimit"
+	"github.com/aaaicu/withalbum/internal/tlsid"
 )
 
 // Response hardening shared by every route, and the TLS identity shown to
@@ -120,6 +121,9 @@ type TLSInfo struct {
 	CertSHA256 string    // certificate fingerprint, 64 hex digits
 	NotAfter   time.Time // end of the certificate's validity
 	Pairing    []Pairing // one per address devices can use
+	// Extras are the remote routes the pairing payloads name; invite
+	// links (invite_links.go) carry them too.
+	Extras tlsid.PairingExtras
 }
 
 // Pairing is a server URL and the payload a device scans to pin it.
