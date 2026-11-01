@@ -68,6 +68,10 @@ var (
 	ErrKeys = errors.New("identity provider keys unavailable")
 )
 
+// invalid is ErrInvalidToken with the failed check, for the server log
+// (errors.Is still matches). It never carries the token itself.
+func invalid(reason string) error { return fmt.Errorf("%w: %s", ErrInvalidToken, reason) }
+
 // Config configures a Verifier. A provider without audiences is off.
 type Config struct {
 	// GoogleAudiences: the app's OAuth client IDs (iOS client, and the web
@@ -230,20 +234,20 @@ func (v *Verifier) Verify(ctx context.Context, p Provider, token, nonce string) 
 		return Claims{}, ErrDisabled
 	}
 	if len(token) > maxTokenBytes {
-		return Claims{}, ErrInvalidToken
+		return Claims{}, invalid("too_large")
 	}
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
-		return Claims{}, ErrInvalidToken
+		return Claims{}, invalid("not_a_jwt")
 	}
 	var h header
 	var pl payload
 	if !segment(parts[0], &h) || !segment(parts[1], &pl) || h.Alg != "RS256" || h.Kid == "" {
-		return Claims{}, ErrInvalidToken
+		return Claims{}, invalid("bad_header")
 	}
 	sig, err := base64.RawURLEncoding.DecodeString(parts[2])
 	if err != nil {
-		return Claims{}, ErrInvalidToken
+		return Claims{}, invalid("bad_signature_encoding")
 	}
 	key, err := v.key(ctx, p, h.Kid)
 	if err != nil {
@@ -251,22 +255,28 @@ func (v *Verifier) Verify(ctx context.Context, p Provider, token, nonce string) 
 	}
 	digest := sha256.Sum256([]byte(parts[0] + "." + parts[1]))
 	if rsa.VerifyPKCS1v15(key, crypto.SHA256, digest[:], sig) != nil {
-		return Claims{}, ErrInvalidToken
+		return Claims{}, invalid("bad_signature")
 	}
 	now := v.now()
 	exp, ok1 := unix(pl.Exp)
 	iat, ok2 := unix(pl.Iat)
 	switch {
 	case !ok1 || !ok2, !now.Before(exp.Add(skew)), iat.After(now.Add(skew)):
-		return Claims{}, ErrInvalidToken
+		return Claims{}, invalid("expired_or_clock_skew")
 	case !slices.Contains(issuers[p], pl.Iss):
-		return Claims{}, ErrInvalidToken
+		return Claims{}, invalid("issuer")
 	case pl.Sub == "" || len(pl.Sub) > 255:
-		return Claims{}, ErrInvalidToken
+		return Claims{}, invalid("subject")
 	case !slices.ContainsFunc(pl.audiences(), func(a string) bool { return slices.Contains(v.aud[p], a) }):
-		return Claims{}, ErrInvalidToken
+		// The audience is a public client ID: naming it tells the admin
+		// which ID to add to WITHALBUM_*_CLIENT_IDS.
+		aud := strings.Join(pl.audiences(), ",")
+		if len(aud) > 200 {
+			aud = aud[:200]
+		}
+		return Claims{}, invalid(fmt.Sprintf("audience %q", aud))
 	case !NonceMatches(pl.Nonce, nonce):
-		return Claims{}, ErrInvalidToken
+		return Claims{}, invalid("nonce")
 	}
 	email := pl.Email
 	if len(email) > 320 {
@@ -294,7 +304,7 @@ func (v *Verifier) key(ctx context.Context, p Provider, kid string) (*rsa.Public
 		if ks.ok.IsZero() {
 			return nil, ErrKeys // the last attempt failed and none succeeded
 		}
-		return nil, ErrInvalidToken // unknown key, fetched just now
+		return nil, invalid("unknown_key") // unknown key, fetched just now
 	}
 	if ks == nil {
 		ks = &keySet{}
