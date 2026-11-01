@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.1.0-alpha.3] — 2026-11-02 (prerelease)
+
+alpha.2를 Docker로 돌릴 때 Google 로그인이 안 되던 문제 수정(M62). 실기기 검증 결과는 `docs/releases/v0.1.0-alpha.3.md`.
+
 ### Added (sign in with Google in the isolated Docker setup, M62)
 - `withalbum-server oidc-keys -out DIR [-every 6h] [-once]`: Google·Apple 공개 서명 키(JWKS)를 정해진 두 주소에서만 받아(전달 따라가지 않음) 검사하고 `DIR/google.json`·`apple.json`을 원자적으로 교체(0444). 실패하면 옛 파일 유지·5분 뒤 다시.
 - `-oidc-keys-dir`/`WITHALBUM_OIDC_KEYS_DIR`: 서버가 키를 그 파일에서 읽고 외부에 묻지 않음. 72시간 넘게 갱신되지 않은 파일은 믿지 않음(`503 provider_unavailable`).
