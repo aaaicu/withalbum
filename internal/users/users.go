@@ -475,6 +475,10 @@ func (s *Store) SetStatus(ctx context.Context, id string, status Status, actor A
 			return err
 		}
 		if status == StatusActive {
+			// Enabling a waiting sign-up (M65) approves it.
+			if _, err := tx.ExecContext(ctx, "DELETE FROM sign_up_requests WHERE user_id = ?", id); err != nil {
+				return err
+			}
 			return record(ctx, tx, actor, "account.enable", id, map[string]any{"login": u.LoginName})
 		}
 		n, err := session.RevokeUserTx(ctx, tx, id, "", session.ReasonAccountDisable)

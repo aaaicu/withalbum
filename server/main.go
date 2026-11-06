@@ -510,6 +510,7 @@ func main() {
 	opts := appOptions{VolumeID: target.VolumeID, MinFreeBytes: minFree, Converters: converters, Transcoder: transcoder, Faults: chaosFaults()}
 	opts.Auth.SignIn = signInConfig(*googleIDsFlag, *appleIDsFlag)
 	opts.Auth.SignIn.KeysDir = oidcKeysDir(*oidcKeysFlag)
+	opts.Auth.NoSignUpRequests = signUpRequestsOff()
 	if d := opts.Auth.SignIn.KeysDir; d != "" && len(opts.Auth.SignIn.GoogleAudiences)+len(opts.Auth.SignIn.AppleAudiences) > 0 {
 		log.Printf("sign-in keys: read from %s (no outbound request)", d)
 	}
