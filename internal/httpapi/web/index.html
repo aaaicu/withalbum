@@ -557,6 +557,11 @@
           <div><h1 class="t-title" tabindex="-1">사용자</h1><p class="note">계정을 만들어도 앨범은 보이지 않아요. 앨범 오너가 초대해야 볼 수 있어요.</p></div>
           <div class="actions"><button type="button" class="btn btn-solid" id="addUserBtn"><svg class="ico i16" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14"/></svg>사용자 추가</button></div>
         </div>
+        <section class="card table-card" id="signUpCard" hidden>
+          <div class="card-head"><h2 class="t-h2">가입 요청 <span id="signUpCount" class="caption"></span></h2></div>
+          <p class="caption table-note">초대 링크 없이 Google·Apple로 가입을 요청한 사람이에요. 승인하면 로그인할 수 있고, 거절하면 요청한 계정이 지워져요. 승인해도 앨범 오너가 초대하기 전에는 볼 수 있는 앨범이 없어요.</p>
+          <div class="scroll"><table class="utable"><thead><tr><th scope="col">이름</th><th scope="col">계정</th><th scope="col">요청</th><th scope="col"><span class="sr-only">결정</span></th></tr></thead><tbody id="signUpRows"></tbody></table></div>
+        </section>
         <section class="card table-card">
           <div class="scroll"><table class="utable"><thead><tr><th scope="col">이름</th><th scope="col">역할</th><th scope="col">상태</th><th scope="col">기기</th><th scope="col">마지막 접속</th><th scope="col">앨범 생성 허용</th></tr></thead><tbody id="userRows"></tbody></table></div>
           <p class="caption table-note">이름을 누르면 권한·계정 상태·기기를 관리해요. 기기와 마지막 접속은 지금 로그인된 기기 기준이에요(로그인·연결 갱신 시각이라 최대 15분쯤 늦을 수 있어요).</p>
@@ -656,6 +661,7 @@
     const INVITE_ROLES = ['CONTRIBUTOR', 'VIEWER', 'UPLOADER'];
     const SERVER_ROLE = {SERVER_ADMIN: '서버 관리자', USER: '일반 사용자'};
     const ERR = {
+      sign_up_request_not_found: '이미 처리된 가입 요청이에요.',
       forbidden: '권한이 없습니다.', csrf_failed: '보안 토큰이 맞지 않습니다. 새로고침 후 다시 시도하세요.',
       folder_not_found: '앨범을 찾을 수 없습니다.', user_not_found: '사용자를 찾을 수 없습니다.',
       invitee_not_found: '초대할 수 있는 활성 계정이 아닙니다.', already_member: '이미 멤버입니다.',
@@ -1432,7 +1438,34 @@
     let activity = {};
     let activitySeq = 0;
     async function fetchUsers() { users = (await api('/api/v1/admin/users')).users; return users; }
-    async function loadUsers() { if (await run(async () => { await fetchUsers(); renderUsers(); })) loadActivity(); }
+    async function loadUsers() { if (await run(async () => { await fetchUsers(); renderUsers(); await loadSignUps(); })) loadActivity(); }
+    // Sign-up requests (M65): accounts made from a Google or Apple sign-in
+    // without an invite link wait here; approve enables, reject deletes.
+    async function loadSignUps() {
+      let r;
+      try { r = await api('/api/v1/admin/sign-up-requests'); }
+      catch (err) { if (err instanceof Unauthorized || err instanceof Offline) throw err; $('signUpCard').hidden = true; return; }
+      $('signUpCard').hidden = !r.items.length;
+      $('signUpCount').textContent = r.items.length ? '승인 대기 ' + r.items.length + '명' : '';
+      $('signUpRows').replaceChildren(...r.items.map(signUpRow));
+    }
+    function signUpRow(q) {
+      const decide = (what, done) => {
+        const b = el('button', {type: 'button', className: what === 'approve' ? 'btn btn-solid' : 'btn btn-outline', text: what === 'approve' ? '승인' : '거절'});
+        b.addEventListener('click', () => run(async () => {
+          await api('/api/v1/admin/sign-up-requests/' + enc(q.user_id) + '/' + what, {method: 'POST'});
+          await fetchUsers(); renderUsers(); await loadSignUps();
+        }, done));
+        return b;
+      };
+      const provider = q.provider === 'apple' ? 'Apple' : 'Google';
+      return el('tr', {},
+        el('td', {}, el('span', {className: 'who'}, avatar(q.display_name), el('span', {}, el('strong', {text: q.display_name}), el('small', {text: q.login_name})))),
+        el('td', {text: provider + (q.email ? ' · ' + q.email : '')}),
+        el('td', {}, el('span', {text: relTime(q.requested_at), title: fmtTime(q.requested_at)})),
+        el('td', {}, el('span', {className: 'actions'}, decide('approve', q.display_name + ' 님의 가입을 승인했어요. 앨범에 초대하면 사진을 볼 수 있어요.'),
+          decide('reject', q.display_name + ' 님의 가입 요청을 거절했어요.'))));
+    }
     // loadActivity asks for each account's devices, four at a time (one small
     // indexed query each: one request per account, fine for a family server).
     async function loadActivity() {

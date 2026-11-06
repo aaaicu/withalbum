@@ -20,7 +20,8 @@ import (
 // with its password (POST /me/sign-ins); afterwards that identity signs in
 // instead of the password (POST /auth/sign-in). The server verifies each ID
 // token itself (internal/auth/oidc) against a nonce it issued for that one
-// attempt, and never creates an account from a sign-in.
+// attempt. A sign-in never creates an account; signing up (signup.go, M65)
+// does, with an invite link or the administrator's approval.
 
 func (s *Server) signInRoutes(rt *router) {
 	rt.handle("POST /api/v1/auth/sign-in/nonce", s.signInNonce)
@@ -149,7 +150,8 @@ func (s *Server) signInNonce(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("sign-in: nonce issued (providers %v)", providersJSON(s.auth.SignIn))
-	jsonReply(w, 200, map[string]any{"nonce": n, "expires_at": ts(exp), "providers": providersJSON(s.auth.SignIn)})
+	jsonReply(w, 200, map[string]any{"nonce": n, "expires_at": ts(exp), "providers": providersJSON(s.auth.SignIn),
+		"sign_up": s.signUpModes()})
 }
 
 // verifyIdentity checks provider, nonce and token and writes the error
@@ -229,7 +231,7 @@ func (s *Server) signIn(w http.ResponseWriter, r *http.Request) {
 		log.Printf("sign-in: %s account is not linked to any user (no account is created)", claims.Provider)
 		errorReply(w, 401, "identity_not_linked")
 	case errors.Is(err, session.ErrInvalidCredentials):
-		errorReply(w, 401, "invalid_credentials")
+		s.disabledSignIn(w, r, claims)
 	default:
 		internalError(w, "sign-in", err)
 	}

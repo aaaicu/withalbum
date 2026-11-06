@@ -99,6 +99,12 @@ func clearCookies(w http.ResponseWriter, r *http.Request) {
 // tokenReply answers a login or refresh. Apps get the tokens in the body;
 // browsers get cookies and only the CSRF token in the body.
 func (s *Server) tokenReply(w http.ResponseWriter, r *http.Request, t session.Tokens, id session.Identity) {
+	jsonReply(w, 200, s.tokenBody(w, r, t, id))
+}
+
+// tokenBody sets the cookies of a cookie session and returns the reply
+// body of a new session.
+func (s *Server) tokenBody(w http.ResponseWriter, r *http.Request, t session.Tokens, id session.Identity) map[string]any {
 	body := map[string]any{"device_id": t.DeviceID, "access_expires_at": ts(t.AccessExpires),
 		"refresh_expires_at": ts(t.RefreshExpires), "session_expires_at": ts(t.SessionExpires), "user": identityUser(id)}
 	if t.CSRFToken != "" {
@@ -113,7 +119,7 @@ func (s *Server) tokenReply(w http.ResponseWriter, r *http.Request, t session.To
 		body["access_token"] = t.AccessToken
 		body["refresh_token"] = t.RefreshToken
 	}
-	jsonReply(w, 200, body)
+	return body
 }
 
 func busy(w http.ResponseWriter) {

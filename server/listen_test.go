@@ -257,8 +257,8 @@ func TestLANOverPinnedTLS(t *testing.T) {
 			}
 		}
 	}
-	if public != 8 {
-		t.Fatalf("%d public routes, want 8 (page, health, login, refresh, sign-in nonce, sign-in, invite link preview, landing page)", public)
+	if public != 9 {
+		t.Fatalf("%d public routes, want 9 (page, health, login, refresh, sign-in nonce, sign-in, sign-up, invite link preview, landing page)", public)
 	}
 
 	// Plain HTTP to the TLS port: no API answer.
