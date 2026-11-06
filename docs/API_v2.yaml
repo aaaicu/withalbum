@@ -617,7 +617,8 @@ paths:
         album invite link's token, checked before the nonce is used) it is
         active at once and joins that album with the link's role (201; the
         album in "folder", or "join_error" when the link ran out in
-        between); without one, when this server takes sign-up requests, it
+        between; "created" is true when the account was made now); without
+        one, when this server takes sign-up requests, it
         is created disabled and waits for the administrator (202
         {"status":"pending"}; signing in answers 403 sign_up_pending until
         then). The login name comes from the e-mail address; the display

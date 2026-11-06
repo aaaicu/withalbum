@@ -158,6 +158,7 @@ func (s *Server) signUp(w http.ResponseWriter, r *http.Request) {
 // account itself is kept, like one made by the administrator.
 func (s *Server) signUpReply(w http.ResponseWriter, r *http.Request, status int, t session.Tokens, id session.Identity, linkHash string) {
 	body := s.tokenBody(w, r, t, id)
+	body["created"] = status == 201
 	if linkHash != "" {
 		p := principal(id)
 		c := meta.AlbumChange{ActorID: id.UserID, SessionID: id.SessionID,
