@@ -261,7 +261,7 @@ func (s *Server) previewInviteLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonReply(w, 200, map[string]any{"folder_name": p.FolderName, "inviter_display_name": p.InviterName,
-		"role": string(p.Role), "expires_at": p.ExpiresAt, "sign_up_available": false})
+		"role": string(p.Role), "expires_at": p.ExpiresAt, "sign_up_available": len(providersJSON(s.auth.SignIn)) > 0})
 }
 
 // redeemInviteLink: POST {"token": ...}, any signed-in account (the app

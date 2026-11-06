@@ -68,6 +68,7 @@ var matrixClasses = map[string]matrixClass{
 	"POST /api/v1/auth/refresh":             classPublic,
 	"POST /api/v1/auth/sign-in/nonce":       classPublic,
 	"POST /api/v1/auth/sign-in":             classPublic,
+	"POST /api/v1/auth/sign-up":             classPublic,
 	"/api/v1/":                              classCatchAll,
 	"POST /api/v1/auth/logout":              classSession,
 	"GET /api/v1/me":                        classSession,
@@ -101,6 +102,9 @@ var matrixClasses = map[string]matrixClass{
 	"GET /api/v1/admin/users/{userID}/folders":                classAdmin,
 	"GET /api/v1/admin/users/{userID}/sign-ins":               classAdmin,
 	"DELETE /api/v1/admin/users/{userID}/sign-ins/{provider}": classAdmin,
+	"GET /api/v1/admin/sign-up-requests":                      classAdmin,
+	"POST /api/v1/admin/sign-up-requests/{userID}/approve":    classAdmin,
+	"POST /api/v1/admin/sign-up-requests/{userID}/reject":     classAdmin,
 	"POST /api/v1/admin/folders/{folderID}/owner":             classAdmin,
 
 	"GET /api/v1/folders/{folderID}":                                          classMeta,

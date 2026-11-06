@@ -389,9 +389,10 @@ info:
     appears in both histories. Links are revoked by the owner, and like
     pending invitations when the album is deleted, archived or changes
     owner. Lookups by token are rate limited (429 rate_limited with
-    Retry-After). There is no sign-up through a link yet:
-    sign_up_available is false and a person without an account asks this
-    server's administrator for one.
+    Retry-After). A person without an account can sign up through a link
+    with Google or Apple (POST /auth/sign-up with invite_token, M65) when
+    sign_up_available is true; otherwise they ask this server's
+    administrator for an account.
 
 
     Errors are {"error": "<code>"}. 401 responses carry
@@ -549,6 +550,14 @@ paths:
                   providers:
                     type: array
                     items: {type: string, enum: [google, apple]}
+                  sign_up:
+                    type: array
+                    items: {type: string, enum: [invite, request]}
+                    description: >-
+                      How POST /auth/sign-up may make a new account here (M65;
+                      empty when no provider is on): "invite" with an album
+                      invite link's token, "request" without one (waits for
+                      the administrator). Absent on servers before M65.
   /api/v1/auth/sign-in:
     post:
       tags: [Auth]
@@ -584,6 +593,7 @@ paths:
               schema: {$ref: '#/components/schemas/TokenResponse'}
         '400': {description: 'invalid_json, invalid_request, invalid_device, provider_disabled (no client ID configured for it)'}
         '401': {description: 'invalid_identity_token (bad, expired, for another app, or unknown/used nonce), identity_not_linked, invalid_credentials (the linked account is disabled)'}
+        '403': {description: 'sign_up_pending (the account was made by POST /auth/sign-up and waits for the administrator, M65)'}
         '415': {description: json_required}
         '429':
           description: rate_limited
@@ -591,6 +601,77 @@ paths:
             Retry-After: {schema: {type: integer}, description: seconds}
         '503':
           description: provider_unavailable (the provider's keys could not be fetched)
+          headers:
+            Retry-After: {schema: {type: integer}, description: seconds}
+  /api/v1/auth/sign-up:
+    post:
+      tags: [Auth]
+      security: []
+      summary: Make an account from a Google or Apple identity (M65, rate-limited)
+      description: >-
+        Verifies the ID token like POST /auth/sign-in (and uses up the
+        nonce). An identity already linked to an account just signs in
+        (200, and joins the link's album when invite_token is given). Else a
+        USER account is made with the identity linked and a password nobody
+        knows (it signs in with the identity only): with invite_token (an
+        album invite link's token, checked before the nonce is used) it is
+        active at once and joins that album with the link's role (201; the
+        album in "folder", or "join_error" when the link ran out in
+        between; "created" is true when the account was made now); without
+        one, when this server takes sign-up requests, it
+        is created disabled and waits for the administrator (202
+        {"status":"pending"}; signing in answers 403 sign_up_pending until
+        then). The login name comes from the e-mail address; the display
+        name is display_name, else the token's name, else the address.
+        Audited as "account.sign_up". There is no open sign-up.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider, id_token, nonce, device_name, platform]
+              properties:
+                provider: {type: string, enum: [google, apple]}
+                id_token: {type: string}
+                nonce: {type: string}
+                invite_token: {type: string, description: an album invite link's token}
+                display_name: {type: string, maxLength: 64}
+                device_name: {type: string, minLength: 1, maxLength: 64}
+                platform: {type: string, enum: [ios, android, macos, web]}
+      responses:
+        '200':
+          description: The identity already had an account; session created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TokenResponse'}
+        '201':
+          description: Account created with an invite link; session created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TokenResponse'}
+        '202':
+          description: Account requested; it waits for the administrator
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: {type: string, enum: [pending]}
+        '400': {description: 'invalid_json, invalid_request, invalid_device, provider_disabled'}
+        '401': {description: 'invalid_identity_token, invalid_credentials (the linked account is disabled)'}
+        '403': {description: 'sign_up_closed (no invite_token and this server takes no requests), sign_up_pending (already requested)'}
+        '404': {description: invite_link_not_found}
+        '409': {description: identity_in_use}
+        '410': {description: 'invite_link_gone {reason}'}
+        '415': {description: json_required}
+        '429':
+          description: 'rate_limited, sign_up_queue_full (20 requests already wait)'
+          headers:
+            Retry-After: {schema: {type: integer}, description: seconds}
+        '503':
+          description: 'provider_unavailable, busy, not_initialized, storage_unavailable'
           headers:
             Retry-After: {schema: {type: integer}, description: seconds}
   /api/v1/auth/logout:
@@ -1044,6 +1125,58 @@ paths:
         '401': {description: unauthorized}
         '403': {description: 'forbidden (not SERVER_ADMIN) or csrf_failed'}
         '404': {description: 'user_not_found, not_found (nothing linked for this provider)'}
+  /api/v1/admin/sign-up-requests:
+    get:
+      tags: [Server Admin]
+      summary: Accounts waiting for approval after signing up without a link (SERVER_ADMIN only, M65)
+      responses:
+        '200':
+          description: Oldest first; "open" is whether this server takes requests
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, open]
+                properties:
+                  open: {type: boolean}
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [user_id, login_name, display_name, provider, email, requested_at]
+                      properties:
+                        user_id: {type: string}
+                        login_name: {type: string}
+                        display_name: {type: string}
+                        provider: {type: string, enum: [google, apple]}
+                        email: {type: [string, 'null']}
+                        requested_at: {type: string, format: date-time}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (not SERVER_ADMIN)'}
+  /api/v1/admin/sign-up-requests/{user_id}/approve:
+    post:
+      tags: [Server Admin]
+      summary: Approve a sign-up request (enable the account, SERVER_ADMIN only, M65)
+      description: Audited as "account.sign_up_approve". Enabling the account (PATCH /admin/users/{user_id}) approves it too.
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+      responses:
+        '204': {description: Approved}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (not SERVER_ADMIN) or csrf_failed'}
+        '404': {description: sign_up_request_not_found}
+  /api/v1/admin/sign-up-requests/{user_id}/reject:
+    post:
+      tags: [Server Admin]
+      summary: Reject a sign-up request (delete the waiting account, SERVER_ADMIN only, M65)
+      description: The account never signed in; it is deleted with its identity link. Audited as "account.sign_up_reject".
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+      responses:
+        '204': {description: Rejected}
+        '401': {description: unauthorized}
+        '403': {description: 'forbidden (not SERVER_ADMIN) or csrf_failed'}
+        '404': {description: sign_up_request_not_found}
   /api/v1/admin/users/{user_id}/folders:
     get:
       tags: [Server Admin]
@@ -1708,9 +1841,9 @@ paths:
         signing in: album name, inviter, role, expiry. Never spends a use.
         Unknown and malformed tokens count against the client address (10
         per 15 minutes), and every lookup against its rate (10 at once,
-        then one every 6 s): 429. sign_up_available is false on this
-        version (accounts come from the server's administrator; reserved
-        for sign-up through a link).
+        then one every 6 s): 429. sign_up_available: whether this server
+        signs up with Google or Apple through the link (POST /auth/sign-up
+        with invite_token, M65; true when a provider is on).
       security: []
       requestBody:
         required: true

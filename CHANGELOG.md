@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [0.1.0-alpha.5] — 2026-11-07 (prerelease)
+
+Google·Apple로 가입(M65). 자세한 내용은 `docs/releases/v0.1.0-alpha.5.md`.
+
+### Added (sign up with Google or Apple, M65)
+- `POST /api/v1/auth/sign-up`: an account from a verified Google/Apple ID token — with an album invite link it is active at once and joins the album; without one it is created disabled and waits for the administrator (`202 pending`, sign-in `403 sign_up_pending`). An identity that already has an account just signs in. No open sign-up.
+- `GET /api/v1/admin/sign-up-requests`, `POST .../{user_id}/approve|reject`, and a 가입 요청 card on the dashboard's 사용자 page. At most 20 requests wait; `WITHALBUM_SIGN_UP_REQUESTS=off` allows link sign-ups only.
+- Nonce reply `sign_up` (`invite`, `request`); invite link preview `sign_up_available` is now true when a provider is on. Migration 0020 (`sign_up_requests`).
+
 ## [0.1.0-alpha.4] — 2026-11-02 (prerelease)
 
 alpha.3에서 Google 계정을 고른 뒤 앱이 무반응이고 서버에 기록이 없던 문제를 가를 수 있게 함(M62 후속). 자세한 내용은 `docs/releases/v0.1.0-alpha.4.md`.

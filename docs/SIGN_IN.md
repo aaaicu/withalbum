@@ -80,8 +80,32 @@ container, which shares only the read-only key volume with the server.
 
 - **Linking needs the current password.** A stolen session or an unlocked
   phone must not be enough to add a lasting way into the account.
-- **No account is created by a sign-in.** An identity no account linked gets
-  `401 identity_not_linked`.
+- **A sign-in never creates an account.** An identity no account linked gets
+  `401 identity_not_linked`. Signing up is a separate request (below).
+
+## Sign up with Google or Apple (M65)
+
+`POST /api/v1/auth/sign-up` makes a USER account from a verified ID token,
+in one of two ways (the nonce reply's `sign_up` lists those this server
+offers):
+
+- **With an album invite link** (`invite_token`): the account is active at
+  once and joins that album with the link's role (`201`). The link is checked
+  before the nonce is used.
+- **Without a link**: the account is created **disabled** and waits for the
+  administrator (`202 {"status":"pending"}`); signing in answers
+  `403 sign_up_pending` until then. The dashboard's 사용자 page lists the
+  requests (가입 요청) to approve (enable) or reject (delete). At most 20 wait
+  at once (`429 sign_up_queue_full`). `WITHALBUM_SIGN_UP_REQUESTS=off` turns
+  requests off (`403 sign_up_closed`); links keep working.
+
+There is no open sign-up: the server may be reachable from the internet, so
+a stranger who knows its address gets no usable account without a link or
+the administrator. An identity that already has an account just signs in.
+The new account's password is random and never shown, so it signs in with
+its identity only; its login name comes from the e-mail address and its
+display name from the app, the token's name or the address. Audited as
+`account.sign_up`, `account.sign_up_approve`, `account.sign_up_reject`.
 - A disabled account cannot sign in (`401 invalid_credentials`, as with the
   password). Disabling or a password reset still revokes every session.
 - One identity per provider per account, one account per identity

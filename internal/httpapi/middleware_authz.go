@@ -65,6 +65,9 @@ var routePolicies = []RoutePolicy{
 	// then an ID token the server verifies itself.
 	{"POST /api/v1/auth/sign-in/nonce", AccessPublic, ""},
 	{"POST /api/v1/auth/sign-in", AccessPublic, ""},
+	// Sign up with Google or Apple (signup.go, M65): an invite link's
+	// token joins at once, without one the account waits for approval.
+	{"POST /api/v1/auth/sign-up", AccessPublic, ""},
 	{"/api/v1/", AccessSession, ""},
 	{"POST /api/v1/auth/logout", AccessSession, ""},
 	{"GET /api/v1/me", AccessSession, ""},
@@ -86,6 +89,9 @@ var routePolicies = []RoutePolicy{
 	{"GET /api/v1/admin/users/{userID}/folders", AccessServer, authz.ManageAccounts},
 	{"GET /api/v1/admin/users/{userID}/sign-ins", AccessServer, authz.ManageAccounts},
 	{"DELETE /api/v1/admin/users/{userID}/sign-ins/{provider}", AccessServer, authz.ManageAccounts},
+	{"GET /api/v1/admin/sign-up-requests", AccessServer, authz.ManageAccounts},
+	{"POST /api/v1/admin/sign-up-requests/{userID}/approve", AccessServer, authz.ManageAccounts},
+	{"POST /api/v1/admin/sign-up-requests/{userID}/reject", AccessServer, authz.ManageAccounts},
 	// Archived folders only; the handler and the transaction refuse others
 	// as unknown (admin.go). No access to the folder follows from it.
 	{"POST /api/v1/admin/folders/{folderID}/owner", AccessServer, authz.ManageAccounts},

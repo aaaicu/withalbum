@@ -69,8 +69,8 @@ func (ti *TestIssuer) Close() { ti.Server.Close() }
 // TokenFields are the claims of a test token; zero fields take defaults
 // that pass Verify for provider p, audience aud and nonce.
 type TokenFields struct {
-	Iss, Sub, Aud, Nonce, Email, Kid, Alg string
-	Exp, Iat                              time.Time
+	Iss, Sub, Aud, Nonce, Email, Name, Kid, Alg string
+	Exp, Iat                                    time.Time
 }
 
 // Sign returns a signed ID token.
@@ -101,6 +101,9 @@ func (ti *TestIssuer) Sign(p oidc.Provider, f TokenFields) string {
 	}
 	if f.Email != "" {
 		claims["email"] = f.Email
+	}
+	if f.Name != "" {
+		claims["name"] = f.Name
 	}
 	signed := enc(map[string]string{"alg": f.Alg, "kid": f.Kid, "typ": "JWT"}) + "." + enc(claims)
 	sum := sha256.Sum256([]byte(signed))

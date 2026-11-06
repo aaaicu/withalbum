@@ -96,6 +96,7 @@ type Claims struct {
 	Provider Provider
 	Subject  string // stable per provider and account
 	Email    string // may be empty (Apple relay addresses are fine too)
+	Name     string // Google's "name" claim (Apple sends none); may be empty
 }
 
 // Verifier checks ID tokens. Safe for concurrent use.
@@ -194,6 +195,7 @@ type payload struct {
 	Iat   json.Number     `json:"iat"`
 	Nonce string          `json:"nonce"`
 	Email string          `json:"email"`
+	Name  string          `json:"name"`
 }
 
 func (p payload) audiences() []string {
@@ -282,7 +284,11 @@ func (v *Verifier) Verify(ctx context.Context, p Provider, token, nonce string) 
 	if len(email) > 320 {
 		email = ""
 	}
-	return Claims{Provider: p, Subject: pl.Sub, Email: email}, nil
+	name := pl.Name
+	if len(name) > 256 {
+		name = ""
+	}
+	return Claims{Provider: p, Subject: pl.Sub, Email: email, Name: name}, nil
 }
 
 // key returns the signing key kid of p, fetching the key set when it is

@@ -56,8 +56,10 @@ type Auth struct {
 	// a client ID are off.
 	SignIn     *oidc.Verifier
 	Identities *identity.Store
-	nonces     *nonceStore
-	db         *sql.DB // the account database, for denial audit rows
+	// noSignUpRequests: refuse sign-ups without an invite link (M65).
+	noSignUpRequests bool
+	nonces           *nonceStore
+	db               *sql.DB // the account database, for denial audit rows
 }
 
 // AuthOptions configures NewAuth. Zero values take the defaults.
@@ -68,6 +70,9 @@ type AuthOptions struct {
 	Session         session.Config
 	RateLimit       ratelimit.Config
 	SignIn          oidc.Config // Google/Apple client IDs (M54); empty: off
+	// NoSignUpRequests turns off sign-up requests without an invite link
+	// (M65); sign-up with a link stays.
+	NoSignUpRequests bool
 }
 
 // DefaultHashConcurrency bounds the memory used by password hashing to
@@ -87,7 +92,7 @@ func NewAuth(db *sql.DB, o AuthOptions) (*Auth, error) {
 		return nil, err
 	}
 	return &Auth{Sessions: session.New(db, pw, o.Session), Users: users.New(db), Passwords: pw, Limiter: ratelimit.New(o.RateLimit),
-		SignIn: oidc.New(o.SignIn), Identities: identity.New(db), nonces: newNonceStore(), db: db}, nil
+		SignIn: oidc.New(o.SignIn), Identities: identity.New(db), noSignUpRequests: o.NoSignUpRequests, nonces: newNonceStore(), db: db}, nil
 }
 
 type identityKey struct{}

@@ -60,7 +60,7 @@ func signInConfig(googleFlag, appleFlag string) oidc.Config {
 	if len(on) == 0 {
 		log.Printf("sign-in with Google/Apple: off (no client IDs)")
 	} else {
-		log.Printf("sign-in with Google/Apple: %s (linked accounts only)", strings.Join(sortedProviders(on), ", "))
+		log.Printf("sign-in with Google/Apple: %s (sign-up with an invite link or the administrator's approval)", strings.Join(sortedProviders(on), ", "))
 	}
 	return cfg
 }
@@ -75,4 +75,14 @@ func sortedProviders(ps []string) []string {
 		}
 	}
 	return out
+}
+
+// signUpRequestsOff: WITHALBUM_SIGN_UP_REQUESTS=off refuses sign-ups
+// without an invite link (M65); by default they wait for approval.
+func signUpRequestsOff() bool {
+	off := strings.EqualFold(strings.TrimSpace(os.Getenv("WITHALBUM_SIGN_UP_REQUESTS")), "off")
+	if off {
+		log.Printf("sign-up requests: off (only with an album invite link)")
+	}
+	return off
 }

@@ -119,10 +119,15 @@ func TestDashboardDesignRules(t *testing.T) {
 	if !strings.Contains(page, "보관됨") {
 		t.Error(`page never says "보관됨"`)
 	}
-	// Only what the server does: accounts are made by an administrator (no
-	// sign-up requests to approve), an UPLOADER sees none of the album (not
-	// even its own uploads), and the album role names are 오너/참여/보기/업로드 전용.
-	for _, bad := range []string{"가입 요청", "승인 대기", "자기가 올린 사진만 보여요", "소유자", "'편집'"} {
+	// Only what the server does: sign-up requests (M65) wait for approval,
+	// an UPLOADER sees none of the album (not even its own uploads), and the
+	// album role names are 오너/참여/보기/업로드 전용.
+	for _, want := range []string{"가입 요청", "승인 대기", "/api/v1/admin/sign-up-requests"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("page lacks %q", want)
+		}
+	}
+	for _, bad := range []string{"자기가 올린 사진만 보여요", "소유자", "'편집'"} {
 		if strings.Contains(page, bad) {
 			t.Errorf("page says %q", bad)
 		}
